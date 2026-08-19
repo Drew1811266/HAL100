@@ -1,0 +1,18 @@
+[package]
+name = "hal100-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hal100-core = { path = "../hal100-core" }
+hal100-protocol = { path = "../hal100-protocol" }
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+security-framework-sys.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

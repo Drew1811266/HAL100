@@ -1,0 +1,37 @@
+{
+  "name": "hal100",
+  "version": "0.0.1",
+  "private": true,
+  "description": "HAL100 local AI control plane",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.18.0",
+      "onFail": "download"
+    }
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build && cargo build --workspace",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+    "dev": "pnpm --filter @hal100/desktop dev",
+    "format": "biome check --write . && cargo fmt --all",
+    "lint": "biome check .",
+    "stability:1h": "bash tests/stability/monitor_hal100_background.sh --duration-seconds 3600 --interval-seconds 30",
+    "stability:hide-window": "bash tests/stability/hide_running_dev_window.sh",
+    "stability:matrix": "bash tests/stability/run_iteration9_matrix.sh",
+    "stability:quick": "bash tests/stability/monitor_hal100_background.sh --duration-seconds 120 --interval-seconds 10",
+    "stability:suspend-resume": "bash tests/stability/probe_suspend_resume.sh",
+    "tauri": "pnpm --filter @hal100/desktop tauri",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8"
+  }
+}

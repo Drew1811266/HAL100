@@ -1,0 +1,10 @@
+[package]
+name = "hal100-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hal100-protocol = { path = "../hal100-protocol" }
+serde_json.workspace = true

@@ -1,0 +1,32 @@
+;; HAL100 development-only Agent Kernel sandbox.
+;; sandbox-exec and SBPL are deprecated/private macOS interfaces. This profile is
+;; only a regression probe for unsigned internal builds, never a release boundary.
+
+(version 1)
+(deny default)
+(import "system.sb")
+
+;; sandbox-exec must be able to replace itself with the exact pinned Node binary.
+(allow process-exec
+  (literal (param "NODE_BINARY")))
+
+;; Read only the pinned runtime, the HAL100 workspace dependencies, and the
+;; per-session scratch root. system.sb separately grants standard system paths.
+(allow file-read* file-test-existence file-map-executable
+  (subpath (param "NODE_ROOT"))
+  (subpath (param "WORKSPACE_ROOT"))
+  (subpath (param "SESSION_ROOT")))
+
+;; Path resolution needs metadata on ancestors without granting file contents.
+(allow file-read-metadata file-test-existence
+  (path-ancestors (param "NODE_ROOT"))
+  (path-ancestors (param "WORKSPACE_ROOT"))
+  (path-ancestors (param "SESSION_ROOT")))
+
+;; The Sidecar has no reason to modify source, models, or user files.
+(allow file-write*
+  (subpath (param "SESSION_ROOT")))
+
+;; This iteration uses a deterministic local stream. Product Agent model traffic
+;; will later use a separately reviewed loopback-only policy or App Sandbox/XPC.
+(deny network*)

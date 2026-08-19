@@ -1,0 +1,1039 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>HAL100 · 界面设计原型</title>
+  <style>
+    :root {
+      --canvas: #f7f5f0;
+      --sidebar: #f0eee8;
+      --surface: #fffefb;
+      --surface-2: #f3f1ec;
+      --surface-3: #ebe8e1;
+      --text: #292824;
+      --text-2: #6e6a63;
+      --text-3: #979188;
+      --border: #e3ded5;
+      --border-strong: #d4cec3;
+      --brand: #a84e42;
+      --brand-hover: #923f35;
+      --brand-soft: #f2dfda;
+      --success: #4f735d;
+      --success-soft: #e6efe8;
+      --warning: #94652d;
+      --warning-soft: #f4ead8;
+      --danger: #b3423e;
+      --danger-soft: #f6dfdd;
+      --info: #526f8a;
+      --info-soft: #e4ebf0;
+      --shadow: 0 18px 55px rgba(49, 43, 36, .15);
+      --shadow-soft: 0 10px 30px rgba(49, 43, 36, .09);
+      --focus: 0 0 0 3px rgba(168, 78, 66, .2);
+      --sidebar-w: 230px;
+      --titlebar-h: 52px;
+      --radius-sm: 9px;
+      --radius: 13px;
+      --radius-lg: 17px;
+    }
+
+    html[data-theme="dark"] {
+      --canvas: #1e1d1a;
+      --sidebar: #191816;
+      --surface: #272521;
+      --surface-2: #2e2c28;
+      --surface-3: #38352f;
+      --text: #f3efe7;
+      --text-2: #b1aba1;
+      --text-3: #858078;
+      --border: #3b3832;
+      --border-strong: #4c4841;
+      --brand: #d17a6d;
+      --brand-hover: #df8b7f;
+      --brand-soft: #4a2c28;
+      --success: #7fa98b;
+      --success-soft: #25372b;
+      --warning: #c79a58;
+      --warning-soft: #3d3222;
+      --danger: #de756e;
+      --danger-soft: #492724;
+      --info: #83a2be;
+      --info-soft: #273746;
+      --shadow: 0 18px 60px rgba(0, 0, 0, .38);
+      --shadow-soft: 0 10px 32px rgba(0, 0, 0, .25);
+      --focus: 0 0 0 3px rgba(209, 122, 109, .25);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      min-width: 1020px;
+      overflow: hidden;
+      color: var(--text);
+      background: var(--canvas);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, input, select, textarea { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: none;
+      box-shadow: var(--focus);
+    }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    ::selection { background: var(--brand-soft); color: var(--text); }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+      grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
+      height: 100vh;
+      background: var(--canvas);
+    }
+
+    .titlebar {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+      height: var(--titlebar-h);
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--canvas) 90%, transparent);
+      backdrop-filter: blur(18px);
+      user-select: none;
+      z-index: 20;
+    }
+
+    .traffic-area {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-left: 17px;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+    }
+    .traffic { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
+    .traffic.red { background: #ff5f57; }
+    .traffic.yellow { background: #febc2e; }
+    .traffic.green { background: #28c840; }
+
+    .top-status {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 0 18px;
+    }
+    .top-chip, .icon-btn {
+      height: 32px;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--text-2);
+      cursor: pointer;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }
+    .top-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+    }
+    .top-chip:hover, .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+    .icon-btn { width: 32px; display: grid; place-items: center; position: relative; }
+    .count-dot {
+      position: absolute; right: -3px; top: -3px;
+      min-width: 17px; height: 17px; padding: 0 4px;
+      display: grid; place-items: center;
+      border-radius: 99px; background: var(--brand); color: white;
+      font-size: 10px; border: 2px solid var(--canvas);
+    }
+
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); flex: 0 0 auto; }
+    .status-dot.ok { background: var(--success); }
+    .status-dot.warn { background: var(--warning); }
+    .status-dot.bad { background: var(--danger); }
+    .status-dot.live { background: var(--brand); animation: breathe 1.9s ease-in-out infinite; }
+    @keyframes breathe { 50% { opacity: .38; transform: scale(.88); } }
+
+    .sidebar {
+      grid-column: 1;
+      grid-row: 2;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 12px 14px;
+      border-right: 1px solid var(--border);
+      background: var(--sidebar);
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      padding: 4px 10px 17px;
+      font-size: 15px; font-weight: 670; letter-spacing: .3px;
+    }
+    .brand-mark {
+      width: 24px; height: 24px; border-radius: 8px;
+      display: block; flex: 0 0 auto; overflow: hidden;
+      background: var(--brand);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.2);
+    }
+    .brand-mark img, .agent-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
+    .nav { display: flex; flex-direction: column; gap: 3px; }
+    .nav-spacer { flex: 1; min-height: 18px; }
+    .nav-divider { height: 1px; background: var(--border); margin: 10px 9px; }
+    .nav-item {
+      position: relative;
+      width: 100%; height: 38px;
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 11px;
+      border: 0; border-radius: 10px;
+      background: transparent; color: var(--text-2);
+      cursor: pointer; text-align: left;
+      transition: background .15s ease, color .15s ease;
+    }
+    .nav-item:hover { background: color-mix(in srgb, var(--surface) 56%, transparent); color: var(--text); }
+    .nav-item.active { background: var(--brand-soft); color: var(--text); font-weight: 560; }
+    .nav-item.active::before {
+      content: ""; position: absolute; left: 0; width: 2px; height: 17px;
+      border-radius: 4px; background: var(--brand);
+    }
+    .nav-icon {
+      width: 18px; height: 18px; display: grid; place-items: center;
+      color: currentColor; font-size: 15px; font-weight: 550;
+    }
+    .prototype-badge {
+      margin-left: auto; padding: 1px 6px; border-radius: 99px;
+      color: var(--text-3); background: var(--surface-2); font-size: 10px;
+    }
+    .gateway-mini {
+      margin-top: 10px; padding: 11px 12px;
+      border: 1px solid var(--border); border-radius: 12px;
+      background: color-mix(in srgb, var(--surface) 55%, transparent);
+      cursor: pointer;
+    }
+    .gateway-mini strong { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 590; }
+    .gateway-mini small { display: block; margin-top: 3px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+    .workspace {
+      grid-column: 2;
+      grid-row: 2;
+      min-width: 0; min-height: 0;
+      overflow: hidden;
+      position: relative;
+    }
+    .page {
+      display: none;
+      height: 100%; overflow-y: auto;
+      padding: 27px 32px 48px;
+      scrollbar-gutter: stable;
+    }
+    .page.active { display: block; animation: pageIn .16s ease both; }
+    @keyframes pageIn { from { opacity: 0; transform: translateY(2px); } }
+    .page-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+      margin-bottom: 25px;
+    }
+    .page-head h1 { margin: 0; font-size: 24px; line-height: 1.25; font-weight: 650; letter-spacing: -.4px; }
+    .page-head p { margin: 6px 0 0; color: var(--text-2); }
+    .page-actions { display: flex; gap: 9px; align-items: center; }
+
+    .btn {
+      min-height: 36px; padding: 0 14px;
+      border: 1px solid var(--border-strong); border-radius: 10px;
+      background: var(--surface); color: var(--text);
+      cursor: pointer; font-weight: 540;
+      transition: transform .08s ease, background .15s ease, border-color .15s ease;
+    }
+    .btn:hover { background: var(--surface-2); border-color: var(--text-3); }
+    .btn:active { transform: translateY(1px); }
+    .btn.primary { color: #fff; background: var(--brand); border-color: var(--brand); }
+    .btn.primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+    .btn.ghost { border-color: transparent; background: transparent; color: var(--text-2); }
+    .btn.ghost:hover { background: var(--surface-2); color: var(--text); }
+    .btn.danger { color: #fff; background: var(--danger); border-color: var(--danger); }
+    .btn.small { min-height: 30px; padding: 0 10px; border-radius: 8px; font-size: 12px; }
+
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid.aside { grid-template-columns: minmax(0, 1.55fr) minmax(290px, .75fr); }
+    .card {
+      border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--surface); padding: 20px;
+    }
+    .card.flat { padding: 0; overflow: hidden; }
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+    .card h2, .section-title { margin: 0; font-size: 16px; line-height: 1.4; font-weight: 625; }
+    .card h3 { margin: 0; font-size: 14px; font-weight: 620; }
+    .muted { color: var(--text-2); }
+    .subtle { color: var(--text-3); }
+    .mono { font-family: "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; }
+    .tabular { font-variant-numeric: tabular-nums; }
+    .divider { height: 1px; background: var(--border); margin: 18px 0; }
+    .section-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 26px 0 12px; }
+    .section-row:first-child { margin-top: 0; }
+
+    .metric { min-height: 118px; }
+    .metric-label { color: var(--text-2); font-size: 12px; }
+    .metric-value { margin: 9px 0 4px; font-size: 27px; line-height: 1; font-weight: 625; letter-spacing: -.7px; font-variant-numeric: tabular-nums; }
+    .metric-foot { color: var(--text-3); font-size: 12px; }
+    .trend-up { color: var(--success); }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      min-height: 24px; padding: 2px 8px;
+      border: 1px solid transparent; border-radius: 99px;
+      background: var(--surface-2); color: var(--text-2); font-size: 11px; white-space: nowrap;
+    }
+    .badge.ok { color: var(--success); background: var(--success-soft); }
+    .badge.warn { color: var(--warning); background: var(--warning-soft); }
+    .badge.bad { color: var(--danger); background: var(--danger-soft); }
+    .badge.info { color: var(--info); background: var(--info-soft); }
+    .badge.brand { color: var(--brand); background: var(--brand-soft); }
+
+    .hero-card {
+      padding: 23px;
+      background: linear-gradient(135deg, var(--surface) 0%, color-mix(in srgb, var(--brand-soft) 26%, var(--surface)) 100%);
+    }
+    .hero-model { display: flex; gap: 15px; align-items: center; }
+    .model-orb {
+      width: 44px; height: 44px; flex: 0 0 auto;
+      border-radius: 14px; background: var(--brand-soft); position: relative;
+    }
+    .model-orb::before, .model-orb::after {
+      content: ""; position: absolute; border-radius: 50%; background: var(--brand);
+    }
+    .model-orb::before { width: 15px; height: 15px; left: 9px; top: 9px; opacity: .9; }
+    .model-orb::after { width: 8px; height: 8px; right: 9px; bottom: 9px; opacity: .5; }
+    .hero-model h2 { font-size: 18px; }
+    .stat-line { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 18px; }
+    .stat-line div { min-width: 90px; }
+    .stat-line strong { display: block; font-size: 15px; font-weight: 610; font-variant-numeric: tabular-nums; }
+    .stat-line span { color: var(--text-3); font-size: 11px; }
+
+    .recommend {
+      display: flex; align-items: center; justify-content: space-between; gap: 18px;
+      margin-top: 16px; border-color: color-mix(in srgb, var(--brand) 25%, var(--border));
+      background: color-mix(in srgb, var(--brand-soft) 40%, var(--surface));
+    }
+    .recommend-copy { display: flex; gap: 12px; align-items: flex-start; }
+    .recommend-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9px; background: var(--brand-soft); color: var(--brand); font-weight: 700; }
+
+    .resource-row { display: grid; grid-template-columns: 80px minmax(120px, 1fr) 70px; gap: 10px; align-items: center; margin: 12px 0; }
+    .resource-row:first-of-type { margin-top: 2px; }
+    .bar { height: 7px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+    .bar > i { display: block; height: 100%; border-radius: inherit; background: var(--brand); }
+    .bar.success > i { background: var(--success); }
+    .bar.info > i { background: var(--info); }
+
+    .activity-list, .entity-list { list-style: none; margin: 0; padding: 0; }
+    .activity-row, .entity-row {
+      display: grid; align-items: center; gap: 12px;
+      min-height: 50px; border-top: 1px solid var(--border);
+    }
+    .activity-row { grid-template-columns: 62px minmax(0,1fr) 125px 62px; }
+    .activity-row:first-child, .entity-row:first-child { border-top: 0; }
+    .activity-row time { color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+    .toolbar {
+      display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
+      margin-bottom: 15px;
+    }
+    .input, .select, .textarea {
+      border: 1px solid var(--border-strong); border-radius: 10px;
+      background: var(--surface); color: var(--text);
+    }
+    .input { height: 36px; padding: 0 11px; min-width: 190px; }
+    .input.search { min-width: 270px; flex: 1; max-width: 390px; }
+    .select { height: 36px; padding: 0 31px 0 11px; }
+    .textarea { width: 100%; min-height: 90px; padding: 11px; resize: vertical; }
+    .segment {
+      display: inline-flex; padding: 3px; gap: 2px;
+      border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+    }
+    .segment button {
+      height: 29px; padding: 0 10px; border: 0; border-radius: 7px;
+      background: transparent; color: var(--text-2); cursor: pointer;
+    }
+    .segment button.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+
+    .table-wrap { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th { height: 39px; padding: 0 13px; text-align: left; color: var(--text-3); font-size: 11px; font-weight: 560; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    td { height: 54px; padding: 7px 13px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tbody tr { transition: background .15s ease; }
+    tbody tr:hover { background: var(--surface-2); }
+    tbody tr:last-child td { border-bottom: 0; }
+    .entity-name { display: flex; align-items: center; gap: 11px; min-width: 220px; }
+    .entity-glyph { width: 31px; height: 31px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); color: var(--text-2); font-size: 11px; font-weight: 650; }
+    .entity-name strong { display: block; font-size: 13px; }
+    .entity-name small { display: block; color: var(--text-3); margin-top: 1px; }
+    .row-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+    .download-row {
+      display: grid; grid-template-columns: minmax(200px, 1fr) minmax(180px, 1.4fr) 110px auto;
+      align-items: center; gap: 14px; padding: 14px 0; border-top: 1px solid var(--border);
+    }
+    .download-row:first-of-type { border-top: 0; }
+    .progress-meta { display: flex; justify-content: space-between; color: var(--text-3); font-size: 11px; margin-top: 5px; }
+
+    .backend-card { min-height: 174px; }
+    .backend-top { display: flex; justify-content: space-between; gap: 12px; }
+    .backend-name { display: flex; align-items: center; gap: 9px; }
+    .backend-address { margin-top: 9px; color: var(--text-2); font-size: 12px; }
+    .backend-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+    .backend-stats div { padding: 9px 10px; border-radius: 9px; background: var(--surface-2); }
+    .backend-stats strong { display: block; font-size: 13px; }
+    .backend-stats span { font-size: 10px; color: var(--text-3); }
+
+    .integration-hero { padding: 23px; }
+    .integration-brand { display: flex; align-items: center; gap: 13px; }
+    .app-icon { width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; background: var(--text); color: var(--canvas); font-weight: 700; font-size: 11px; }
+    .kv { display: grid; grid-template-columns: 115px minmax(0,1fr); gap: 10px 16px; margin-top: 19px; }
+    .kv dt { color: var(--text-3); }
+    .kv dd { margin: 0; min-width: 0; }
+    .codebox { padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+
+    .chart-card { min-height: 290px; }
+    .chart-wrap { height: 205px; position: relative; margin-top: 5px; }
+    canvas { width: 100%; height: 100%; }
+    .chart-legend { display: flex; gap: 15px; color: var(--text-2); font-size: 11px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+    .legend-line { width: 13px; height: 3px; border-radius: 4px; background: var(--brand); }
+    .legend-line.info { background: var(--info); }
+    .legend-line.success { background: var(--success); }
+    .donut {
+      width: 106px; height: 106px; border-radius: 50%;
+      background: conic-gradient(var(--brand) 0 71%, var(--info) 71% 87%, var(--border) 87% 100%);
+      position: relative; flex: 0 0 auto;
+    }
+    .donut::after { content: ""; position: absolute; inset: 20px; border-radius: 50%; background: var(--surface); }
+
+    .agent-page { padding-bottom: 0; overflow: hidden; }
+    .agent-shell { height: calc(100% - 82px); display: grid; grid-template-rows: auto minmax(0,1fr) auto; max-width: 860px; margin: 0 auto; }
+    .agent-meta { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 13px; border-bottom: 1px solid var(--border); }
+    .agent-thread { overflow-y: auto; padding: 24px 8px 28px; }
+    .message { max-width: 720px; margin: 0 auto 22px; }
+    .message.user { display: flex; justify-content: flex-end; }
+    .bubble-user { max-width: 78%; padding: 11px 14px; border-radius: 15px 15px 4px 15px; background: var(--surface-3); }
+    .assistant-line { display: flex; gap: 12px; align-items: flex-start; }
+    .agent-avatar { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; overflow: hidden; flex: 0 0 auto; background: var(--brand); color: white; font-size: 9px; font-weight: 740; }
+    .assistant-copy { flex: 1; padding-top: 2px; }
+    .assistant-copy p { margin: 0 0 10px; }
+    .suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .suggestion { border: 1px solid var(--border); border-radius: 99px; background: var(--surface); padding: 7px 11px; color: var(--text-2); cursor: pointer; }
+    .suggestion:hover { color: var(--text); border-color: var(--border-strong); }
+
+    .tool-card { margin: 12px 0; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); overflow: hidden; }
+    .tool-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; }
+    .tool-title { display: flex; align-items: center; gap: 9px; font-weight: 590; }
+    .tool-check { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; color: var(--success); background: var(--success-soft); font-size: 11px; }
+    .tool-body { padding: 0 14px 13px 45px; color: var(--text-2); font-size: 12px; }
+    .tool-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .agent-composer { padding: 14px 0 20px; background: linear-gradient(transparent, var(--canvas) 18%); }
+    .composer-box { display: flex; align-items: flex-end; gap: 9px; padding: 10px 10px 10px 14px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-soft); }
+    .composer-box textarea { flex: 1; min-height: 46px; max-height: 120px; border: 0; outline: 0; resize: none; background: transparent; color: var(--text); padding: 7px 0; }
+    .send-btn { width: 34px; height: 34px; border: 0; border-radius: 10px; background: var(--brand); color: white; cursor: pointer; font-size: 17px; }
+    .composer-hint { margin-top: 6px; text-align: center; color: var(--text-3); font-size: 10px; }
+
+    .test-shell { display: grid; grid-template-columns: minmax(0,1fr) 270px; gap: 16px; min-height: 600px; }
+    .test-chat { display: flex; flex-direction: column; min-height: 580px; }
+    .test-messages { flex: 1; padding: 18px; }
+    .test-composer { padding: 14px; border-top: 1px solid var(--border); }
+
+    .audit-row { cursor: pointer; }
+    .risk-mark { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font-size: 11px; background: var(--surface-2); }
+
+    .settings-shell { display: grid; grid-template-columns: 185px minmax(0, 1fr); min-height: 600px; padding: 0; }
+    .settings-nav { padding: 12px; border-right: 1px solid var(--border); background: var(--surface-2); }
+    .settings-tab { width: 100%; height: 34px; border: 0; border-radius: 8px; padding: 0 10px; background: transparent; color: var(--text-2); text-align: left; cursor: pointer; }
+    .settings-tab.active { color: var(--text); background: var(--surface); font-weight: 560; }
+    .settings-panel { display: none; padding: 25px 28px 35px; max-width: 720px; }
+    .settings-panel.active { display: block; }
+    .setting-row { display: flex; justify-content: space-between; gap: 28px; padding: 17px 0; border-top: 1px solid var(--border); }
+    .setting-row:first-of-type { border-top: 0; }
+    .setting-copy strong { display: block; font-weight: 580; }
+    .setting-copy span { display: block; color: var(--text-2); font-size: 12px; margin-top: 3px; max-width: 430px; }
+    .switch { width: 42px; height: 24px; border: 0; border-radius: 99px; background: var(--surface-3); padding: 3px; cursor: pointer; transition: background .15s ease; }
+    .switch::before { content: ""; display: block; width: 18px; height: 18px; border-radius: 50%; background: white; box-shadow: 0 1px 4px rgba(0,0,0,.22); transition: transform .15s ease; }
+    .switch.on { background: var(--brand); }
+    .switch.on::before { transform: translateX(18px); }
+
+    .component-block { margin-bottom: 24px; }
+    .component-block > h2 { margin: 0 0 12px; font-size: 15px; }
+    .component-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .state-demo { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .state-box { min-height: 116px; padding: 16px; border: 1px dashed var(--border-strong); border-radius: 12px; background: var(--surface-2); }
+    .state-box strong { display: block; margin-bottom: 5px; }
+
+    .overlay {
+      position: fixed; inset: 0; z-index: 100;
+      display: none; align-items: center; justify-content: center;
+      padding: 28px; background: rgba(23, 21, 18, .36); backdrop-filter: blur(5px);
+    }
+    .overlay.open { display: flex; animation: fade .15s ease both; }
+    @keyframes fade { from { opacity: 0; } }
+    .modal {
+      width: min(560px, calc(100vw - 56px)); max-height: calc(100vh - 56px); overflow: auto;
+      border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+      background: var(--surface); box-shadow: var(--shadow);
+      animation: modalIn .18s ease both;
+    }
+    .modal.wide { width: min(850px, calc(100vw - 56px)); }
+    @keyframes modalIn { from { transform: translateY(7px) scale(.99); opacity: .7; } }
+    .modal-head { display: flex; justify-content: space-between; gap: 16px; padding: 19px 21px 14px; }
+    .modal-head h2 { margin: 0; font-size: 18px; }
+    .modal-body { padding: 0 21px 21px; }
+    .modal-foot { display: flex; justify-content: flex-end; gap: 9px; padding: 14px 21px 20px; border-top: 1px solid var(--border); }
+    .close-x { width: 30px; height: 30px; border: 0; border-radius: 9px; background: transparent; color: var(--text-2); cursor: pointer; }
+    .close-x:hover { background: var(--surface-2); color: var(--text); }
+    .danger-summary { padding: 13px 14px; border-radius: 11px; color: var(--danger); background: var(--danger-soft); }
+    .impact-list { margin: 14px 0; padding-left: 20px; color: var(--text-2); }
+    .impact-list li { margin: 6px 0; }
+
+    .drawer {
+      position: fixed; top: var(--titlebar-h); right: 0; bottom: 0; z-index: 80;
+      width: min(410px, calc(100vw - var(--sidebar-w) - 50px));
+      display: flex; flex-direction: column;
+      border-left: 1px solid var(--border-strong);
+      background: var(--surface); box-shadow: var(--shadow);
+      transform: translateX(105%); transition: transform .2s ease;
+    }
+    .drawer.open { transform: translateX(0); }
+    .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 18px 13px; border-bottom: 1px solid var(--border); }
+    .drawer-head h2 { margin: 0; font-size: 17px; }
+    .drawer-body { flex: 1; overflow-y: auto; padding: 17px 18px 28px; }
+    .task { padding: 14px 0; border-top: 1px solid var(--border); }
+    .task:first-child { padding-top: 0; border-top: 0; }
+    .task-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+    .task small { color: var(--text-3); }
+
+    .onboarding {
+      width: min(920px, calc(100vw - 56px)); min-height: 620px;
+      display: grid; grid-template-columns: 260px minmax(0,1fr);
+      border: 1px solid var(--border-strong); border-radius: 20px;
+      overflow: hidden; background: var(--surface); box-shadow: var(--shadow);
+    }
+    .onboarding-side { padding: 28px 23px; background: var(--sidebar); border-right: 1px solid var(--border); }
+    .onboarding-side h2 { margin: 14px 0 7px; font-size: 19px; }
+    .steps { margin-top: 28px; display: grid; gap: 14px; }
+    .step { display: flex; gap: 10px; align-items: center; color: var(--text-3); }
+    .step-no { width: 25px; height: 25px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--border-strong); font-size: 11px; }
+    .step.active { color: var(--text); font-weight: 570; }
+    .step.active .step-no { color: white; border-color: var(--brand); background: var(--brand); }
+    .step.done .step-no { color: var(--success); background: var(--success-soft); border-color: transparent; }
+    .onboarding-main { display: flex; flex-direction: column; min-width: 0; }
+    .onboarding-content { flex: 1; padding: 46px 50px 25px; }
+    .onboarding-content h1 { margin: 0 0 10px; font-size: 27px; letter-spacing: -.5px; }
+    .onboarding-content > p { color: var(--text-2); max-width: 560px; }
+    .onboarding-foot { display: flex; justify-content: space-between; padding: 17px 25px; border-top: 1px solid var(--border); }
+    .onboarding-pane { display: none; }
+    .onboarding-pane.active { display: block; animation: pageIn .16s ease; }
+    .privacy-points { display: grid; gap: 10px; margin-top: 28px; }
+    .privacy-point { display: flex; gap: 11px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-2); }
+    .check-glyph { color: var(--success); font-weight: 700; }
+    .source-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 24px; }
+    .choice-card { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); cursor: pointer; }
+    .choice-card.selected { border-color: var(--brand); box-shadow: var(--focus); }
+    .choice-card strong { display: block; }
+    .choice-card span { color: var(--text-2); font-size: 12px; }
+
+    .toast-stack { position: fixed; right: 18px; bottom: 18px; z-index: 140; display: grid; gap: 8px; }
+    .toast { min-width: 290px; max-width: 380px; padding: 12px 14px; border: 1px solid var(--border-strong); border-radius: 11px; background: var(--surface); box-shadow: var(--shadow-soft); animation: toastIn .18s ease both; }
+    @keyframes toastIn { from { transform: translateY(7px); opacity: 0; } }
+
+    @media (max-width: 1180px) {
+      :root { --sidebar-w: 214px; }
+      .page { padding-left: 24px; padding-right: 24px; }
+      .grid.four { grid-template-columns: repeat(2, 1fr); }
+      .grid.three { grid-template-columns: repeat(2, 1fr); }
+      .activity-row { grid-template-columns: 55px minmax(0,1fr) 90px; }
+      .activity-row > :nth-child(4) { display: none; }
+      .top-chip.optional { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar">
+      <div class="traffic-area" aria-label="窗口控制示意">
+        <i class="traffic red"></i><i class="traffic yellow"></i><i class="traffic green"></i>
+      </div>
+      <div class="top-status">
+        <button class="top-chip" data-action="goto-settings" title="网关设置">
+          <span class="status-dot ok"></span><span>Gateway</span><span class="mono">10100</span>
+        </button>
+        <button class="top-chip optional" data-page-link="models" title="查看当前模型">
+          <span class="status-dot live"></span><span>Qwen2.5 7B</span>
+        </button>
+        <button class="top-chip optional" data-page-link="usage" title="查看活动请求"><span>请求</span><strong class="tabular">0</strong></button>
+        <button class="icon-btn" data-action="toggle-theme" aria-label="切换亮暗主题" title="切换主题">◐</button>
+        <button class="icon-btn" data-action="open-tasks" aria-label="打开后台任务" title="后台任务">◷<span class="count-dot">2</span></button>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark"><img src="./assets/hal100-logo.png" alt=""></span><span>HAL100</span></div>
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" data-page="overview"><span class="nav-icon">⌂</span><span>总览</span></button>
+        <button class="nav-item" data-page="models"><span class="nav-icon">◇</span><span>模型库</span></button>
+        <button class="nav-item" data-page="backends"><span class="nav-icon">◎</span><span>推理后端</span></button>
+        <button class="nav-item" data-page="integrations"><span class="nav-icon">↗</span><span>应用接入</span></button>
+        <button class="nav-item" data-page="usage"><span class="nav-icon">≋</span><span>Token统计</span></button>
+        <button class="nav-item" data-page="agent"><span class="nav-icon">✦</span><span>HAL100 Agent</span></button>
+        <button class="nav-item" data-page="test"><span class="nav-icon">▷</span><span>模型测试</span></button>
+      </nav>
+      <div class="nav-spacer"></div>
+      <nav class="nav" aria-label="辅助导航">
+        <div class="nav-divider"></div>
+        <button class="nav-item" data-page="audit"><span class="nav-icon">◷</span><span>审计记录</span></button>
+        <button class="nav-item" data-page="settings"><span class="nav-icon">⚙</span><span>设置</span></button>
+        <button class="nav-item" data-page="components"><span class="nav-icon">▦</span><span>组件展板</span><span class="prototype-badge">原型</span></button>
+      </nav>
+      <button class="gateway-mini" data-action="goto-settings">
+        <strong><span class="status-dot ok"></span>Gateway 正常</strong>
+        <small>127.0.0.1:10100</small>
+      </button>
+    </aside>
+
+    <main class="workspace">
+      <section class="page active" id="page-overview" data-title="总览">
+        <div class="page-head">
+          <div><h1>上午好，本机 AI 已准备就绪</h1><p>Gateway正常，当前模型已加载，没有活动请求。</p></div>
+          <div class="page-actions"><button class="btn" data-action="open-onboarding">演示首次启动</button><button class="btn primary" data-page-link="agent">打开 Agent</button></div>
+        </div>
+
+        <div class="grid two">
+          <article class="card hero-card">
+            <div class="card-head"><div class="hero-model"><span class="model-orb"></span><div><span class="badge ok"><span class="status-dot ok"></span>已加载</span><h2 style="margin-top:7px">Qwen2.5 7B Instruct</h2><div class="muted">Q4_K_M · 托管 llama.cpp</div></div></div><button class="btn ghost small" data-action="open-model-detail">查看详情</button></div>
+            <div class="stat-line"><div><strong>8K</strong><span>上下文</span></div><div><strong>41.8 tok/s</strong><span>最近速度</span></div><div><strong>18 ms</strong><span>后端延迟</span></div><div><strong>0</strong><span>活动请求</span></div></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><div><span class="muted">今日用量</span><h2 style="font-size:28px;margin-top:7px">1.88M <small class="muted" style="font-size:12px;font-weight:400">Token</small></h2></div><span class="badge info">精确统计</span></div>
+            <div class="stat-line"><div><strong>1.28M</strong><span>输入</span></div><div><strong>420K</strong><span>缓存</span></div><div><strong>182K</strong><span>输出</span></div><div><strong>186</strong><span>请求</span></div></div>
+          </article>
+        </div>
+
+        <article class="card recommend">
+          <div class="recommend-copy"><span class="recommend-icon">!</span><div><strong>OpenCode尚未设置默认模型</strong><div class="muted">接入已经可用。HAL100不会自动修改你现有的默认模型。</div></div></div>
+          <button class="btn" data-page-link="integrations">检查配置</button>
+        </article>
+
+        <div class="grid two" style="margin-top:16px">
+          <article class="card">
+            <div class="card-head"><h2>系统资源</h2><span class="badge ok">负载正常</span></div>
+            <div class="resource-row"><span>CPU</span><div class="bar"><i style="width:18%"></i></div><strong class="tabular">18%</strong></div>
+            <div class="resource-row"><span>统一内存</span><div class="bar info"><i style="width:47%"></i></div><strong class="tabular">11.2 GB</strong></div>
+            <div class="resource-row"><span>GPU</span><div class="bar success"><i style="width:42%"></i></div><strong class="tabular">42%</strong></div>
+            <div class="resource-row"><span>磁盘</span><div class="bar"><i style="width:61%"></i></div><strong class="tabular">146 GB</strong></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>后端状态</h2><button class="btn ghost small" data-page-link="backends">查看全部</button></div>
+            <ul class="activity-list">
+              <li class="activity-row" style="grid-template-columns:18px 1fr 90px"><span class="status-dot ok"></span><div><strong>HAL100 llama.cpp</strong><div class="subtle">当前活动后端</div></div><span class="badge ok">正常</span></li>
+              <li class="activity-row" style="grid-template-columns:18px 1fr 90px"><span class="status-dot"></span><div><strong>Ollama</strong><div class="subtle">外部管理</div></div><span class="badge">未运行</span></li>
+              <li class="activity-row" style="grid-template-columns:18px 1fr 90px"><span class="status-dot warn"></span><div><strong>团队 vLLM</strong><div class="subtle">HTTP未加密</div></div><span class="badge warn">注意</span></li>
+            </ul>
+          </article>
+        </div>
+
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><h2>最近活动</h2><button class="btn ghost small" data-page-link="audit">查看全部</button></div>
+          <ul class="activity-list">
+            <li class="activity-row"><time>10:42</time><div><strong>OpenCode调用 Qwen2.5 7B</strong><div class="subtle">OpenAI Chat Completions · 已完成</div></div><span class="tabular">2,418 tokens</span><span class="badge ok">成功</span></li>
+            <li class="activity-row"><time>10:31</time><div><strong>Qwen2.5 7B下载完成</strong><div class="subtle">ModelScope · 哈希校验通过</div></div><span class="tabular">4.6 GB</span><span class="badge ok">完成</span></li>
+            <li class="activity-row"><time>09:54</time><div><strong>OpenCode配置已更新</strong><div class="subtle">已创建可恢复备份</div></div><span>用户确认</span><span class="badge ok">完成</span></li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="page" id="page-models" data-title="模型库">
+        <div class="page-head"><div><h1>模型库</h1><p>管理HAL100下载的模型和本地导入模型。</p></div><div class="page-actions"><button class="btn">导入GGUF</button><button class="btn primary" data-action="open-get-model">获取模型</button></div></div>
+        <div class="toolbar"><input class="input search" placeholder="搜索模型名称、仓库或量化"><select class="select"><option>全部来源</option><option>Hugging Face</option><option>ModelScope</option><option>本地导入</option></select><select class="select"><option>全部状态</option><option>已加载</option><option>未加载</option><option>异常</option></select><div class="segment"><button class="active">托管模型 3</button><button>外部模型 2</button></div></div>
+        <article class="card flat">
+          <div class="table-wrap"><table>
+            <thead><tr><th>模型</th><th>量化</th><th>大小</th><th>上下文</th><th>状态</th><th>最近使用</th><th></th></tr></thead>
+            <tbody>
+              <tr data-action="open-model-detail"><td><div class="entity-name"><span class="entity-glyph">Q7</span><div><strong>Qwen2.5 7B Instruct</strong><small>ModelScope · HAL100托管</small></div></div></td><td class="mono">Q4_K_M</td><td>4.6 GB</td><td>8K</td><td><span class="badge ok"><span class="status-dot ok"></span>已加载</span></td><td>刚刚</td><td><div class="row-actions"><button class="btn small" data-action="stop-propagation">停止</button><button class="btn ghost small" data-action="open-model-detail">详情</button></div></td></tr>
+              <tr><td><div class="entity-name"><span class="entity-glyph">L3</span><div><strong>Llama 3.2 3B</strong><small>Hugging Face · HAL100托管</small></div></div></td><td class="mono">Q5_K_M</td><td>2.4 GB</td><td>8K</td><td><span class="badge">未加载</span></td><td>2天前</td><td><div class="row-actions"><button class="btn small" data-action="toast" data-message="已提交模型切换计划">设为活动</button><button class="btn ghost small">⋯</button></div></td></tr>
+              <tr><td><div class="entity-name"><span class="entity-glyph">D7</span><div><strong>DeepSeek 7B</strong><small>本地导入 · 外部模型</small></div></div></td><td class="mono">Q4_0</td><td>4.1 GB</td><td>16K</td><td><span class="badge warn">文件已变化</span></td><td>—</td><td><div class="row-actions"><button class="btn small" data-action="toast" data-message="正在重新检查模型文件">检查</button><button class="btn ghost small">⋯</button></div></td></tr>
+            </tbody>
+          </table></div>
+        </article>
+        <div class="section-row"><h2 class="section-title">下载中</h2><button class="btn ghost small" data-action="open-tasks">在任务中心查看</button></div>
+        <article class="card">
+          <div class="download-row"><div><strong>Gemma 3 4B</strong><div class="subtle">ModelScope · Q4_K_M</div></div><div><div class="bar"><i style="width:72%"></i></div><div class="progress-meta"><span>2.1 / 2.9 GB</span><span>72%</span></div></div><div><strong>6.2 MB/s</strong><div class="subtle">约2分钟</div></div><button class="btn small">暂停</button></div>
+        </article>
+      </section>
+
+      <section class="page" id="page-backends" data-title="推理后端">
+        <div class="page-head"><div><h1>推理后端</h1><p>管理HAL100托管引擎并连接已有推理服务。</p></div><button class="btn primary" data-action="open-add-backend">添加后端</button></div>
+        <div class="section-row"><h2 class="section-title">托管</h2><span class="muted">HAL100具有完整生命周期管理权</span></div>
+        <article class="card backend-card">
+          <div class="backend-top"><div><div class="backend-name"><span class="status-dot ok"></span><h2>HAL100 llama.cpp</h2><span class="badge brand">HAL100管理</span></div><div class="backend-address mono">127.0.0.1:10180 · build b4123 · OpenAI兼容</div></div><div class="page-actions"><button class="btn">停止</button><button class="btn ghost">详情</button></div></div>
+          <div class="backend-stats"><div><strong>Qwen2.5 7B</strong><span>当前模型</span></div><div><strong>18 ms</strong><span>健康延迟</span></div><div><strong>41.8 tok/s</strong><span>最近速度</span></div></div>
+        </article>
+        <div class="section-row"><h2 class="section-title">外部</h2><span class="muted">HAL100只连接和监测，不擅自管理进程</span></div>
+        <div class="grid two">
+          <article class="card backend-card"><div class="backend-top"><div><div class="backend-name"><span class="status-dot"></span><h2>Ollama</h2><span class="badge">外部管理</span></div><div class="backend-address mono">http://localhost:11434</div></div><button class="btn ghost small">⋯</button></div><div class="backend-stats"><div><strong>未运行</strong><span>状态</span></div><div><strong>—</strong><span>延迟</span></div><div><strong>3</strong><span>已知模型</span></div></div><div style="margin-top:15px"><button class="btn small" data-action="toast" data-message="正在重新检查 Ollama">重新检查</button></div></article>
+          <article class="card backend-card"><div class="backend-top"><div><div class="backend-name"><span class="status-dot warn"></span><h2>团队 vLLM</h2><span class="badge warn">HTTP未加密</span></div><div class="backend-address mono">http://192.168.1.20:8000</div></div><button class="btn ghost small">⋯</button></div><div class="backend-stats"><div><strong>可连接</strong><span>状态</span></div><div><strong>24 ms</strong><span>延迟</span></div><div><strong>2</strong><span>可用模型</span></div></div><div style="margin-top:15px"><button class="btn small">查看模型</button></div></article>
+        </div>
+      </section>
+
+      <section class="page" id="page-integrations" data-title="应用接入">
+        <div class="page-head"><div><h1>应用接入</h1><p>让AI软件通过HAL100统一访问本地模型并准确记录用量。</p></div></div>
+        <article class="card integration-hero">
+          <div class="card-head"><div class="integration-brand"><span class="app-icon">OC</span><div><h2 style="font-size:18px">OpenCode</h2><div class="muted">首版专门适配</div></div></div><span class="badge ok"><span class="status-dot ok"></span>已配置</span></div>
+          <dl class="kv"><dt>Base URL</dt><dd><div class="codebox">http://127.0.0.1:10100/v1</div></dd><dt>默认模型</dt><dd>未由HAL100修改 <span class="subtle">· 保留用户设置</span></dd><dt>用量归属</dt><dd><span class="badge ok">OpenCode专属Key</span></dd><dt>最近请求</dt><dd>今天 10:42 · 成功</dd></dl>
+          <div class="page-actions" style="margin-top:19px"><button class="btn" data-action="toast" data-message="OpenCode连接测试成功">测试连接</button><button class="btn">查看配置</button><button class="btn primary" data-action="open-config-diff">管理接入</button></div>
+        </article>
+        <div class="section-row"><h2 class="section-title">通用接入</h2></div>
+        <div class="grid two">
+          <article class="card"><div class="card-head"><div><h2>OpenAI兼容</h2><p class="muted">Chat Completions 与 Responses</p></div><span class="badge info">通用</span></div><div class="codebox">http://127.0.0.1:10100/v1</div><div style="margin-top:14px"><button class="btn small" data-action="toast" data-message="OpenAI接入配置已复制">复制配置</button></div></article>
+          <article class="card"><div class="card-head"><div><h2>Anthropic兼容</h2><p class="muted">Messages API</p></div><span class="badge info">通用</span></div><div class="codebox">http://127.0.0.1:10100/v1/messages</div><div style="margin-top:14px"><button class="btn small" data-action="toast" data-message="Anthropic接入配置已复制">复制配置</button></div></article>
+        </div>
+        <div class="section-row"><h2 class="section-title">客户端凭据</h2><button class="btn" data-action="toast" data-message="这是创建凭据流程的原型入口">创建凭据</button></div>
+        <article class="card flat"><table><thead><tr><th>客户端</th><th>凭据</th><th>最近使用</th><th>用量归属</th><th></th></tr></thead><tbody><tr><td><strong>OpenCode</strong></td><td class="mono">hal_••••82F1</td><td>今天 10:42</td><td><span class="badge ok">精确</span></td><td><div class="row-actions"><button class="btn small">轮换</button><button class="btn ghost small">⋯</button></div></td></tr><tr><td><strong>通用测试客户端</strong></td><td class="mono">hal_••••09A3</td><td>昨天</td><td><span class="badge ok">精确</span></td><td><div class="row-actions"><button class="btn small">轮换</button><button class="btn ghost small">⋯</button></div></td></tr></tbody></table></article>
+      </section>
+
+      <section class="page" id="page-usage" data-title="Token统计">
+        <div class="page-head"><div><h1>Token统计</h1><p>精确值与估算值分别显示，默认不保存提示词和回答。</p></div><button class="btn">导出</button></div>
+        <div class="toolbar"><select class="select"><option>最近7天</option><option>今天</option><option>最近30天</option></select><select class="select"><option>全部客户端</option><option>OpenCode</option><option>HAL100 Agent</option></select><select class="select"><option>全部模型</option><option>Qwen2.5 7B</option></select><select class="select"><option>全部后端</option><option>HAL100 llama.cpp</option></select><button class="btn">更多筛选</button></div>
+        <div class="grid four">
+          <article class="card metric"><span class="metric-label">总Token</span><div class="metric-value">3.84M</div><div class="metric-foot"><span class="trend-up">↑ 12%</span> 较前7天</div></article>
+          <article class="card metric"><span class="metric-label">逻辑输入</span><div class="metric-value">2.91M</div><div class="metric-foot">不含缓存命中拆分</div></article>
+          <article class="card metric"><span class="metric-label">缓存命中</span><div class="metric-value">31.4%</div><div class="metric-foot">420K 缓存Token</div></article>
+          <article class="card metric"><span class="metric-label">输出</span><div class="metric-value">518K</div><div class="metric-foot">平均 2,784 / 请求</div></article>
+        </div>
+        <div class="grid aside" style="margin-top:16px">
+          <article class="card chart-card"><div class="card-head"><h2>Token趋势</h2><div class="chart-legend"><span class="legend-item"><i class="legend-line"></i>输入</span><span class="legend-item"><i class="legend-line info"></i>缓存</span><span class="legend-item"><i class="legend-line success"></i>输出</span></div></div><div class="chart-wrap"><canvas id="usage-chart" aria-label="七天Token趋势图"></canvas></div></article>
+          <article class="card"><div class="card-head"><h2>客户端占比</h2></div><div style="display:flex;gap:24px;align-items:center;margin-top:24px"><div class="donut"></div><div style="display:grid;gap:10px;flex:1"><div><span class="status-dot" style="background:var(--brand);display:inline-block;margin-right:7px"></span>OpenCode <strong style="float:right">71.3%</strong></div><div><span class="status-dot" style="background:var(--info);display:inline-block;margin-right:7px"></span>HAL100 Agent <strong style="float:right">16.1%</strong></div><div><span class="status-dot" style="background:var(--border-strong);display:inline-block;margin-right:7px"></span>其他 <strong style="float:right">12.6%</strong></div></div></div><div class="divider"></div><div class="muted">经过HAL100 Gateway的请求才能精确归属客户端。</div></article>
+        </div>
+        <div class="section-row"><h2 class="section-title">按客户端</h2></div>
+        <article class="card flat"><table><thead><tr><th>客户端</th><th>总Token</th><th>占比</th><th>请求</th><th>p50首字</th><th>统计质量</th></tr></thead><tbody><tr><td><strong>OpenCode</strong></td><td>2.74M</td><td>71.3%</td><td>142</td><td>320 ms</td><td><span class="badge ok">精确</span></td></tr><tr><td><strong>HAL100 Agent</strong></td><td>620K</td><td>16.1%</td><td>31</td><td>410 ms</td><td><span class="badge ok">精确</span></td></tr><tr><td><strong>其他</strong></td><td>480K</td><td>12.6%</td><td>13</td><td>—</td><td><span class="badge warn">部分估算</span></td></tr></tbody></table></article>
+      </section>
+
+      <section class="page agent-page" id="page-agent" data-title="HAL100 Agent">
+        <div class="page-head" style="margin-bottom:14px"><div><h1>HAL100 Agent</h1><p>只处理HAL100、本地模型和推理环境。</p></div></div>
+        <div class="agent-shell">
+          <div class="agent-meta"><div class="segment" id="agent-mode"><button class="active" data-mode="local">本地模型</button><button data-mode="cloud">云端增强</button></div><div class="component-row"><span class="badge ok"><span class="status-dot ok"></span>Kernel已加载</span><span class="muted tabular">本次 2,418 tokens</span></div></div>
+          <div class="agent-thread" id="agent-thread">
+            <div class="message"><div class="assistant-line"><span class="agent-avatar"><img src="./assets/hal100-logo.png" alt=""></span><div class="assistant-copy"><p><strong>我可以帮助你配置这台Mac上的本地AI。</strong></p><p class="muted">我只使用HAL100提供的受控工具。安装、卸载和删除始终由你确认。</p><div class="suggestions"><button class="suggestion" data-agent-prompt="检测这台Mac适合运行什么模型">检测这台Mac</button><button class="suggestion" data-agent-prompt="检查为什么本地模型无法启动">检查模型问题</button><button class="suggestion" data-agent-prompt="帮我配置OpenCode连接HAL100">配置OpenCode</button></div></div></div></div>
+            <div class="message user"><div class="bubble-user">检测电脑配置，并推荐适合的本地模型。</div></div>
+            <div class="message"><div class="assistant-line"><span class="agent-avatar"><img src="./assets/hal100-logo.png" alt=""></span><div class="assistant-copy"><p>我先读取芯片、内存和磁盘情况，不会修改任何设置。</p><div class="tool-card"><div class="tool-head"><div class="tool-title"><span class="tool-check">✓</span>检测系统配置</div><span class="badge">只读</span></div><div class="tool-body">Apple M2 Pro · 24 GB统一内存 · 146 GB可用磁盘<br><span class="subtle">工具 inspect_system · 用时0.8秒</span></div></div><p>这台Mac适合从4B–8B的Q4量化模型开始。Qwen系列更适合中文和工具调用，预计可完全放入统一内存。</p></div></div></div>
+          </div>
+          <div class="agent-composer"><div class="composer-box"><textarea id="agent-input" placeholder="描述你要配置或检查的内容…"></textarea><button class="send-btn" data-action="send-agent" aria-label="发送">↑</button></div><div class="composer-hint">Enter发送 · Shift+Enter换行 · Agent不能执行任意Shell</div></div>
+        </div>
+      </section>
+
+      <section class="page" id="page-test" data-title="模型测试">
+        <div class="page-head"><div><h1>模型测试</h1><p>仅用于验证响应、流式、Usage和工具调用，不保存聊天历史。</p></div><button class="btn">清空本次测试</button></div>
+        <div class="toolbar"><label class="muted">模型</label><select class="select"><option>hal100-active · Qwen2.5 7B</option><option>Llama 3.2 3B</option></select><label class="muted">协议</label><select class="select"><option>OpenAI Chat</option><option>OpenAI Responses</option><option>Anthropic Messages</option></select></div>
+        <div class="test-shell">
+          <article class="card flat test-chat"><div class="test-messages"><div class="message user"><div class="bubble-user">用一句话介绍你自己。</div></div><div class="message"><div class="assistant-line"><span class="agent-avatar" style="background:var(--info)">AI</span><div class="assistant-copy"><p>我是一个在你电脑上本地运行的语言模型，这条回答用于验证HAL100的推理链路。</p></div></div></div></div><div class="test-composer"><div class="composer-box" style="box-shadow:none"><textarea placeholder="输入测试消息…"></textarea><button class="send-btn" data-action="toast" data-message="测试请求已发送">↑</button></div><label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--text-2)"><input type="checkbox"> 启用受控Tool Calling测试</label></div></article>
+          <aside class="card"><div class="card-head"><h2>本次指标</h2><span class="badge ok">Usage精确</span></div><dl class="kv" style="grid-template-columns:1fr auto"><dt>输入Token</dt><dd class="tabular">42</dd><dt>输出Token</dt><dd class="tabular">28</dd><dt>首字延迟</dt><dd class="tabular">284 ms</dd><dt>生成速度</dt><dd class="tabular">41.8 t/s</dd><dt>总耗时</dt><dd class="tabular">1.1 s</dd><dt>状态</dt><dd><span class="badge ok">成功</span></dd></dl><div class="divider"></div><h3>路由</h3><p class="muted">hal100-active<br>→ HAL100 llama.cpp<br>→ Qwen2.5 7B</p></aside>
+        </div>
+      </section>
+
+      <section class="page" id="page-audit" data-title="审计记录">
+        <div class="page-head"><div><h1>审计记录</h1><p>查看HAL100执行过的受控操作，不包含完整提示词、回答和密钥。</p></div><button class="btn">导出</button></div>
+        <div class="toolbar"><select class="select"><option>最近30天</option><option>今天</option><option>最近90天</option></select><select class="select"><option>全部操作</option><option>安装与卸载</option><option>模型管理</option><option>配置修改</option></select><select class="select"><option>全部结果</option><option>成功</option><option>失败</option><option>用户取消</option></select><input class="input search" placeholder="搜索目标…"></div>
+        <article class="card flat"><table><thead><tr><th>时间</th><th>操作</th><th>目标</th><th>风险</th><th>发起者</th><th>结果</th></tr></thead><tbody>
+          <tr class="audit-row" data-action="open-audit-detail"><td class="tabular">今天 10:31</td><td><strong>下载模型</strong></td><td>Qwen2.5 7B</td><td><span class="badge warn">安装</span></td><td>用户确认</td><td><span class="badge ok">已完成</span></td></tr>
+          <tr class="audit-row" data-action="open-audit-detail"><td class="tabular">今天 10:28</td><td><strong>安装引擎</strong></td><td>llama.cpp b4123</td><td><span class="badge warn">安装</span></td><td>HAL100 Agent</td><td><span class="badge ok">已完成</span></td></tr>
+          <tr class="audit-row"><td class="tabular">今天 09:54</td><td><strong>修改配置</strong></td><td>OpenCode全局配置</td><td><span class="badge info">可逆</span></td><td>用户确认</td><td><span class="badge ok">已完成</span></td></tr>
+          <tr class="audit-row"><td class="tabular">昨天 18:42</td><td><strong>强制切换</strong></td><td>hal100-active</td><td><span class="badge bad">破坏性</span></td><td>用户</td><td><span class="badge">用户取消</span></td></tr>
+          <tr class="audit-row"><td class="tabular">昨天 16:10</td><td><strong>健康检查</strong></td><td>团队 vLLM</td><td><span class="badge">只读</span></td><td>HAL100 Agent</td><td><span class="badge bad">连接失败</span></td></tr>
+        </tbody></table></article>
+      </section>
+
+      <section class="page" id="page-settings" data-title="设置">
+        <div class="page-head"><div><h1>设置</h1><p>管理HAL100本地行为、数据和云端增强能力。</p></div></div>
+        <article class="card flat settings-shell">
+          <nav class="settings-nav" aria-label="设置分组"><button class="settings-tab active" data-settings="general">通用</button><button class="settings-tab" data-settings="gateway">网关</button><button class="settings-tab" data-settings="models">模型与下载</button><button class="settings-tab" data-settings="lifecycle">生命周期</button><button class="settings-tab" data-settings="data">Token与数据</button><button class="settings-tab" data-settings="cloud">云端Agent</button><button class="settings-tab" data-settings="opencode">OpenCode</button><button class="settings-tab" data-settings="logs">日志</button><button class="settings-tab" data-settings="about">关于</button></nav>
+          <div>
+            <section class="settings-panel active" data-settings-panel="general"><h2>通用</h2><p class="muted">界面与启动行为。</p><div class="setting-row"><div class="setting-copy"><strong>随系统登录启动</strong><span>首次启动时询问，默认关闭。登录后只启动后台核心和网关。</span></div><button class="switch" aria-label="随系统登录启动"></button></div><div class="setting-row"><div class="setting-copy"><strong>界面主题</strong><span>跟随macOS外观，也可以固定亮色或深色。</span></div><select class="select" id="theme-select"><option value="system">跟随系统</option><option value="light">亮色</option><option value="dark">深色</option></select></div><div class="setting-row"><div class="setting-copy"><strong>关闭主窗口</strong><span>隐藏界面并保持HAL100后台运行，重新打开时复用。</span></div><span class="badge ok">已启用</span></div></section>
+            <section class="settings-panel" data-settings-panel="gateway"><h2>网关</h2><p class="muted">本机API入口与认证。</p><div class="setting-row"><div class="setting-copy"><strong>监听地址</strong><span>默认仅允许本机访问。</span></div><div class="codebox mono">127.0.0.1</div></div><div class="setting-row"><div class="setting-copy"><strong>端口</strong><span>发生冲突时HAL100会提示而不是静默更换。</span></div><input class="input mono" value="10100" style="width:110px;min-width:0"></div><div class="setting-row"><div class="setting-copy"><strong>Gateway状态</strong><span>运行正常，最近健康检查刚刚完成。</span></div><span class="badge ok">正常</span></div></section>
+            <section class="settings-panel" data-settings-panel="models"><h2>模型与下载</h2><p class="muted">默认来源与存储位置。</p><div class="setting-row"><div class="setting-copy"><strong>默认下载源</strong><span>搜索时可以单次覆盖。</span></div><select class="select"><option>ModelScope</option><option>Hugging Face</option></select></div><div class="setting-row"><div class="setting-copy"><strong>模型存储位置</strong><span>移动位置不会自动移动已有外部模型。</span></div><button class="btn">选择位置</button></div></section>
+            <section class="settings-panel" data-settings-panel="lifecycle"><h2>生命周期</h2><p class="muted">控制模型和Agent空闲回收。</p><div class="setting-row"><div class="setting-copy"><strong>用户模型空闲卸载</strong><span>最后一个请求结束后开始计时。</span></div><select class="select"><option>15分钟</option><option>30分钟</option><option>保持加载</option></select></div><div class="setting-row"><div class="setting-copy"><strong>HAL100 Agent空闲退出</strong><span>同时退出Kernel Sidecar和本地Agent模型。</span></div><select class="select"><option>2分钟</option><option>5分钟</option></select></div></section>
+            <section class="settings-panel" data-settings-panel="data"><h2>Token与数据</h2><p class="muted">用量明细与长期聚合。</p><div class="setting-row"><div class="setting-copy"><strong>请求明细保留</strong><span>每日聚合长期保留。</span></div><select class="select"><option>90天</option><option>30天</option><option>180天</option><option>永久</option></select></div><div class="setting-row"><div class="setting-copy"><strong>提示词与回答</strong><span>HAL100默认不保存请求正文和响应正文。</span></div><span class="badge ok">不保存</span></div><div class="setting-row"><div class="setting-copy"><strong>清除本地统计</strong><span>清除操作需要确认，且不会删除模型。</span></div><button class="btn danger" data-action="toast" data-message="清除数据前将显示独立确认">清除数据</button></div></section>
+            <section class="settings-panel" data-settings-panel="cloud"><h2>云端Agent</h2><p class="muted">BYOK，仅在用户主动选择时使用。</p><div class="setting-row"><div class="setting-copy"><strong>我的Anthropic兼容服务</strong><span>API Key保存在macOS Keychain · 尾号 8F2A</span></div><span class="badge ok">已配置</span></div><button class="btn">添加Provider</button></section>
+            <section class="settings-panel" data-settings-panel="opencode"><h2>OpenCode</h2><p class="muted">配置、备份与恢复。</p><div class="setting-row"><div class="setting-copy"><strong>全局配置</strong><span>HAL100 Provider已配置，备份可用。</span></div><span class="badge ok">已配置</span></div><div class="component-row"><button class="btn">查看差异</button><button class="btn">恢复备份</button></div></section>
+            <section class="settings-panel" data-settings-panel="logs"><h2>日志</h2><p class="muted">结构化、限量和脱敏。</p><div class="setting-row"><div class="setting-copy"><strong>日志级别</strong><span>内部测试默认Info，不记录提示词和回答。</span></div><select class="select"><option>Info</option><option>Warning</option><option>Debug</option></select></div><div class="setting-row"><div class="setting-copy"><strong>日志位置</strong><span class="mono">~/Library/Logs/HAL100</span></div><button class="btn">在访达中显示</button></div></section>
+            <section class="settings-panel" data-settings-panel="about"><h2>关于HAL100</h2><p class="muted">本地AI控制中心。</p><div class="card" style="margin-top:20px"><div class="brand" style="padding:0"><span class="brand-mark"><img src="./assets/hal100-logo.png" alt=""></span><span>HAL100</span></div><p class="muted">开发版 · Apple Silicon · MIT License</p><p class="subtle">本原型用于界面评审，不包含真实系统操作。</p></div></section>
+          </div>
+        </article>
+      </section>
+
+      <section class="page" id="page-components" data-title="组件展板">
+        <div class="page-head"><div><h1>组件展板</h1><p>仅用于界面评审，不属于正式产品一级导航。</p></div><button class="btn" data-action="open-onboarding">查看首次启动向导</button></div>
+        <div class="grid two">
+          <article class="card component-block"><h2>按钮</h2><div class="component-row"><button class="btn primary">主要操作</button><button class="btn">次要操作</button><button class="btn ghost">文字操作</button><button class="btn danger">破坏性操作</button><button class="btn" disabled>不可用</button></div></article>
+          <article class="card component-block"><h2>状态</h2><div class="component-row"><span class="badge ok"><span class="status-dot ok"></span>健康</span><span class="badge">未运行</span><span class="badge info">正在启动</span><span class="badge warn">等待确认</span><span class="badge bad">失败</span><span class="badge brand">HAL100管理</span></div></article>
+          <article class="card component-block"><h2>表单</h2><div class="grid two"><label><span class="muted">Base URL</span><input class="input mono" value="http://127.0.0.1:10100/v1" style="width:100%;margin-top:6px"></label><label><span class="muted">默认下载源</span><select class="select" style="width:100%;margin-top:6px"><option>ModelScope</option><option>Hugging Face</option></select></label><label style="grid-column:1/-1"><span class="muted">说明</span><textarea class="textarea" style="margin-top:6px">HAL100默认不保存提示词和回答。</textarea></label></div></article>
+          <article class="card component-block"><h2>风险确认</h2><div class="danger-summary"><strong>删除模型需要确认</strong><div style="margin-top:4px">目标、影响、路径摘要和可恢复性必须同时显示。</div></div><div class="component-row" style="margin-top:14px"><button class="btn danger" data-action="open-delete-confirm">查看删除确认</button><button class="btn" data-action="open-force-confirm">查看强制切换</button></div></article>
+        </div>
+        <div class="section-row"><h2 class="section-title">页面状态</h2></div>
+        <div class="state-demo"><div class="state-box"><strong>加载中</strong><div class="bar"><i style="width:44%;animation:breathe 1.8s infinite"></i></div><p class="subtle">使用骨架，不阻断其他区域。</p></div><div class="state-box"><strong>空状态</strong><p class="muted">还没有外部后端。</p><button class="btn small">添加后端</button></div><div class="state-box"><strong>局部错误</strong><p class="muted">无法连接团队vLLM。</p><button class="btn small">重新检查</button></div><div class="state-box"><strong>权限不足</strong><p class="muted">该外部后端由其他软件管理。</p><span class="badge">只读</span></div></div>
+        <div class="section-row"><h2 class="section-title">Agent工具卡</h2></div>
+        <div class="grid three"><div class="tool-card"><div class="tool-head"><div class="tool-title"><span class="tool-check">✓</span>检测系统配置</div><span class="badge">只读</span></div><div class="tool-body">已完成 · 用时0.8秒</div></div><div class="tool-card"><div class="tool-head"><div class="tool-title"><span class="tool-check" style="color:var(--warning);background:var(--warning-soft)">!</span>安装托管引擎</div><span class="badge warn">等待确认</span></div><div class="tool-body">llama.cpp b4123 · 38 MB<div class="tool-actions"><button class="btn small">取消</button><button class="btn primary small" data-action="open-install-confirm">查看并确认</button></div></div></div><div class="tool-card"><div class="tool-head"><div class="tool-title"><span class="tool-check" style="color:var(--danger);background:var(--danger-soft)">×</span>检查外部后端</div><span class="badge bad">失败</span></div><div class="tool-body">连接超时 · 可以重新检查</div></div></div>
+      </section>
+    </main>
+  </div>
+
+  <aside class="drawer" id="task-drawer" aria-hidden="true">
+    <div class="drawer-head"><h2>后台任务</h2><button class="close-x" data-action="close-drawers" aria-label="关闭">×</button></div>
+    <div class="drawer-body"><div class="task"><div class="task-top"><div><strong>下载 Gemma 3 4B</strong><small style="display:block">ModelScope · Q4_K_M</small></div><span class="badge info">下载中</span></div><div class="bar"><i style="width:72%"></i></div><div class="progress-meta"><span>2.1 / 2.9 GB · 6.2 MB/s</span><span>约2分钟</span></div><div class="component-row" style="margin-top:10px"><button class="btn small">暂停</button><button class="btn ghost small">取消</button></div></div><div class="task"><div class="task-top"><div><strong>校验 llama.cpp</strong><small style="display:block">正在检查 SHA-256</small></div><span class="badge info">校验中</span></div><div class="bar info"><i style="width:42%"></i></div></div><div class="section-row"><h3>最近完成</h3></div><div class="task"><div class="task-top"><span>Qwen2.5 7B下载完成</span><span class="badge ok">完成</span></div><small>今天 10:31 · 4.6 GB</small></div><div class="task"><div class="task-top"><span>OpenCode配置完成</span><span class="badge ok">完成</span></div><small>今天 09:54 · 已创建备份</small></div></div>
+  </aside>
+
+  <aside class="drawer" id="detail-drawer" aria-hidden="true">
+    <div class="drawer-head"><h2 id="detail-title">Qwen2.5 7B Instruct</h2><button class="close-x" data-action="close-drawers" aria-label="关闭">×</button></div>
+    <div class="drawer-body" id="detail-body">
+      <div class="component-row"><span class="badge ok"><span class="status-dot ok"></span>已加载</span><span class="badge brand">HAL100托管</span></div>
+      <button class="btn primary" style="width:100%;margin-top:17px">设为活动模型</button>
+      <dl class="kv"><dt>来源</dt><dd>ModelScope / Qwen</dd><dt>修订</dt><dd class="mono">a1b2c3d4</dd><dt>文件</dt><dd>Q4_K_M · GGUF · 4.6 GB</dd><dt>上下文</dt><dd>8K</dd><dt>最近速度</dt><dd>41.8 tok/s</dd></dl>
+      <div class="divider"></div><h3>硬件适配</h3><p class="muted">预计可完全载入当前Mac的统一内存，并保留足够空间运行常用应用。</p><div class="danger-summary" style="color:var(--success);background:var(--success-soft)">✓ 兼容性良好</div>
+      <div class="divider"></div><h3>文件位置</h3><div class="codebox" style="margin-top:9px">~/Library/Application Support/HAL100/models/qwen/...</div><div class="component-row" style="margin-top:13px"><button class="btn small">验证文件</button><button class="btn small">在访达中显示</button></div>
+      <div class="divider"></div><button class="btn danger" data-action="open-delete-confirm">删除模型…</button>
+    </div>
+  </aside>
+
+  <div class="overlay" id="modal-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head"><h2 id="modal-title">确认操作</h2><button class="close-x" data-action="close-modal" aria-label="关闭">×</button></div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-foot" id="modal-foot"></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="onboarding-overlay" aria-hidden="true">
+    <div class="onboarding" role="dialog" aria-modal="true" aria-label="HAL100首次启动向导">
+      <aside class="onboarding-side"><div class="brand" style="padding:0"><span class="brand-mark"><img src="./assets/hal100-logo.png" alt=""></span><span>HAL100</span></div><h2>设置这台Mac</h2><p class="muted">大约需要5分钟，下载时间除外。</p><div class="steps"><div class="step active" data-step-label="0"><span class="step-no">1</span>欢迎</div><div class="step" data-step-label="1"><span class="step-no">2</span>偏好</div><div class="step" data-step-label="2"><span class="step-no">3</span>Agent模型</div><div class="step" data-step-label="3"><span class="step-no">4</span>检测</div><div class="step" data-step-label="4"><span class="step-no">5</span>引擎</div><div class="step" data-step-label="5"><span class="step-no">6</span>接入</div></div></aside>
+      <div class="onboarding-main"><div class="onboarding-content">
+        <section class="onboarding-pane active" data-onboarding-pane="0"><h1>在本机管理你的AI</h1><p>HAL100统一管理模型、推理后端和客户端接入，同时让重要操作保持可见、可控。</p><div class="privacy-points"><div class="privacy-point"><span class="check-glyph">✓</span><div><strong>本地优先</strong><div class="muted">默认不上传系统信息、日志、提示词和回答。</div></div></div><div class="privacy-point"><span class="check-glyph">✓</span><div><strong>受控操作</strong><div class="muted">安装、卸载和删除始终需要你确认。</div></div></div><div class="privacy-point"><span class="check-glyph">✓</span><div><strong>精确用量</strong><div class="muted">通过本机Gateway按客户端记录Token。</div></div></div></div></section>
+        <section class="onboarding-pane" data-onboarding-pane="1"><h1>选择默认偏好</h1><p>以后可以随时在设置中更改。</p><div class="setting-row"><div class="setting-copy"><strong>随系统登录启动</strong><span>默认关闭；开启后不会自动打开窗口或加载模型。</span></div><button class="switch"></button></div><h3 style="margin-top:24px">默认模型下载源</h3><div class="source-choice"><button class="choice-card selected"><strong>ModelScope</strong><span>适合中国大陆网络环境</span></button><button class="choice-card"><strong>Hugging Face</strong><span>广泛的模型与版本</span></button></div></section>
+        <section class="onboarding-pane" data-onboarding-pane="2"><h1>下载HAL100 Agent模型</h1><p>这个小模型只负责配置和诊断HAL100及本地推理环境。</p><div class="card" style="margin-top:24px"><div class="card-head"><div><h3>HAL100推荐小模型</h3><div class="muted">ModelScope · 约1.2 GB</div></div><span class="badge info">准备下载</span></div><div class="bar"><i style="width:0%"></i></div><div class="progress-meta"><span>首次设置演示</span><span>0%</span></div></div></section>
+        <section class="onboarding-pane" data-onboarding-pane="3"><h1>检查这台Mac</h1><p>HAL100读取系统公开的硬件和磁盘信息，不修改系统设置。</p><div class="grid two" style="margin-top:24px"><div class="card"><span class="subtle">芯片</span><h2 style="margin-top:6px">Apple M2 Pro</h2></div><div class="card"><span class="subtle">统一内存</span><h2 style="margin-top:6px">24 GB</h2></div><div class="card"><span class="subtle">可用磁盘</span><h2 style="margin-top:6px">146 GB</h2></div><div class="card"><span class="subtle">适合模型</span><h2 style="margin-top:6px">4B–8B · Q4</h2></div></div></section>
+        <section class="onboarding-pane" data-onboarding-pane="4"><h1>准备推理引擎</h1><p>推荐安装由HAL100管理的llama.cpp，也可以稍后连接外部后端。</p><div class="card" style="margin-top:24px"><div class="card-head"><div><h2>HAL100 llama.cpp</h2><div class="muted">Apple Silicon · 约38 MB</div></div><span class="badge brand">推荐</span></div><p class="muted">支持启动、停止、健康检查和安全卸载。安装前仍会显示正式确认。</p><label style="display:flex;gap:9px;align-items:center"><input type="radio" checked name="engine"> 安装托管引擎</label><label style="display:flex;gap:9px;align-items:center;margin-top:9px"><input type="radio" name="engine"> 暂时跳过</label></div></section>
+        <section class="onboarding-pane" data-onboarding-pane="5"><h1>连接你的AI软件</h1><p>OpenCode可以使用固定HAL100地址，以后切换模型时不需要重新修改客户端。</p><div class="card" style="margin-top:24px"><div class="integration-brand"><span class="app-icon">OC</span><div><h2>配置OpenCode</h2><div class="muted">预览、备份、修改和验证</div></div></div><div class="codebox" style="margin-top:18px">http://127.0.0.1:10100/v1</div><label style="display:flex;gap:9px;align-items:center;margin-top:14px"><input type="checkbox" checked> 完成向导后配置OpenCode</label></div></section>
+      </div><div class="onboarding-foot"><button class="btn ghost" data-action="close-onboarding">稍后继续</button><div class="component-row"><button class="btn" id="onboarding-back" data-action="onboarding-back" disabled>返回</button><button class="btn primary" id="onboarding-next" data-action="onboarding-next">继续</button></div></div></div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const pages = [...document.querySelectorAll('.page')];
+      const navItems = [...document.querySelectorAll('.nav-item[data-page]')];
+      const taskDrawer = document.getElementById('task-drawer');
+      const detailDrawer = document.getElementById('detail-drawer');
+      const modalOverlay = document.getElementById('modal-overlay');
+      const onboardingOverlay = document.getElementById('onboarding-overlay');
+      const modal = modalOverlay.querySelector('.modal');
+      const modalTitle = document.getElementById('modal-title');
+      const modalBody = document.getElementById('modal-body');
+      const modalFoot = document.getElementById('modal-foot');
+      let currentPage = 'overview';
+      let onboardingStep = 0;
+
+      const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+
+      function showPage(name) {
+        const target = document.getElementById(`page-${name}`);
+        if (!target) return;
+        currentPage = name;
+        pages.forEach(page => page.classList.toggle('active', page === target));
+        navItems.forEach(item => item.classList.toggle('active', item.dataset.page === name));
+        closeDrawers();
+        if (name === 'usage') requestAnimationFrame(drawChart);
+      }
+
+      function toggleTheme(force) {
+        const next = force || (root.dataset.theme === 'dark' ? 'light' : 'dark');
+        root.dataset.theme = next;
+        const themeSelect = document.getElementById('theme-select');
+        if (themeSelect && force) themeSelect.value = next;
+        requestAnimationFrame(drawChart);
+      }
+
+      function closeDrawers() {
+        [taskDrawer, detailDrawer].forEach(drawer => { drawer.classList.remove('open'); drawer.setAttribute('aria-hidden', 'true'); });
+      }
+
+      function openDrawer(drawer) {
+        closeDrawers();
+        drawer.classList.add('open');
+        drawer.setAttribute('aria-hidden', 'false');
+      }
+
+      function openModal({title, body, confirm = '确认', danger = false, onConfirm}) {
+        modal.classList.remove('wide');
+        modalTitle.textContent = title;
+        modalBody.innerHTML = body;
+        modalFoot.innerHTML = `<button class="btn" data-modal-cancel>取消</button><button class="btn ${danger ? 'danger' : 'primary'}" data-modal-confirm>${escapeHtml(confirm)}</button>`;
+        modalOverlay.classList.add('open');
+        modalOverlay.setAttribute('aria-hidden', 'false');
+        modalFoot.querySelector('[data-modal-cancel]').onclick = closeModal;
+        modalFoot.querySelector('[data-modal-confirm]').onclick = () => { closeModal(); if (onConfirm) onConfirm(); };
+      }
+
+      function closeModal() {
+        modalOverlay.classList.remove('open');
+        modalOverlay.setAttribute('aria-hidden', 'true');
+      }
+
+      function toast(message) {
+        const item = document.createElement('div');
+        item.className = 'toast';
+        item.innerHTML = `<strong>HAL100</strong><div class="muted">${escapeHtml(message)}</div>`;
+        document.getElementById('toast-stack').appendChild(item);
+        setTimeout(() => item.remove(), 3200);
+      }
+
+      function modelDetail() {
+        document.getElementById('detail-title').textContent = 'Qwen2.5 7B Instruct';
+        document.getElementById('detail-body').innerHTML = `<div class="component-row"><span class="badge ok"><span class="status-dot ok"></span>已加载</span><span class="badge brand">HAL100托管</span></div><button class="btn primary" style="width:100%;margin-top:17px">设为活动模型</button><dl class="kv"><dt>来源</dt><dd>ModelScope / Qwen</dd><dt>修订</dt><dd class="mono">a1b2c3d4</dd><dt>文件</dt><dd>Q4_K_M · GGUF · 4.6 GB</dd><dt>上下文</dt><dd>8K</dd><dt>最近速度</dt><dd>41.8 tok/s</dd></dl><div class="divider"></div><h3>硬件适配</h3><p class="muted">预计可完全载入当前Mac的统一内存，并保留足够空间运行常用应用。</p><div class="danger-summary" style="color:var(--success);background:var(--success-soft)">✓ 兼容性良好</div><div class="divider"></div><h3>文件位置</h3><div class="codebox" style="margin-top:9px">~/Library/Application Support/HAL100/models/qwen/...</div><div class="component-row" style="margin-top:13px"><button class="btn small">验证文件</button><button class="btn small">在访达中显示</button></div><div class="divider"></div><button class="btn danger" data-action="open-delete-confirm">删除模型…</button>`;
+        openDrawer(detailDrawer);
+      }
+
+      function deleteConfirm() {
+        openModal({title: '将模型移到废纸篓', danger: true, confirm: '移到废纸篓', body: `<div class="danger-summary"><strong>Qwen2.5 7B Instruct</strong><div>HAL100托管模型 · 4.6 GB</div></div><ul class="impact-list"><li>如果模型正在运行，将先安全停止。</li><li>从模型库移除HAL100管理记录。</li><li>模型文件移到macOS废纸篓，可以恢复。</li></ul><p class="muted">当前没有活动请求。</p>`, onConfirm: () => toast('原型演示：模型将被移到废纸篓')});
+      }
+
+      function forceConfirm() {
+        openModal({title: '强制切换活动模型', danger: true, confirm: '强制切换并中断请求', body: `<div class="danger-summary"><strong>将中断2个活动请求</strong><div>OpenCode · 通用测试客户端</div></div><ul class="impact-list"><li>当前生成会立即停止，可能只记录部分Usage。</li><li>旧模型停止后将启动Llama 3.2 3B。</li><li>hal100-active在新模型健康后原子更新。</li></ul>`, onConfirm: () => toast('原型演示：正在强制切换模型')});
+      }
+
+      function installConfirm() {
+        openModal({title: '安装托管 llama.cpp', confirm: '安装引擎', body: `<dl class="kv"><dt>版本</dt><dd>b4123 · Apple Silicon</dd><dt>来源</dt><dd>HAL100允许清单</dd><dt>下载</dt><dd>38 MB</dd><dt>安装位置</dt><dd class="mono">~/Library/Application Support/HAL100/engines/...</dd><dt>影响</dt><dd>不会停止当前外部后端</dd></dl><div class="danger-summary" style="margin-top:16px;color:var(--warning);background:var(--warning-soft)">确认后由Rust执行下载、校验和安装。Agent不能直接执行Shell。</div>`, onConfirm: () => { toast('安装任务已加入后台任务中心'); openDrawer(taskDrawer); }});
+      }
+
+      function cloudPreview() {
+        openModal({title: '发送给云端模型前确认', confirm: '仅本次发送并使用云端', body: `<dl class="kv"><dt>Provider</dt><dd>我的Anthropic兼容服务</dd><dt>允许范围</dt><dd><span class="badge brand">仅本次</span></dd></dl><div class="divider"></div><h3>将发送</h3><ul class="impact-list"><li>macOS版本和Apple Silicon型号</li><li>总内存、可用磁盘</li><li>llama.cpp版本和脱敏错误类别</li><li>你当前主动提出的问题</li></ul><h3>已移除</h3><p class="muted">用户名、主机名、完整路径、API Key和未选择的日志。</p>`, onConfirm: () => toast('当前Agent会话已切换为仅本次云端增强')});
+      }
+
+      function configDiff() {
+        openModal({title: '配置 OpenCode', confirm: '应用配置', body: `<p class="muted">将修改全局配置并在同目录创建时间戳备份。</p><div class="codebox" style="line-height:1.8"><span style="color:var(--success)">+ provider.hal100</span><br><span style="color:var(--success)">+ &nbsp;baseURL: http://127.0.0.1:10100/v1</span><br><span style="color:var(--success)">+ &nbsp;apiKey: &#36;{HAL100_OPENCODE_KEY}</span></div><p class="muted">不会修改已有Provider或默认模型。验证失败时自动回滚。</p>`, onConfirm: () => toast('OpenCode配置已应用并验证')});
+      }
+
+      function addBackend() {
+        openModal({title: '添加推理后端', confirm: '继续配置', body: `<p class="muted">选择后端类型。外部后端只由HAL100连接和监测。</p><div class="grid two"><button class="choice-card selected"><strong>外部 Ollama</strong><span>连接本机或局域网服务</span></button><button class="choice-card"><strong>外部 vLLM</strong><span>OpenAI兼容服务</span></button><button class="choice-card"><strong>llama.cpp Server</strong><span>外部管理进程</span></button><button class="choice-card"><strong>通用 API</strong><span>OpenAI或Anthropic兼容</span></button></div>`, onConfirm: () => toast('这是后端配置流程的第一步')});
+      }
+
+      function getModel() {
+        modal.classList.add('wide');
+        modalTitle.textContent = '获取模型';
+        modalBody.innerHTML = `<div class="toolbar"><input class="input search" style="max-width:none" placeholder="搜索 Hugging Face 或 ModelScope"><select class="select"><option>默认源：ModelScope</option><option>Hugging Face</option></select></div><div class="grid aside"><div><h3>推荐适合这台Mac</h3><div class="card" style="margin-top:11px"><div class="card-head"><div><h3>Qwen 3 4B</h3><div class="muted">中文与工具调用 · 预计内存5–7 GB</div></div><span class="badge brand">推荐</span></div><button class="btn small">查看版本</button></div><div class="card" style="margin-top:10px"><div class="card-head"><div><h3>Llama 3.2 3B</h3><div class="muted">轻量 · 启动更快</div></div></div><button class="btn small">查看版本</button></div></div><div class="card"><div class="card-head"><div><h3>Qwen/Qwen3-4B-GGUF</h3><div class="muted">ModelScope · 12个文件</div></div><span class="badge ok">Apache-2.0</span></div><label style="display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid var(--border)"><span><input type="radio" name="quant" checked> Q4_K_M</span><strong>2.8 GB</strong></label><label style="display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid var(--border)"><span><input type="radio" name="quant"> Q5_K_M</span><strong>3.4 GB</strong></label><label style="display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid var(--border)"><span><input type="radio" name="quant"> Q8_0</span><strong>4.8 GB</strong></label><div class="divider"></div><p class="muted">保存到默认模型目录。下载前会再次检查磁盘空间。</p></div></div>`;
+        modalFoot.innerHTML = `<button class="btn" data-modal-cancel>取消</button><button class="btn primary" data-modal-confirm>下载所选文件</button>`;
+        modalOverlay.classList.add('open');
+        modalFoot.querySelector('[data-modal-cancel]').onclick = closeModal;
+        modalFoot.querySelector('[data-modal-confirm]').onclick = () => { closeModal(); toast('模型下载已加入任务中心'); openDrawer(taskDrawer); };
+      }
+
+      function auditDetail() {
+        document.getElementById('detail-title').textContent = '安装引擎 · 已完成';
+        document.getElementById('detail-body').innerHTML = `<div class="component-row"><span class="badge ok">已完成</span><span class="badge warn">安装操作</span></div><dl class="kv"><dt>时间</dt><dd>今天 10:28:14</dd><dt>目标</dt><dd>llama.cpp b4123</dd><dt>发起者</dt><dd>HAL100 Agent</dd><dt>确认</dt><dd>用户在主窗口确认</dd><dt>结果</dt><dd>下载、校验、安装和健康检查成功</dd></dl><div class="divider"></div><h3>时间线</h3><ul class="impact-list"><li>10:28:14 用户确认</li><li>10:28:15 下载开始</li><li>10:28:22 SHA-256校验通过</li><li>10:28:24 安装完成</li><li>10:28:25 健康检查成功</li></ul><p class="subtle">审计记录不包含完整对话和敏感参数。</p>`;
+        openDrawer(detailDrawer);
+      }
+
+      function openOnboarding() {
+        onboardingStep = 0;
+        updateOnboarding();
+        onboardingOverlay.classList.add('open');
+        onboardingOverlay.setAttribute('aria-hidden', 'false');
+      }
+      function closeOnboarding() { onboardingOverlay.classList.remove('open'); onboardingOverlay.setAttribute('aria-hidden', 'true'); }
+      function updateOnboarding() {
+        document.querySelectorAll('[data-onboarding-pane]').forEach(p => p.classList.toggle('active', Number(p.dataset.onboardingPane) === onboardingStep));
+        document.querySelectorAll('[data-step-label]').forEach(s => { const n = Number(s.dataset.stepLabel); s.classList.toggle('active', n === onboardingStep); s.classList.toggle('done', n < onboardingStep); s.querySelector('.step-no').textContent = n < onboardingStep ? '✓' : String(n + 1); });
+        document.getElementById('onboarding-back').disabled = onboardingStep === 0;
+        document.getElementById('onboarding-next').textContent = onboardingStep === 5 ? '完成设置' : '继续';
+      }
+
+      function sendAgent() {
+        const input = document.getElementById('agent-input');
+        const value = input.value.trim();
+        if (!value) return;
+        const thread = document.getElementById('agent-thread');
+        const user = document.createElement('div');
+        user.className = 'message user'; user.innerHTML = `<div class="bubble-user">${escapeHtml(value)}</div>`;
+        thread.appendChild(user); input.value = '';
+        setTimeout(() => { const assistant = document.createElement('div'); assistant.className = 'message'; assistant.innerHTML = `<div class="assistant-line"><span class="agent-avatar"><img src="./assets/hal100-logo.png" alt=""></span><div class="assistant-copy"><p>我会先生成受控计划，并在任何系统变更前展示参数和确认界面。</p><div class="tool-card"><div class="tool-head"><div class="tool-title"><span class="tool-check" style="color:var(--warning);background:var(--warning-soft)">…</span>分析请求</div><span class="badge info">执行中</span></div><div class="tool-body">正在匹配HAL100白名单工具，没有使用任意Shell。</div></div></div></div>`; thread.appendChild(assistant); thread.scrollTop = thread.scrollHeight; }, 280);
+        thread.scrollTop = thread.scrollHeight;
+      }
+
+      function drawChart() {
+        const canvas = document.getElementById('usage-chart');
+        if (!canvas || !canvas.closest('.page.active')) return;
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.floor(rect.width * dpr)); canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+        const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+        const css = getComputedStyle(root); const border = css.getPropertyValue('--border').trim(); const text3 = css.getPropertyValue('--text-3').trim();
+        const colors = [css.getPropertyValue('--brand').trim(), css.getPropertyValue('--info').trim(), css.getPropertyValue('--success').trim()];
+        const w = rect.width, h = rect.height, pad = {l: 35, r: 12, t: 12, b: 26};
+        ctx.clearRect(0,0,w,h); ctx.strokeStyle = border; ctx.lineWidth = 1; ctx.fillStyle = text3; ctx.font = '10px -apple-system';
+        for (let i=0;i<4;i++){ const y=pad.t+(h-pad.t-pad.b)*i/3; ctx.beginPath(); ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke(); }
+        ['周一','周二','周三','周四','周五','周六','今天'].forEach((label,i)=>{ const x=pad.l+(w-pad.l-pad.r)*i/6; ctx.fillText(label,x-10,h-7); });
+        const series = [[.58,.52,.72,.61,.87,.68,.78],[.24,.31,.28,.37,.41,.43,.47],[.14,.18,.21,.17,.28,.24,.32]];
+        series.forEach((values,s)=>{ ctx.strokeStyle=colors[s];ctx.lineWidth=s===0?2.3:1.8;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();values.forEach((v,i)=>{const x=pad.l+(w-pad.l-pad.r)*i/6;const y=h-pad.b-(h-pad.t-pad.b)*v;(i?ctx.lineTo(x,y):ctx.moveTo(x,y));});ctx.stroke(); });
+      }
+
+      document.addEventListener('click', event => {
+        const pageLink = event.target.closest('[data-page-link]'); if (pageLink) { showPage(pageLink.dataset.pageLink); return; }
+        const nav = event.target.closest('.nav-item[data-page]'); if (nav) { showPage(nav.dataset.page); return; }
+        const actionEl = event.target.closest('[data-action]'); if (!actionEl) return;
+        const action = actionEl.dataset.action;
+        const actions = {
+          'toggle-theme': () => toggleTheme(),
+          'open-tasks': () => openDrawer(taskDrawer),
+          'close-drawers': closeDrawers,
+          'open-model-detail': modelDetail,
+          'open-delete-confirm': deleteConfirm,
+          'open-force-confirm': forceConfirm,
+          'open-install-confirm': installConfirm,
+          'open-cloud-preview': cloudPreview,
+          'open-config-diff': configDiff,
+          'open-add-backend': addBackend,
+          'open-get-model': getModel,
+          'open-audit-detail': auditDetail,
+          'close-modal': closeModal,
+          'open-onboarding': openOnboarding,
+          'close-onboarding': closeOnboarding,
+          'onboarding-back': () => { onboardingStep=Math.max(0,onboardingStep-1);updateOnboarding(); },
+          'onboarding-next': () => { if(onboardingStep===5){closeOnboarding();toast('首次启动向导演示完成');}else{onboardingStep++;updateOnboarding();} },
+          'goto-settings': () => showPage('settings'),
+          'send-agent': sendAgent,
+          'toast': () => toast(actionEl.dataset.message || '操作已完成'),
+          'stop-propagation': () => toast('正在安全停止模型')
+        };
+        if (actions[action]) { event.stopPropagation(); actions[action](); }
+      });
+
+      document.querySelectorAll('.segment button').forEach(button => button.addEventListener('click', () => { const group=button.parentElement; group.querySelectorAll('button').forEach(b=>b.classList.remove('active')); button.classList.add('active'); }));
+      document.querySelectorAll('#agent-mode button').forEach(button => button.addEventListener('click', () => { if(button.dataset.mode==='cloud') cloudPreview(); }));
+      document.querySelectorAll('[data-agent-prompt]').forEach(button => button.addEventListener('click', () => { document.getElementById('agent-input').value=button.dataset.agentPrompt; document.getElementById('agent-input').focus(); }));
+      document.querySelectorAll('.settings-tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.settings-tab').forEach(t=>t.classList.remove('active')); document.querySelectorAll('.settings-panel').forEach(p=>p.classList.remove('active')); tab.classList.add('active'); document.querySelector(`[data-settings-panel="${tab.dataset.settings}"]`).classList.add('active'); }));
+      document.querySelectorAll('.switch').forEach(sw => sw.addEventListener('click', () => sw.classList.toggle('on')));
+      document.querySelectorAll('.choice-card').forEach(choice => choice.addEventListener('click', () => { choice.parentElement.querySelectorAll('.choice-card').forEach(c=>c.classList.remove('selected')); choice.classList.add('selected'); }));
+      document.getElementById('theme-select').addEventListener('change', e => { if(e.target.value==='system'){toggleTheme(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}else toggleTheme(e.target.value); });
+      document.getElementById('agent-input').addEventListener('keydown', e => { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendAgent();} });
+      modalOverlay.addEventListener('click', e => { if(e.target===modalOverlay) closeModal(); });
+      document.addEventListener('keydown', e => { if(e.key==='Escape'){closeModal();closeOnboarding();closeDrawers();} if((e.metaKey||e.ctrlKey)&&e.key===','){e.preventDefault();showPage('settings');} });
+      window.addEventListener('resize', () => requestAnimationFrame(drawChart));
+      drawChart();
+    })();
+  </script>
+</body>
+</html>

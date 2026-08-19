@@ -1,0 +1,33 @@
+[package]
+name = "hal100-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "hal100_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = []
+benchmark-hooks = []
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+hal100-core = { path = "../../../crates/hal100-core" }
+hal100-infra = { path = "../../../crates/hal100-infra" }
+hal100-platform = { path = "../../../crates/hal100-platform" }
+hal100-protocol = { path = "../../../crates/hal100-protocol" }
+reqwest.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-autostart.workspace = true
+tauri-plugin-dialog.workspace = true
+tauri-plugin-single-instance.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true

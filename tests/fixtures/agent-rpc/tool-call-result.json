@@ -1,0 +1,16 @@
+{
+  "protocolVersion": 3,
+  "id": "broker-call-1",
+  "kind": "tool.call.result",
+  "payload": {
+    "toolCallId": "pi-sim-tool-1",
+    "status": "success",
+    "output": {
+      "source": "rust_simulated_broker",
+      "platform": "macos",
+      "architecture": "arm64",
+      "supported": true,
+      "simulated": true
+    }
+  }
+}

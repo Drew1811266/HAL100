@@ -1,0 +1,18 @@
+packages:
+  - apps/*
+  - sidecars/*
+
+allowBuilds:
+  "@google/genai": false
+  "protobufjs": false
+
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - "@earendil-works/pi-agent-core@0.84.2"
+  - "@earendil-works/pi-ai@0.84.2"
+  - "@tauri-apps/api@2.11.1"
+  - "@tauri-apps/cli@2.11.4"
+
+# 两个传递依赖的安装脚本不会生成 HAL100 运行所需产物：Google GenAI 的
+# prepare 只用于上游源码包准备，protobufjs 的 postinstall 只检查版本格式。
+# 显式忽略比全局允许依赖脚本更符合 Sidecar 供应链边界。

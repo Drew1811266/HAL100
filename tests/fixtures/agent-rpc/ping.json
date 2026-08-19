@@ -1,0 +1,6 @@
+{
+  "protocolVersion": 3,
+  "id": "contract-ping-1",
+  "kind": "system.ping",
+  "payload": {}
+}

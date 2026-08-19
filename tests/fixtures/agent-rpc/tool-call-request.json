@@ -1,0 +1,13 @@
+{
+  "protocolVersion": 3,
+  "id": "broker-call-1",
+  "kind": "tool.call.request",
+  "payload": {
+    "runId": "simulation-1",
+    "toolCallId": "pi-sim-tool-1",
+    "toolName": "hal100.inspect_system_summary",
+    "arguments": {
+      "detail": "summary"
+    }
+  }
+}
