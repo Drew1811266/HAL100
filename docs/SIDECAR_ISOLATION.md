@@ -34,6 +34,11 @@ HAL100主进程未来需要下载、模型文件和安装管理，而 Agent Kern
 - stdin、stdout和 stderr全部使用专用管道。
 - 平台隔离模式显式选择；请求开发沙箱失败时不自动回退。
 
+同机安装官方 Pi Coding Agent不会扩大该启动面：HAL100不执行全局`pi`命令，不继承
+`PATH`、`PI_CODING_AGENT_DIR`或`PI_CODING_AGENT_SESSION_DIR`，临时`HOME`也不会解析
+用户的`~/.pi/agent`配置、认证、扩展和会话。内置Sidecar只加载Workspace固定的 Pi Core
+库；官方 Pi的安装、升级、运行和卸载具有独立生命周期。
+
 该基线未来可在 Windows启动器上实现等价规则，不依赖 SBPL。
 
 ## 4. macOS开发拒绝探针

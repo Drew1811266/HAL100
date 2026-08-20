@@ -98,7 +98,8 @@ pub enum ModelDownloadError {
 }
 
 impl ModelDownloadError {
-    fn code(&self) -> &'static str {
+    /// Stable, non-sensitive category suitable for UI, audit, and Agent tool failures.
+    pub const fn code(&self) -> &'static str {
         match self {
             Self::AuthorizationRequired => "authorization_required",
             Self::FileNotFound => "remote_file_not_found",
@@ -124,7 +125,7 @@ impl ModelDownloadError {
             Self::InvalidGguf => "invalid_gguf",
             Self::Io(_) => "io_error",
             Self::Database(_) => "database_error",
-            Self::Catalog(_) => "catalog_error",
+            Self::Catalog(error) => error.code(),
             Self::LockPoisoned => "state_lock_error",
             Self::Cancelled => "cancelled",
             Self::WorkerFailed => "worker_failed",
@@ -178,7 +179,9 @@ impl ModelDownloadManager {
         )
     }
 
-    fn with_download_endpoints(
+    /// Constructs the manager against explicit download endpoints for deterministic adapters and
+    /// tests. Production composition continues to use [`Self::new`].
+    pub fn with_download_endpoints(
         database: Arc<Database>,
         catalog: Arc<RemoteModelCatalog>,
         storage_root: PathBuf,
@@ -189,7 +192,11 @@ impl ModelDownloadManager {
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(30))
             .redirect(Policy::limited(5))
-            .user_agent("HAL100/0.0.1-dev model-download")
+            .user_agent(concat!(
+                "HAL100/",
+                env!("CARGO_PKG_VERSION"),
+                " model-download"
+            ))
             .build()
             .map_err(|error| ModelDownloadError::Network(network_error(&error)))?;
         let endpoints = DownloadEndpoints {
@@ -278,6 +285,12 @@ impl ModelDownloadManager {
             .lock()
             .map_err(|_| ModelDownloadError::LockPoisoned)?;
         pending.retain(|_, item| item.plan.expires_at_ms >= now);
+        if pending
+            .values()
+            .any(|item| item.destination_path == pending_download.destination_path)
+        {
+            return Err(ModelDownloadError::DuplicateDownload);
+        }
         if pending.len() >= MAX_PENDING_PLANS
             && let Some(oldest) = pending
                 .iter()
@@ -309,6 +322,20 @@ impl ModelDownloadManager {
         }
         ensure_storage(pending.plan.required_storage_bytes, available_storage_bytes)?;
         self.validate_managed_paths(&pending.temporary_path, &pending.destination_path)?;
+        if pending.destination_path.exists()
+            || self
+                .database
+                .model_path_is_indexed(&pending.destination_path)?
+            || self.database.downloads()?.iter().any(|download| {
+                Path::new(&download.destination_path) == pending.destination_path
+                    && !matches!(
+                        download.state,
+                        ModelDownloadState::Failed | ModelDownloadState::Cancelled
+                    )
+            })
+        {
+            return Err(ModelDownloadError::DuplicateDownload);
+        }
         let temporary_path = path_string(&pending.temporary_path)?;
         let destination_path = path_string(&pending.destination_path)?;
         let now = now_ms();
@@ -337,6 +364,15 @@ impl ModelDownloadManager {
         };
         self.spawn_download(resolved)?;
         Ok(snapshot_from_record(record))
+    }
+
+    /// Discards one unconsumed confirmation plan without touching files or download records.
+    pub fn discard_plan(&self, plan_id: &str) -> Result<bool, ModelDownloadError> {
+        let mut plans = self
+            .pending
+            .lock()
+            .map_err(|_| ModelDownloadError::LockPoisoned)?;
+        Ok(plans.remove(plan_id).is_some())
     }
 
     pub async fn resume_download(
@@ -1024,7 +1060,7 @@ mod tests {
             )
             .expect("manager"),
         );
-        let plan = manager
+        let discarded_plan = manager
             .plan_download(
                 DownloadSource::HuggingFace,
                 "acme/model",
@@ -1033,6 +1069,40 @@ mod tests {
             )
             .await
             .expect("plan");
+        assert!(matches!(
+            manager
+                .plan_download(
+                    DownloadSource::HuggingFace,
+                    "acme/model",
+                    "model-Q4_K_M.gguf",
+                    u64::MAX,
+                )
+                .await,
+            Err(ModelDownloadError::DuplicateDownload)
+        ));
+        assert!(
+            manager
+                .discard_plan(&discarded_plan.plan_id)
+                .expect("discard pending plan")
+        );
+        assert!(
+            !manager
+                .discard_plan(&discarded_plan.plan_id)
+                .expect("discard is exact and idempotent")
+        );
+        assert!(matches!(
+            manager.start_download(&discarded_plan.plan_id, u64::MAX),
+            Err(ModelDownloadError::PlanNotFound)
+        ));
+        let plan = manager
+            .plan_download(
+                DownloadSource::HuggingFace,
+                "acme/model",
+                "model-Q4_K_M.gguf",
+                u64::MAX,
+            )
+            .await
+            .expect("replacement plan");
         assert!(plan.requires_confirmation);
         assert_eq!(database.downloads().expect("downloads").len(), 0);
         let partial_path = manager

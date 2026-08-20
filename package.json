@@ -1,6 +1,6 @@
 {
   "name": "hal100",
-  "version": "0.0.1",
+  "version": "1.0.1",
   "private": true,
   "description": "HAL100 local AI control plane",
   "license": "MIT",

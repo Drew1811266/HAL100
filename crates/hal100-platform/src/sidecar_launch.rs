@@ -201,6 +201,79 @@ mod tests {
     }
 
     #[test]
+    fn an_official_pi_installation_remains_outside_the_agent_kernel_scope() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        let test_root = std::env::temp_dir().join(format!(
+            "hal100-pi-coexistence-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("current time")
+                .as_nanos()
+        ));
+        let user_home = test_root.join("user-home");
+        let official_pi_directory = user_home.join(".pi/agent");
+        let official_pi_settings = official_pi_directory.join("settings.json");
+        let official_pi_binary = user_home.join(".local/bin/pi");
+        fs::create_dir_all(&official_pi_directory).expect("official Pi configuration directory");
+        fs::create_dir_all(
+            official_pi_binary
+                .parent()
+                .expect("official Pi binary parent"),
+        )
+        .expect("official Pi binary directory");
+        fs::write(
+            &official_pi_settings,
+            br#"{"defaultProvider":"user-provider","defaultModel":"user-model"}"#,
+        )
+        .expect("official Pi settings");
+        fs::write(&official_pi_binary, b"official-pi-placeholder")
+            .expect("official Pi binary placeholder");
+        let original_settings = fs::read(&official_pi_settings).expect("settings before launch");
+
+        let session_root = test_root.join("hal100-session");
+        let spec = AgentKernelLaunchSpec {
+            runtime_binary: std::env::current_exe().expect("test executable"),
+            entrypoint: workspace.join("sidecars/agent-kernel/src/index.ts"),
+            working_directory: workspace.join("sidecars/agent-kernel"),
+            workspace_root: workspace.to_owned(),
+            session_root: session_root.clone(),
+            isolation: SidecarIsolation::ProcessBoundaryOnly,
+            arguments: Vec::new(),
+        };
+
+        let command = prepare_agent_kernel_command(&spec).expect("prepared command");
+        let environment: BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+            .collect();
+        let hal100_home = fs::canonicalize(&session_root)
+            .expect("canonical session root")
+            .join("home");
+
+        assert_eq!(
+            environment
+                .get(std::ffi::OsStr::new("HOME"))
+                .and_then(Option::as_deref),
+            Some(hal100_home.as_os_str())
+        );
+        assert_ne!(hal100_home, user_home);
+        assert!(!environment.contains_key(std::ffi::OsStr::new("PATH")));
+        assert!(!environment.contains_key(std::ffi::OsStr::new("PI_CODING_AGENT_DIR")));
+        assert!(!environment.contains_key(std::ffi::OsStr::new("PI_CODING_AGENT_SESSION_DIR")));
+        assert_ne!(command.get_program(), official_pi_binary.as_os_str());
+        assert_eq!(
+            fs::read(&official_pi_settings).expect("settings after launch preparation"),
+            original_settings
+        );
+
+        fs::remove_dir_all(test_root).expect("remove Pi coexistence test root");
+    }
+
+    #[test]
     fn rejects_an_entrypoint_outside_the_workspace() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

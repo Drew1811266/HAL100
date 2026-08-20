@@ -83,6 +83,30 @@ describe("HAL100 application shell", () => {
     expect(screen.getByText("浏览器预览模式只能查看变更，不能应用。")).toBeInTheDocument();
   });
 
+  it("distinguishes the built-in Agent runtime from external Agent integrations", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/integrations"]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "内置 Runtime 与外部 Agent 相互独立" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("HAL100 Agent（内置）")).toBeInTheDocument();
+    expect(screen.getByText(/固定版本 Pi Agent Core/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Pi Coding Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "OpenClaw" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Hermes Agent" })).toBeInTheDocument();
+    expect(screen.queryByText("规划接入")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "配置 Hermes" })).toBeDisabled();
+    expect(screen.getByText(/Hermes ≥ 0.18.2/)).toBeInTheDocument();
+  });
+
   it("shows the enabled OpenAI Responses and Anthropic Messages endpoints", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -343,21 +367,24 @@ describe("HAL100 application shell", () => {
     expect(screen.getByRole("button", { name: "环境诊断" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "全面诊断环境" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成单项修复计划" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "搜索并规划模型下载" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "模型与引擎状态" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("更多计划模板"));
     expect(screen.getByRole("button", { name: "生成模型切换计划" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成引擎安装计划" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成 OpenCode 配置计划" })).toBeInTheDocument();
     expect(
-      screen.getByText(/计划不会自动执行，安装、卸载、删除和配置写入仍需原生确认/),
+      screen.getByText(/计划不会自动执行，下载、安装、卸载、删除和配置写入仍需原生确认/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/模型搜索与下载仍未开放给 Agent/)).toBeInTheDocument();
+    expect(screen.getByText(/下载计划会绑定精确仓库、修订、文件与/)).toBeInTheDocument();
     expect(screen.getByLabelText("任务")).toHaveValue(
       "检测这台 Mac，并根据真实硬件给出适合的本地模型参数范围和量化建议。",
     );
     expect(screen.getByRole("button", { name: "运行本地任务" })).toBeDisabled();
     expect(
-      screen.getByText("浏览器预览不会启动模型或生成模拟回答；请在 Tauri 开发版中运行。"),
+      screen.getByText(
+        "浏览器预览不会运行 Agent、启动下载或执行任何写操作；请在 Tauri 开发版中运行。",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText("等待一项 HAL100 管理任务")).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /当前会话使用云端/ })).toBeInTheDocument();

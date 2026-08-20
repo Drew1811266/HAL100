@@ -4,10 +4,13 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
   ENVIRONMENT_DIAGNOSTICS_TOOL,
+  MODEL_CATALOG_SEARCH_TOOL,
+  MODEL_REPOSITORY_INSPECTION_TOOL,
   OPENCODE_STATUS_TOOL,
   PLAN_DIAGNOSTIC_REPAIR_TOOL,
   PLAN_ENGINE_INSTALL_TOOL,
   PLAN_ENGINE_REMOVE_TOOL,
+  PLAN_MODEL_DOWNLOAD_TOOL,
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_MODEL_START_TOOL,
   PLAN_OPENCODE_CONFIGURATION_TOOL,
@@ -21,21 +24,14 @@ const MAX_API_KEY_BYTES = 512;
 const AGENT_MODEL_ALIAS = "hal100-agent";
 const CLOUD_AGENT_ROUTE_PREFIX = "hal100-agent-cloud-";
 const MAX_REQUIRED_TOOL_PROMPTS = 3;
+export const MAX_REQUIRED_TOOLS = 4;
+export const MAX_ACTION_PLANS = 1;
 
 export type AgentProviderProtocol = "localOpenAi" | "cloudOpenAi" | "cloudAnthropic";
 
 export interface AgentRunRequest {
   prompt: string;
-  requiresSystemSummary: boolean;
-  requiresRuntimeCatalog: boolean;
-  requiresModelStartPlan: boolean;
-  requiresModelRemovalPlan: boolean;
-  requiresEnvironmentDiagnostics: boolean;
-  requiresDiagnosticRepairPlan: boolean;
-  requiresEngineInstallPlan: boolean;
-  requiresEngineRemovePlan: boolean;
-  requiresOpenCodeStatus: boolean;
-  requiresOpenCodeConfigurationPlan: boolean;
+  requiredTools: readonly string[];
   gatewayBaseUrl: string;
   apiKey: string;
   modelId: string;
@@ -45,7 +41,7 @@ export interface AgentRunRequest {
 export interface AgentRunResult {
   runId: string;
   answer: string;
-  registeredToolCount: 10;
+  registeredToolCount: number;
   completedToolCalls: number;
   toolNames: string[];
 }
@@ -58,19 +54,44 @@ export type AgentRunFailureCode =
   | "model_request_failed"
   | "empty_agent_answer";
 
-type AgentToolRequirements = Pick<
-  AgentRunRequest,
-  | "requiresSystemSummary"
-  | "requiresRuntimeCatalog"
-  | "requiresModelStartPlan"
-  | "requiresModelRemovalPlan"
-  | "requiresEnvironmentDiagnostics"
-  | "requiresDiagnosticRepairPlan"
-  | "requiresEngineInstallPlan"
-  | "requiresEngineRemovePlan"
-  | "requiresOpenCodeStatus"
-  | "requiresOpenCodeConfigurationPlan"
->;
+type AgentToolRequirements = Pick<AgentRunRequest, "requiredTools">;
+
+export const AGENT_TOOL_NAMES = [
+  SYSTEM_SUMMARY_TOOL,
+  RUNTIME_CATALOG_TOOL,
+  PLAN_MODEL_START_TOOL,
+  PLAN_MODEL_REMOVAL_TOOL,
+  ENVIRONMENT_DIAGNOSTICS_TOOL,
+  PLAN_DIAGNOSTIC_REPAIR_TOOL,
+  PLAN_ENGINE_INSTALL_TOOL,
+  PLAN_ENGINE_REMOVE_TOOL,
+  OPENCODE_STATUS_TOOL,
+  PLAN_OPENCODE_CONFIGURATION_TOOL,
+  MODEL_CATALOG_SEARCH_TOOL,
+  MODEL_REPOSITORY_INSPECTION_TOOL,
+  PLAN_MODEL_DOWNLOAD_TOOL,
+] as const;
+
+export const ACTION_PLAN_TOOLS = new Set<string>([
+  PLAN_MODEL_START_TOOL,
+  PLAN_MODEL_REMOVAL_TOOL,
+  PLAN_DIAGNOSTIC_REPAIR_TOOL,
+  PLAN_ENGINE_INSTALL_TOOL,
+  PLAN_ENGINE_REMOVE_TOOL,
+  PLAN_OPENCODE_CONFIGURATION_TOOL,
+  PLAN_MODEL_DOWNLOAD_TOOL,
+]);
+
+export const TOOL_PREREQUISITES = new Map<string, readonly string[]>([
+  [PLAN_MODEL_START_TOOL, [RUNTIME_CATALOG_TOOL]],
+  [PLAN_MODEL_REMOVAL_TOOL, [RUNTIME_CATALOG_TOOL]],
+  [PLAN_DIAGNOSTIC_REPAIR_TOOL, [ENVIRONMENT_DIAGNOSTICS_TOOL]],
+  [PLAN_ENGINE_INSTALL_TOOL, [RUNTIME_CATALOG_TOOL]],
+  [PLAN_ENGINE_REMOVE_TOOL, [RUNTIME_CATALOG_TOOL]],
+  [PLAN_OPENCODE_CONFIGURATION_TOOL, [OPENCODE_STATUS_TOOL]],
+  [MODEL_REPOSITORY_INSPECTION_TOOL, [MODEL_CATALOG_SEARCH_TOOL]],
+  [PLAN_MODEL_DOWNLOAD_TOOL, [MODEL_REPOSITORY_INSPECTION_TOOL]],
+]);
 
 export function nextRequiredAgentTool(
   request: AgentToolRequirements,
@@ -78,42 +99,11 @@ export function nextRequiredAgentTool(
   diagnosticRepairAvailable: boolean | undefined = true,
 ): string | undefined {
   const completedTools = new Set(completedToolNames);
-  if (request.requiresSystemSummary && !completedTools.has(SYSTEM_SUMMARY_TOOL)) {
-    return SYSTEM_SUMMARY_TOOL;
-  }
-  if (request.requiresEnvironmentDiagnostics && !completedTools.has(ENVIRONMENT_DIAGNOSTICS_TOOL)) {
-    return ENVIRONMENT_DIAGNOSTICS_TOOL;
-  }
-  if (request.requiresRuntimeCatalog && !completedTools.has(RUNTIME_CATALOG_TOOL)) {
-    return RUNTIME_CATALOG_TOOL;
-  }
-  if (request.requiresModelStartPlan && !completedTools.has(PLAN_MODEL_START_TOOL)) {
-    return PLAN_MODEL_START_TOOL;
-  }
-  if (request.requiresModelRemovalPlan && !completedTools.has(PLAN_MODEL_REMOVAL_TOOL)) {
-    return PLAN_MODEL_REMOVAL_TOOL;
-  }
-  if (
-    request.requiresDiagnosticRepairPlan &&
-    diagnosticRepairAvailable !== false &&
-    !completedTools.has(PLAN_DIAGNOSTIC_REPAIR_TOOL)
-  ) {
-    return PLAN_DIAGNOSTIC_REPAIR_TOOL;
-  }
-  if (request.requiresEngineInstallPlan && !completedTools.has(PLAN_ENGINE_INSTALL_TOOL)) {
-    return PLAN_ENGINE_INSTALL_TOOL;
-  }
-  if (request.requiresEngineRemovePlan && !completedTools.has(PLAN_ENGINE_REMOVE_TOOL)) {
-    return PLAN_ENGINE_REMOVE_TOOL;
-  }
-  if (request.requiresOpenCodeStatus && !completedTools.has(OPENCODE_STATUS_TOOL)) {
-    return OPENCODE_STATUS_TOOL;
-  }
-  if (
-    request.requiresOpenCodeConfigurationPlan &&
-    !completedTools.has(PLAN_OPENCODE_CONFIGURATION_TOOL)
-  ) {
-    return PLAN_OPENCODE_CONFIGURATION_TOOL;
+  for (const toolName of request.requiredTools) {
+    if (toolName === PLAN_DIAGNOSTIC_REPAIR_TOOL && diagnosticRepairAvailable === false) {
+      continue;
+    }
+    if (!completedTools.has(toolName)) return toolName;
   }
   return undefined;
 }
@@ -139,18 +129,7 @@ export async function runPiAgent(
 ): Promise<AgentRunResult> {
   const validated = validateAgentRunRequest(request);
   const runtime = runtimeOverride ?? createGatewayRuntime(validated);
-  const tools = [
-    bridge.createSystemSummaryTool(runId),
-    bridge.createRuntimeCatalogTool(runId),
-    bridge.createModelStartPlanTool(runId),
-    bridge.createModelRemovalPlanTool(runId),
-    bridge.createEnvironmentDiagnosticsTool(runId),
-    bridge.createDiagnosticRepairPlanTool(runId),
-    bridge.createEngineInstallPlanTool(runId),
-    bridge.createEngineRemovePlanTool(runId),
-    bridge.createOpenCodeStatusTool(runId),
-    bridge.createOpenCodeConfigurationPlanTool(runId),
-  ];
+  const tools = bridge.createAgentTools(runId);
   const completedToolNames: string[] = [];
   const agent = new Agent({
     streamFn: runtime.streamFn,
@@ -220,7 +199,7 @@ export async function runPiAgent(
   return {
     runId,
     answer: answerText,
-    registeredToolCount: 10,
+    registeredToolCount: tools.length,
     completedToolCalls: completedToolNames.length,
     toolNames: completedToolNames,
   };
@@ -268,36 +247,28 @@ export function validateAgentRunRequest(request: AgentRunRequest): AgentRunReque
   ) {
     throw new TypeError("agent prompt must contain between 1 and 4096 UTF-8 bytes");
   }
-  if (typeof request.requiresSystemSummary !== "boolean") {
-    throw new TypeError("agent tool policy flag is invalid");
+  if (!Array.isArray(request.requiredTools)) {
+    throw new TypeError("agent required tool set is invalid");
   }
+  const allowedTools = new Set<string>(AGENT_TOOL_NAMES);
+  const requiredTools = request.requiredTools;
+  const requiredToolSet = new Set(requiredTools);
+  const canonicalTools = AGENT_TOOL_NAMES.filter((toolName) => requiredToolSet.has(toolName));
   if (
-    typeof request.requiresRuntimeCatalog !== "boolean" ||
-    typeof request.requiresModelStartPlan !== "boolean" ||
-    typeof request.requiresModelRemovalPlan !== "boolean" ||
-    typeof request.requiresEnvironmentDiagnostics !== "boolean" ||
-    typeof request.requiresDiagnosticRepairPlan !== "boolean" ||
-    typeof request.requiresEngineInstallPlan !== "boolean" ||
-    typeof request.requiresEngineRemovePlan !== "boolean" ||
-    typeof request.requiresOpenCodeStatus !== "boolean" ||
-    typeof request.requiresOpenCodeConfigurationPlan !== "boolean" ||
-    ((request.requiresModelStartPlan ||
-      request.requiresModelRemovalPlan ||
-      request.requiresEngineInstallPlan ||
-      request.requiresEngineRemovePlan) &&
-      !request.requiresRuntimeCatalog) ||
-    (request.requiresDiagnosticRepairPlan && !request.requiresEnvironmentDiagnostics) ||
-    (request.requiresOpenCodeConfigurationPlan && !request.requiresOpenCodeStatus) ||
-    [
-      request.requiresModelStartPlan,
-      request.requiresModelRemovalPlan,
-      request.requiresDiagnosticRepairPlan,
-      request.requiresEngineInstallPlan,
-      request.requiresEngineRemovePlan,
-      request.requiresOpenCodeConfigurationPlan,
-    ].filter(Boolean).length > 1
+    requiredTools.length > MAX_REQUIRED_TOOLS ||
+    requiredToolSet.size !== requiredTools.length ||
+    requiredTools.some((toolName) => typeof toolName !== "string" || !allowedTools.has(toolName)) ||
+    requiredTools.some(
+      (toolName) =>
+        TOOL_PREREQUISITES.get(toolName)?.some(
+          (prerequisite) => !requiredToolSet.has(prerequisite),
+        ) === true,
+    ) ||
+    requiredTools.filter((toolName) => ACTION_PLAN_TOOLS.has(toolName)).length > MAX_ACTION_PLANS ||
+    canonicalTools.length !== requiredTools.length ||
+    canonicalTools.some((toolName, index) => toolName !== requiredTools[index])
   ) {
-    throw new TypeError("agent runtime tool policy flags are invalid");
+    throw new TypeError("agent required tool set is invalid");
   }
   if (
     typeof request.apiKey !== "string" ||
@@ -337,16 +308,7 @@ export function validateAgentRunRequest(request: AgentRunRequest): AgentRunReque
 
   return {
     prompt: request.prompt.trim(),
-    requiresSystemSummary: request.requiresSystemSummary,
-    requiresRuntimeCatalog: request.requiresRuntimeCatalog,
-    requiresModelStartPlan: request.requiresModelStartPlan,
-    requiresModelRemovalPlan: request.requiresModelRemovalPlan,
-    requiresEnvironmentDiagnostics: request.requiresEnvironmentDiagnostics,
-    requiresDiagnosticRepairPlan: request.requiresDiagnosticRepairPlan,
-    requiresEngineInstallPlan: request.requiresEngineInstallPlan,
-    requiresEngineRemovePlan: request.requiresEngineRemovePlan,
-    requiresOpenCodeStatus: request.requiresOpenCodeStatus,
-    requiresOpenCodeConfigurationPlan: request.requiresOpenCodeConfigurationPlan,
+    requiredTools: [...requiredTools],
     gatewayBaseUrl: gateway.toString().replace(/\/$/, ""),
     apiKey: request.apiKey,
     modelId: request.modelId,

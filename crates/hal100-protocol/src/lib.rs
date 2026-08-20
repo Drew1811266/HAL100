@@ -1,4 +1,5 @@
 mod agent;
+mod agent_ecosystem;
 mod agent_rpc;
 mod anthropic;
 mod backends;
@@ -18,8 +19,17 @@ pub use agent::{
     AgentPromptRequest, AgentProviderProtocol, AgentRunResult, AgentRuntimeCatalog,
     AgentRuntimeModel, AgentStatus, AgentSystemSummary, AgentToolEvent,
 };
+pub use agent_ecosystem::{
+    AgentEcosystemCatalog, BuiltInAgentRuntimeSummary, ExternalAgentConfigurationChange,
+    ExternalAgentConfigurationPlan, ExternalAgentConfigurationResult, ExternalAgentDetection,
+    ExternalAgentDisconnectPlan, ExternalAgentDisconnectResult, ExternalAgentGatewayProtocol,
+    ExternalAgentInputModality, ExternalAgentIntegrationAvailability,
+    ExternalAgentIntegrationState, ExternalAgentIntegrationSummary, ExternalAgentManagedChange,
+    ExternalAgentManagedChangeAction, ExternalAgentModelProfile,
+};
 pub use agent_rpc::{
-    AGENT_RPC_MAX_FRAME_BYTES, AGENT_RPC_VERSION, AgentRpcEnvelope, AgentRpcFrameDecoder,
+    AGENT_RPC_MAX_ACTION_PLANS, AGENT_RPC_MAX_FRAME_BYTES, AGENT_RPC_MAX_REQUIRED_TOOLS,
+    AGENT_RPC_MAX_TOOL_RESULT_BYTES, AGENT_RPC_VERSION, AgentRpcEnvelope, AgentRpcFrameDecoder,
     AgentRpcFrameError, AgentRunCompletedPayload, AgentRunStartPayload, encode_agent_rpc_frame,
 };
 pub use anthropic::{
@@ -62,8 +72,9 @@ pub use remote_models::{
 };
 use serde::{Deserialize, Serialize};
 pub use tool_broker::{
-    ENVIRONMENT_DIAGNOSTICS_TOOL, OPENCODE_STATUS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL,
-    PLAN_ENGINE_INSTALL_TOOL, PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_REMOVAL_TOOL,
+    ENVIRONMENT_DIAGNOSTICS_TOOL, MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL,
+    OPENCODE_STATUS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
+    PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
     PLAN_MODEL_START_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL, RUNTIME_CATALOG_TOOL,
     SIMULATED_SYSTEM_SUMMARY_TOOL, SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload,
     ToolCallRequestPayload, ToolCallResultPayload, ToolCallResultStatus,

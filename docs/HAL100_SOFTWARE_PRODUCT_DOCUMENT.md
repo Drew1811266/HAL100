@@ -497,11 +497,11 @@ Embedding、Reranking和音视频协议不属于初始闭环。
 | FR-RT-007 | 有活动请求时默认等待排空 |
 | FR-RT-008 | 强制切换必须二次确认并标记中断请求 |
 
-### 8.5 OpenCode集成
+### 8.5 外部 Agent专用接入
 
 | 编号 | 需求 |
 | --- | --- |
-| FR-OC-001 | OpenCode是首版唯一专门适配客户端 |
+| FR-OC-001 | OpenCode、Pi Coding Agent、OpenClaw和Hermes Agent是当前可用的专门适配客户端 |
 | FR-OC-002 | 必须检测 OpenCode是否安装及版本 |
 | FR-OC-003 | 必须按版本处理当前与未来配置格式差异 |
 | FR-OC-004 | 默认修改全局配置，不主动修改项目配置 |
@@ -512,6 +512,42 @@ Embedding、Reranking和音视频协议不属于初始闭环。
 | FR-OC-009 | 验证失败必须自动回滚 |
 | FR-OC-010 | 只能移除 HAL100拥有的配置片段 |
 | FR-OC-011 | 必须为 OpenCode生成独立本地凭据和用量归属 |
+
+专用适配器集合包括 Pi Coding Agent、OpenClaw和 Hermes Agent。它们必须作为外部软件保持
+独立安装、升级、配置、会话和进程生命周期；不得与HAL100内置Agent Runtime共享Pi依赖、
+Sidecar、HOME或凭据。每个适配器只能管理HAL100拥有的配置片段和独立Gateway Key，默认
+不得改变用户当前Provider或模型。HAL100不得静默安装、升级或卸载这些外部软件。
+
+| 编号 | Pi Coding Agent需求 |
+| --- | --- |
+| FR-PI-001 | 必须把用户安装的官方Pi与HAL100内置Pi Agent Core视为不同产品和身份 |
+| FR-PI-002 | 只能管理`models.json`中的`providers.hal100`，不得修改默认模型、设置、会话或扩展 |
+| FR-PI-003 | 必须使用严格JSON解析、预览、原生确认、备份、原子替换、验证和失败回滚 |
+| FR-PI-004 | 必须生成`pi-coding-agent`专属Gateway Key，配置不得保存明文Key |
+| FR-PI-005 | 凭据读取命令必须由HAL100固定生成并安全转义，不接受任意Shell命令 |
+| FR-PI-006 | 模型上下文、最大输出和输入模态必须来自版本化HAL100模型契约 |
+| FR-PI-007 | 能力契约变化必须显示“需要刷新”，不得把旧片段默认为最新能力 |
+| FR-PI-008 | 断开只能移除受管分片和Pi专属Key，不得影响内置Agent或其他客户端 |
+| FR-PI-009 | 必须使用隔离HOME运行真实官方CLI端到端验收并验证Usage归属 |
+
+| 编号 | OpenClaw需求 |
+| --- | --- |
+| FR-CLAW-001 | 只管理默认实例的HAL100模型Provider、文件型SecretRef和专属Key |
+| FR-CLAW-002 | 自定义HOME、STATE、CONFIG或Profile必须故障关闭，不得猜测目标实例 |
+| FR-CLAW-003 | JSON5补丁必须经官方CLI dry-run、应用和写后语义验证 |
+| FR-CLAW-004 | Chat Completions、Responses和Anthropic Messages必须分别通过真实CLI验收 |
+| FR-CLAW-005 | 协议切换不得改变默认模型、服务状态或其他Provider |
+| FR-CLAW-006 | 断开只移除受管模型Provider、SecretRef和`openclaw`凭据 |
+
+| 编号 | Hermes Agent需求 |
+| --- | --- |
+| FR-HER-001 | 只管理default Profile的`providers.hal100`和`.env`专属变量 |
+| FR-HER-002 | 模型上下文低于Hermes官方64,000 Token门槛时必须显示Blocked并拒绝写入 |
+| FR-HER-003 | 候选和写后配置必须使用固定官方CLI与显式`-p default`验证 |
+| FR-HER-004 | YAML重写前可备份非敏感配置；不得持久备份可能包含其他秘密的完整`.env` |
+| FR-HER-005 | `.env`补丁必须逐字保留其他内容并收紧文件权限为`0600` |
+| FR-HER-006 | 不得修改Hermes粘性Profile、默认模型、其他Provider、会话、规则或服务 |
+| FR-HER-007 | 必须用隔离官方CLI验收Chat Completions和`hermes-agent`Usage归属 |
 
 OpenCode配置流程：
 

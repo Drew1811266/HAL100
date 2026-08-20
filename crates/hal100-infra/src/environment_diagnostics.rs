@@ -1,5 +1,6 @@
 use std::{cmp::Reverse, sync::Arc, time::SystemTime};
 
+use hal100_core::BUILT_IN_AGENT_RUNTIME;
 use hal100_protocol::{
     DiagnosticComponent, DiagnosticRepairKind, DiagnosticSeverity, EngineInstallState,
     EngineRuntimeState, EnvironmentDiagnosticFinding, EnvironmentDiagnosticReport,
@@ -14,7 +15,7 @@ use crate::{
 };
 
 const MAX_FINDINGS: usize = 64;
-const INTERNAL_AGENT_BACKEND_ID: &str = "hal100-agent-runtime";
+const INTERNAL_AGENT_BACKEND_ID: &str = BUILT_IN_AGENT_RUNTIME.runtime_id;
 const INTERNAL_CLOUD_BACKEND_PREFIX: &str = "hal100-agent-cloud-";
 
 #[derive(Debug, Error)]

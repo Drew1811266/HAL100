@@ -1,3 +1,5 @@
+mod agent_capability;
+mod external_agent_integration;
 mod tool_broker;
 
 use std::{
@@ -8,6 +10,18 @@ use std::{
 
 use hal100_protocol::{AppOverview, DatabaseState, PlatformSummary, ServiceState};
 
+pub use agent_capability::{
+    AGENT_CAPABILITY_COUNT, AgentCapabilityDataScope, AgentCapabilityDescriptor,
+    AgentCapabilityEffect, AgentCapabilityId, AgentCapabilityRegistry, AgentCapabilityRisk,
+    AgentCapabilitySet,
+};
+pub use external_agent_integration::{
+    BUILT_IN_AGENT_RUNTIME, BuiltInAgentIsolation, BuiltInAgentRuntimeDescriptor,
+    ConfigurationOwnership, CredentialIsolation, ExternalAgentIntegrationAvailability,
+    ExternalAgentIntegrationDescriptor, ExternalAgentIntegrationId,
+    ExternalAgentIntegrationRegistry, GatewayProtocol, HERMES_AGENT_INTEGRATION,
+    OPENCLAW_INTEGRATION, OPENCODE_INTEGRATION, PI_CODING_AGENT_INTEGRATION,
+};
 pub use tool_broker::{AgentToolPolicy, AuthorizedAgentTool, SimulatedToolBroker};
 
 pub trait SystemProbe: Send + Sync + 'static {
@@ -80,7 +94,7 @@ where
         AppOverview {
             app_name: "HAL100".to_owned(),
             version: version.to_owned(),
-            phase: "迭代 8 · HAL100 Agent 云端单次增强".to_owned(),
+            phase: "迭代 18 · Hermes Agent 接入".to_owned(),
             gateway_state: service_state_from_code(self.gateway_state.load(Ordering::Acquire)),
             database_state: DatabaseState::Ready,
             platform: self.system_probe.platform_summary(),

@@ -6,6 +6,11 @@
 - Provider ID：`hal100`
 - 固定Base URL：`http://127.0.0.1:10100/v1`
 
+OpenCode是HAL100外部Agent集成注册表中的首个可用专用适配器。稳定的
+`integration_id=opencode`、`client_app_id=opencode`和凭据ID由`hal100-core`统一拥有；
+`OpenCodeIntegrationAdapter`只负责OpenCode特有的CLI检测、JSON/JSONC语义补丁、验证与
+回滚。它不与HAL100内置Agent Runtime共享Sidecar、Pi依赖、会话或任务凭据。
+
 ## 1. 上游格式依据
 
 实现以OpenCode当前官方文档为准：

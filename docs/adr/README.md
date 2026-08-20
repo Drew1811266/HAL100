@@ -14,3 +14,6 @@
 - [ADR-0010：OpenCode受管Provider与独立凭据文件](0010-opencode-managed-provider.md)
 - [ADR-0011：按需硬件画像与统一模型目录](0011-on-demand-hardware-and-model-catalog.md)
 - [ADR-0012：外部GGUF使用专用选择命令和确认索引](0012-confirmed-external-gguf-import.md)
+- [ADR-0013：模块化单体、应用边界与 Agent 能力架构](0013-modular-monolith-and-agent-capabilities.md)
+- [ADR-0014：Agent RPC v4 与受控模型下载能力](0014-agent-rpc-v4-model-download.md)
+- [ADR-0015：内置 Agent Runtime 与外部 Agent 集成边界](0015-built-in-runtime-and-external-agent-integrations.md)

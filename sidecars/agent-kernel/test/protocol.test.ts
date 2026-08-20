@@ -2,11 +2,16 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_RPC_MAX_FRAME_BYTES,
+  AGENT_RPC_VERSION,
   type AgentRpcEnvelope,
   AgentRpcFrameDecoder,
   encodeAgentRpcFrame,
 } from "../src/protocol.js";
-import { assertToolCallRequestPayload, assertToolCallResultPayload } from "../src/tool-bridge.js";
+import {
+  assertToolCallRequestPayload,
+  assertToolCallResultPayload,
+  MAX_TOOL_RESULT_BYTES,
+} from "../src/tool-bridge.js";
 
 const pingFixtureUrl = new URL("../../../tests/fixtures/agent-rpc/ping.json", import.meta.url);
 const toolRequestFixtureUrl = new URL(
@@ -22,7 +27,14 @@ function pingFixture(): AgentRpcEnvelope {
   return JSON.parse(readFileSync(pingFixtureUrl, "utf8")) as AgentRpcEnvelope;
 }
 
-describe("Agent RPC v3 framing", () => {
+describe("Agent RPC v4 framing", () => {
+  it("matches the shared v4 envelope schema", () => {
+    const schema = JSON.parse(
+      readFileSync(new URL("../../../contracts/agent-rpc/v4.schema.json", import.meta.url), "utf8"),
+    ) as { properties: { protocolVersion: { const: number } } };
+    expect(schema.properties.protocolVersion.const).toBe(AGENT_RPC_VERSION);
+  });
+
   it("decodes the shared fixture when input is fragmented", () => {
     const fixture = pingFixture();
     const frame = encodeAgentRpcFrame(fixture);
@@ -54,5 +66,15 @@ describe("Agent RPC v3 framing", () => {
       "hal100.inspect_system_summary",
     );
     expect(assertToolCallResultPayload(result.payload).status).toBe("success");
+  });
+
+  it("rejects a Tool Broker result before it can consume the full RPC frame budget", () => {
+    expect(() =>
+      assertToolCallResultPayload({
+        toolCallId: "tool-oversized",
+        status: "success",
+        output: "x".repeat(MAX_TOOL_RESULT_BYTES),
+      }),
+    ).toThrow(/result budget/);
   });
 });

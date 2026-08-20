@@ -315,6 +315,116 @@ export interface ModelRemovalResult {
   sourceFilePreserved: boolean;
 }
 
+export type ExternalAgentIntegrationAvailability = "available" | "planned";
+export type ExternalAgentGatewayProtocol =
+  | "openAiChatCompletions"
+  | "openAiResponses"
+  | "anthropicMessages";
+
+export interface BuiltInAgentRuntimeSummary {
+  runtimeId: string;
+  clientAppId: string;
+  displayName: string;
+  engineName: string;
+  isolationSummary: string;
+}
+
+export interface ExternalAgentIntegrationSummary {
+  integrationId: string;
+  clientAppId: string;
+  displayName: string;
+  availability: ExternalAgentIntegrationAvailability;
+  supportedProtocols: ExternalAgentGatewayProtocol[];
+  verifiedProtocols: ExternalAgentGatewayProtocol[];
+  preservesDefaultModel: boolean;
+  usesIsolatedCredential: boolean;
+}
+
+export interface AgentEcosystemCatalog {
+  builtInRuntime: BuiltInAgentRuntimeSummary;
+  integrations: ExternalAgentIntegrationSummary[];
+}
+
+export type ExternalAgentIntegrationState =
+  | "notInstalled"
+  | "installedNotConfigured"
+  | "configured"
+  | "needsRefresh"
+  | "conflict"
+  | "modifiedOutsideHal100"
+  | "unsupportedVersion"
+  | "blocked";
+
+export interface ExternalAgentDetection {
+  integrationId: string;
+  displayName: string;
+  installed: boolean;
+  version: string | null;
+  binaryPath: string | null;
+  configPath: string;
+  configExists: boolean;
+  integrationState: ExternalAgentIntegrationState;
+  configuredProtocol: ExternalAgentGatewayProtocol | null;
+  modelProfileRevision: string;
+  warnings: string[];
+}
+
+export interface ExternalAgentConfigurationChange {
+  path: string;
+  value: string;
+}
+
+export interface ExternalAgentConfigurationPlan {
+  planId: string;
+  integrationId: string;
+  expiresAtMs: number;
+  configPath: string;
+  credentialPath: string;
+  changes: ExternalAgentConfigurationChange[];
+  gatewayProtocol: ExternalAgentGatewayProtocol;
+  createsBackup: boolean;
+  preservesDefaultModel: boolean;
+  requiresConfirmation: boolean;
+  modelProfileRevision: string;
+  warnings: string[];
+}
+
+export interface ExternalAgentConfigurationResult {
+  configured: boolean;
+  integrationId: string;
+  configPath: string;
+  backupPath: string | null;
+  credentialPrefix: string;
+  modelProfileRevision: string;
+}
+
+export type ExternalAgentManagedChangeAction = "removeManagedFragment" | "removeManagedCredential";
+
+export interface ExternalAgentManagedChange {
+  path: string;
+  action: ExternalAgentManagedChangeAction;
+}
+
+export interface ExternalAgentDisconnectPlan {
+  planId: string;
+  integrationId: string;
+  expiresAtMs: number;
+  configPath: string;
+  credentialPath: string;
+  changes: ExternalAgentManagedChange[];
+  createsBackup: boolean;
+  revokesCredential: boolean;
+  requiresConfirmation: boolean;
+}
+
+export interface ExternalAgentDisconnectResult {
+  disconnected: boolean;
+  integrationId: string;
+  configPath: string;
+  backupPath: string | null;
+  credentialRevoked: boolean;
+}
+
 export type OpenCodeIntegrationState =
   | "notConfigured"
   | "configured"
@@ -587,6 +697,7 @@ export interface AgentRunResult {
 
 export type AgentActionKind =
   | "startOrSwitchModel"
+  | "downloadModel"
   | "removeModel"
   | "installLlamaCpp"
   | "removeLlamaCpp"
@@ -617,8 +728,8 @@ export interface AgentActionResult {
 
 const developmentOverview: AppOverview = {
   appName: "HAL100",
-  version: "0.0.1",
-  phase: "迭代 11 · 诊断与受控修复",
+  version: "1.0.1",
+  phase: "迭代 18 · Hermes Agent 接入",
   gatewayState: "运行中",
   databaseState: "已就绪",
   platform: {
@@ -626,6 +737,58 @@ const developmentOverview: AppOverview = {
     architecture: "Apple Silicon",
     supported: true,
   },
+};
+
+const browserAgentEcosystemCatalog: AgentEcosystemCatalog = {
+  builtInRuntime: {
+    runtimeId: "hal100-agent-runtime",
+    clientAppId: "hal100-agent",
+    displayName: "HAL100 Agent",
+    engineName: "Pi Agent Core",
+    isolationSummary: "HAL100 私有的按任务进程、临时 HOME、会话和凭据",
+  },
+  integrations: [
+    {
+      integrationId: "opencode",
+      clientAppId: "opencode",
+      displayName: "OpenCode",
+      availability: "available",
+      supportedProtocols: ["openAiChatCompletions"],
+      verifiedProtocols: ["openAiChatCompletions"],
+      preservesDefaultModel: true,
+      usesIsolatedCredential: true,
+    },
+    {
+      integrationId: "pi-coding-agent",
+      clientAppId: "pi-coding-agent",
+      displayName: "Pi Coding Agent",
+      availability: "available",
+      supportedProtocols: ["openAiChatCompletions"],
+      verifiedProtocols: ["openAiChatCompletions"],
+      preservesDefaultModel: true,
+      usesIsolatedCredential: true,
+    },
+    {
+      integrationId: "openclaw",
+      clientAppId: "openclaw",
+      displayName: "OpenClaw",
+      availability: "available",
+      supportedProtocols: ["openAiChatCompletions", "openAiResponses", "anthropicMessages"],
+      verifiedProtocols: ["openAiChatCompletions", "openAiResponses", "anthropicMessages"],
+      preservesDefaultModel: true,
+      usesIsolatedCredential: true,
+    },
+    {
+      integrationId: "hermes-agent",
+      clientAppId: "hermes-agent",
+      displayName: "Hermes Agent",
+      availability: "available",
+      supportedProtocols: ["openAiChatCompletions"],
+      verifiedProtocols: ["openAiChatCompletions"],
+      preservesDefaultModel: true,
+      usesIsolatedCredential: true,
+    },
+  ],
 };
 
 const browserOpenCodeDetection: OpenCodeDetection = {
@@ -636,6 +799,48 @@ const browserOpenCodeDetection: OpenCodeDetection = {
   configExists: false,
   configFormat: "json",
   integrationState: "notConfigured",
+  warnings: ["当前是浏览器预览模式，不会读取或修改本机配置。"],
+};
+
+const browserPiCodingAgentDetection: ExternalAgentDetection = {
+  integrationId: "pi-coding-agent",
+  displayName: "Pi Coding Agent",
+  installed: false,
+  version: null,
+  binaryPath: null,
+  configPath: "~/.pi/agent/models.json",
+  configExists: false,
+  integrationState: "notInstalled",
+  configuredProtocol: null,
+  modelProfileRevision: "managed-route-v1",
+  warnings: ["当前是浏览器预览模式，不会读取或修改本机配置。"],
+};
+
+const browserOpenClawDetection: ExternalAgentDetection = {
+  integrationId: "openclaw",
+  displayName: "OpenClaw",
+  installed: false,
+  version: null,
+  binaryPath: null,
+  configPath: "~/.openclaw/openclaw.json",
+  configExists: false,
+  integrationState: "notInstalled",
+  configuredProtocol: null,
+  modelProfileRevision: "managed-route-v1",
+  warnings: ["当前是浏览器预览模式，不会读取或修改本机配置。"],
+};
+
+const browserHermesAgentDetection: ExternalAgentDetection = {
+  integrationId: "hermes-agent",
+  displayName: "Hermes Agent",
+  installed: false,
+  version: null,
+  binaryPath: null,
+  configPath: "~/.hermes/config.yaml",
+  configExists: false,
+  integrationState: "notInstalled",
+  configuredProtocol: null,
+  modelProfileRevision: "managed-route-v1",
   warnings: ["当前是浏览器预览模式，不会读取或修改本机配置。"],
 };
 
@@ -1328,6 +1533,13 @@ export async function getOpenCodeDetection(): Promise<OpenCodeDetection> {
   return invoke<OpenCodeDetection>("get_opencode_detection");
 }
 
+export async function getAgentEcosystemCatalog(): Promise<AgentEcosystemCatalog> {
+  if (!isTauriRuntime()) {
+    return browserAgentEcosystemCatalog;
+  }
+  return invoke<AgentEcosystemCatalog>("get_agent_ecosystem_catalog");
+}
+
 export async function planOpenCodeConfiguration(): Promise<OpenCodeConfigPlan> {
   if (!isTauriRuntime()) {
     return {
@@ -1354,4 +1566,297 @@ export async function applyOpenCodeConfiguration(planId: string): Promise<OpenCo
     throw new Error("浏览器预览模式不会执行配置写入");
   }
   return invoke<OpenCodeApplyResult>("apply_opencode_configuration", { planId });
+}
+
+export async function discardOpenCodeConfigurationPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_opencode_configuration_plan", { planId });
+}
+
+export async function planOpenCodeDisconnection(): Promise<ExternalAgentDisconnectPlan> {
+  if (!isTauriRuntime()) {
+    return {
+      planId: "browser-disconnect-preview",
+      integrationId: "opencode",
+      expiresAtMs: Date.now() + 5 * 60 * 1000,
+      configPath: browserOpenCodeDetection.configPath,
+      credentialPath: "~/Library/Application Support/HAL100/credentials/opencode-gateway.key",
+      changes: [
+        { path: "provider.hal100", action: "removeManagedFragment" },
+        { path: "opencode-gateway-key", action: "removeManagedCredential" },
+      ],
+      createsBackup: true,
+      revokesCredential: true,
+      requiresConfirmation: true,
+    };
+  }
+  return invoke<ExternalAgentDisconnectPlan>("plan_opencode_disconnection");
+}
+
+export async function discardOpenCodeDisconnectionPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_opencode_disconnection_plan", { planId });
+}
+
+export async function applyOpenCodeDisconnection(
+  planId: string,
+): Promise<ExternalAgentDisconnectResult> {
+  if (!isTauriRuntime()) {
+    throw new Error("浏览器预览模式不会执行接入移除");
+  }
+  return invoke<ExternalAgentDisconnectResult>("apply_opencode_disconnection", { planId });
+}
+
+export async function getPiCodingAgentDetection(): Promise<ExternalAgentDetection> {
+  if (!isTauriRuntime()) return browserPiCodingAgentDetection;
+  return invoke<ExternalAgentDetection>("get_pi_coding_agent_detection");
+}
+
+export async function planPiCodingAgentConfiguration(): Promise<ExternalAgentConfigurationPlan> {
+  if (!isTauriRuntime()) {
+    return {
+      planId: "browser-pi-preview",
+      integrationId: "pi-coding-agent",
+      expiresAtMs: Date.now() + 5 * 60 * 1000,
+      configPath: browserPiCodingAgentDetection.configPath,
+      credentialPath:
+        "~/Library/Application Support/HAL100/credentials/pi-coding-agent-gateway.key",
+      changes: [
+        { path: "providers.hal100.baseUrl", value: "http://127.0.0.1:10100/v1" },
+        { path: "providers.hal100.api", value: "openai-completions" },
+        {
+          path: "providers.hal100.apiKey",
+          value: "固定/bin/cat命令读取独立0600凭据（内容不显示）",
+        },
+        { path: "providers.hal100.models[hal100-active]", value: "HAL100 当前模型" },
+      ],
+      gatewayProtocol: "openAiChatCompletions",
+      createsBackup: false,
+      preservesDefaultModel: true,
+      requiresConfirmation: true,
+      modelProfileRevision: "managed-route-v1",
+      warnings: [],
+    };
+  }
+  return invoke<ExternalAgentConfigurationPlan>("plan_pi_coding_agent_configuration");
+}
+
+export async function applyPiCodingAgentConfiguration(
+  planId: string,
+): Promise<ExternalAgentConfigurationResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会执行配置写入");
+  return invoke<ExternalAgentConfigurationResult>("apply_pi_coding_agent_configuration", {
+    planId,
+  });
+}
+
+export async function discardPiCodingAgentConfigurationPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_pi_coding_agent_configuration_plan", { planId });
+}
+
+export async function planPiCodingAgentDisconnection(): Promise<ExternalAgentDisconnectPlan> {
+  if (!isTauriRuntime()) {
+    return {
+      planId: "browser-pi-disconnect-preview",
+      integrationId: "pi-coding-agent",
+      expiresAtMs: Date.now() + 5 * 60 * 1000,
+      configPath: browserPiCodingAgentDetection.configPath,
+      credentialPath:
+        "~/Library/Application Support/HAL100/credentials/pi-coding-agent-gateway.key",
+      changes: [
+        { path: "providers.hal100", action: "removeManagedFragment" },
+        { path: "pi-coding-agent-gateway-key", action: "removeManagedCredential" },
+      ],
+      createsBackup: true,
+      revokesCredential: true,
+      requiresConfirmation: true,
+    };
+  }
+  return invoke<ExternalAgentDisconnectPlan>("plan_pi_coding_agent_disconnection");
+}
+
+export async function discardPiCodingAgentDisconnectionPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_pi_coding_agent_disconnection_plan", { planId });
+}
+
+export async function applyPiCodingAgentDisconnection(
+  planId: string,
+): Promise<ExternalAgentDisconnectResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会执行接入移除");
+  return invoke<ExternalAgentDisconnectResult>("apply_pi_coding_agent_disconnection", { planId });
+}
+
+export async function getOpenClawDetection(): Promise<ExternalAgentDetection> {
+  if (!isTauriRuntime()) return browserOpenClawDetection;
+  return invoke<ExternalAgentDetection>("get_openclaw_detection");
+}
+
+export async function planOpenClawConfiguration(
+  protocol: ExternalAgentGatewayProtocol,
+): Promise<ExternalAgentConfigurationPlan> {
+  if (!isTauriRuntime()) {
+    const api = {
+      openAiChatCompletions: "openai-completions",
+      openAiResponses: "openai-responses",
+      anthropicMessages: "anthropic-messages",
+    }[protocol];
+    return {
+      planId: "browser-openclaw-preview",
+      integrationId: "openclaw",
+      expiresAtMs: Date.now() + 5 * 60 * 1000,
+      configPath: browserOpenClawDetection.configPath,
+      credentialPath: "~/Library/Application Support/HAL100/credentials/openclaw-gateway.key",
+      changes: [
+        {
+          path: "secrets.providers.hal100_gateway",
+          value: "独立0600文件型SecretRef（内容不显示）",
+        },
+        {
+          path: "models.providers.hal100.baseUrl",
+          value:
+            protocol === "anthropicMessages"
+              ? "http://127.0.0.1:10100"
+              : "http://127.0.0.1:10100/v1",
+        },
+        { path: "models.providers.hal100.api", value: api },
+        { path: "models.providers.hal100.models[hal100-active]", value: "HAL100 当前模型" },
+      ],
+      gatewayProtocol: protocol,
+      createsBackup: false,
+      preservesDefaultModel: true,
+      requiresConfirmation: true,
+      modelProfileRevision: "managed-route-v1",
+      warnings: ["HAL100不会修改OpenClaw默认模型，也不会启动、停止或重启OpenClaw服务。"],
+    };
+  }
+  return invoke<ExternalAgentConfigurationPlan>("plan_openclaw_configuration", { protocol });
+}
+
+export async function applyOpenClawConfiguration(
+  planId: string,
+): Promise<ExternalAgentConfigurationResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会执行配置写入");
+  return invoke<ExternalAgentConfigurationResult>("apply_openclaw_configuration", { planId });
+}
+
+export async function discardOpenClawConfigurationPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_openclaw_configuration_plan", { planId });
+}
+
+export async function planOpenClawDisconnection(): Promise<ExternalAgentDisconnectPlan> {
+  if (!isTauriRuntime()) {
+    return {
+      planId: "browser-openclaw-disconnect-preview",
+      integrationId: "openclaw",
+      expiresAtMs: Date.now() + 5 * 60 * 1000,
+      configPath: browserOpenClawDetection.configPath,
+      credentialPath: "~/Library/Application Support/HAL100/credentials/openclaw-gateway.key",
+      changes: [
+        { path: "models.providers.hal100", action: "removeManagedFragment" },
+        { path: "secrets.providers.hal100_gateway", action: "removeManagedFragment" },
+        { path: "openclaw-gateway-key", action: "removeManagedCredential" },
+      ],
+      createsBackup: true,
+      revokesCredential: true,
+      requiresConfirmation: true,
+    };
+  }
+  return invoke<ExternalAgentDisconnectPlan>("plan_openclaw_disconnection");
+}
+
+export async function discardOpenClawDisconnectionPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_openclaw_disconnection_plan", { planId });
+}
+
+export async function applyOpenClawDisconnection(
+  planId: string,
+): Promise<ExternalAgentDisconnectResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会执行接入移除");
+  return invoke<ExternalAgentDisconnectResult>("apply_openclaw_disconnection", { planId });
+}
+
+export async function getHermesAgentDetection(): Promise<ExternalAgentDetection> {
+  if (!isTauriRuntime()) return browserHermesAgentDetection;
+  return invoke<ExternalAgentDetection>("get_hermes_agent_detection");
+}
+
+export async function planHermesAgentConfiguration(): Promise<ExternalAgentConfigurationPlan> {
+  if (!isTauriRuntime()) {
+    return {
+      planId: "browser-hermes-preview",
+      integrationId: "hermes-agent",
+      expiresAtMs: Date.now() + 5 * 60 * 1000,
+      configPath: browserHermesAgentDetection.configPath,
+      credentialPath: "~/.hermes/.env",
+      changes: [
+        { path: "providers.hal100.api", value: "http://127.0.0.1:10100/v1" },
+        { path: "providers.hal100.transport", value: "chat_completions" },
+        {
+          path: "providers.hal100.key_env",
+          value: "HAL100_HERMES_GATEWAY_KEY（值不显示）",
+        },
+        { path: "providers.hal100.models[hal100-active]", value: "HAL100 当前模型" },
+      ],
+      gatewayProtocol: "openAiChatCompletions",
+      createsBackup: false,
+      preservesDefaultModel: true,
+      requiresConfirmation: true,
+      modelProfileRevision: "managed-route-v1",
+      warnings: [
+        "Hermes 0.18.2 要求模型上下文至少 64000 Token；真实桌面环境会在预览前校验。",
+        "HAL100 只管理 default Profile 中的 hal100 Provider 和专属环境变量。",
+      ],
+    };
+  }
+  return invoke<ExternalAgentConfigurationPlan>("plan_hermes_agent_configuration");
+}
+
+export async function applyHermesAgentConfiguration(
+  planId: string,
+): Promise<ExternalAgentConfigurationResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会执行配置写入");
+  return invoke<ExternalAgentConfigurationResult>("apply_hermes_agent_configuration", {
+    planId,
+  });
+}
+
+export async function discardHermesAgentConfigurationPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_hermes_agent_configuration_plan", { planId });
+}
+
+export async function planHermesAgentDisconnection(): Promise<ExternalAgentDisconnectPlan> {
+  if (!isTauriRuntime()) {
+    return {
+      planId: "browser-hermes-disconnect-preview",
+      integrationId: "hermes-agent",
+      expiresAtMs: Date.now() + 5 * 60 * 1000,
+      configPath: browserHermesAgentDetection.configPath,
+      credentialPath: "~/.hermes/.env",
+      changes: [
+        { path: "providers.hal100", action: "removeManagedFragment" },
+        { path: "HAL100_HERMES_GATEWAY_KEY", action: "removeManagedCredential" },
+      ],
+      createsBackup: true,
+      revokesCredential: true,
+      requiresConfirmation: true,
+    };
+  }
+  return invoke<ExternalAgentDisconnectPlan>("plan_hermes_agent_disconnection");
+}
+
+export async function discardHermesAgentDisconnectionPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_hermes_agent_disconnection_plan", { planId });
+}
+
+export async function applyHermesAgentDisconnection(
+  planId: string,
+): Promise<ExternalAgentDisconnectResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会执行接入移除");
+  return invoke<ExternalAgentDisconnectResult>("apply_hermes_agent_disconnection", { planId });
 }

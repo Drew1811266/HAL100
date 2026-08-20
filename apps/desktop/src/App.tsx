@@ -6,7 +6,6 @@ import {
   Boxes,
   Cable,
   ChartNoAxesCombined,
-  Check,
   ChevronRight,
   CircleGauge,
   ClipboardCopy,
@@ -37,26 +36,26 @@ import {
 } from "lucide-react";
 import { type ComponentType, type FormEvent, useEffect, useState } from "react";
 import { Link, NavLink, Route, Routes, useNavigate } from "react-router-dom";
+import { AgentPage } from "./features/agent/AgentPage";
 import {
-  type AgentActionPlan,
-  type AgentCloudRunPreview,
-  type AgentCloudSessionPreview,
-  type AgentComponentState,
-  type AgentRunResult,
   activateExternalBackend,
-  applyAgentActionPlan,
   applyDataRetention,
   applyGgufImport,
+  applyHermesAgentConfiguration,
+  applyHermesAgentDisconnection,
   applyLlamaCppInstall,
   applyLlamaCppRemove,
   applyModelRemoval,
+  applyOpenClawConfiguration,
+  applyOpenClawDisconnection,
   applyOpenCodeConfiguration,
+  applyOpenCodeDisconnection,
+  applyPiCodingAgentConfiguration,
+  applyPiCodingAgentDisconnection,
   type BackendAuthMethod,
   type BackendDraft,
   type BackendKind,
   type BackendProbeStatus,
-  type BackendSummary,
-  cancelAgentRun,
   cancelModelDownload,
   completeOnboarding,
   createGenericClient,
@@ -64,29 +63,42 @@ import {
   type DownloadSource,
   deleteExternalBackend,
   deleteModelRoute,
+  discardHermesAgentConfigurationPlan,
+  discardHermesAgentDisconnectionPlan,
+  discardOpenClawConfigurationPlan,
+  discardOpenClawDisconnectionPlan,
+  discardOpenCodeConfigurationPlan,
+  discardOpenCodeDisconnectionPlan,
+  discardPiCodingAgentConfigurationPlan,
+  discardPiCodingAgentDisconnectionPlan,
   discoverLocalBackends,
   type EngineInstallPlan,
   type EngineRemovePlan,
-  type EnvironmentDiagnosticReport,
+  type ExternalAgentConfigurationPlan,
+  type ExternalAgentDetection,
+  type ExternalAgentDisconnectPlan,
+  type ExternalAgentGatewayProtocol,
+  type ExternalAgentIntegrationState,
   forceActivateExternalBackend,
   forceStartLlamaCppModel,
   forceStopLlamaCpp,
   type GenericClientCredential,
   type GgufImportPlan,
-  getAgentCloudSession,
-  getAgentStatus,
+  getAgentEcosystemCatalog,
   getAppOverview,
   getAuditLog,
   getBackendCatalog,
   getDataCleanupPreview,
   getDesktopSettings,
-  getEnvironmentDiagnostics,
   getGenericClientCatalog,
   getHardwareProfile,
+  getHermesAgentDetection,
   getLlamaCppStatus,
   getModelDownloads,
   getModelLibrary,
+  getOpenClawDetection,
   getOpenCodeDetection,
+  getPiCodingAgentDetection,
   getRemoteModelRepository,
   getUsageDashboard,
   isTauriRuntime,
@@ -96,30 +108,31 @@ import {
   type ModelRemovalPlan,
   type OpenCodeConfigPlan,
   type OpenCodeIntegrationState,
+  planHermesAgentConfiguration,
+  planHermesAgentDisconnection,
   planLlamaCppInstall,
   planLlamaCppRemove,
   planModelDownload,
   planModelRemoval,
+  planOpenClawConfiguration,
+  planOpenClawDisconnection,
   planOpenCodeConfiguration,
-  previewAgentCloudRun,
-  previewAgentCloudSession,
+  planOpenCodeDisconnection,
+  planPiCodingAgentConfiguration,
+  planPiCodingAgentDisconnection,
   probeExternalBackend,
   type RemoteModelRepository,
   type RetentionSettingsDraft,
   resumeModelDownload,
   revokeGenericClient,
-  runAgentPrompt,
   saveExternalBackend,
   saveModelRoute,
   searchRemoteModels,
   selectAndPlanGgufImport,
   setDefaultDownloadSource,
   setLaunchAtLogin,
-  startAgentCloudSession,
   startLlamaCppModel,
   startModelDownload,
-  stopAgentCloudSession,
-  stopAgentRuntime,
   stopLlamaCpp,
   testActiveModel,
   type UsageRequestSummary,
@@ -1320,18 +1333,40 @@ const integrationStateCopy: Record<
   modifiedOutsideHal100: { label: "配置已被外部修改", tone: "warning" },
 };
 
+const externalIntegrationStateCopy: Record<
+  ExternalAgentIntegrationState,
+  { label: string; tone: "ok" | "neutral" | "warning" }
+> = {
+  notInstalled: { label: "未安装", tone: "neutral" },
+  installedNotConfigured: { label: "尚未配置", tone: "neutral" },
+  configured: { label: "已由 HAL100 配置", tone: "ok" },
+  needsRefresh: { label: "配置需要刷新", tone: "warning" },
+  conflict: { label: "存在配置冲突", tone: "warning" },
+  modifiedOutsideHal100: { label: "配置已被外部修改", tone: "warning" },
+  unsupportedVersion: { label: "版本暂不支持", tone: "warning" },
+  blocked: { label: "接入被阻止", tone: "warning" },
+};
+
+const externalAgentProtocolCopy: Record<ExternalAgentGatewayProtocol, string> = {
+  openAiChatCompletions: "Chat Completions",
+  openAiResponses: "Responses",
+  anthropicMessages: "Anthropic Messages",
+};
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function OpenCodeConfirmationDialog({
+function ManagedAgentConfigurationDialog({
+  displayName,
   plan,
   applying,
   error,
   onCancel,
   onApply,
 }: {
-  plan: OpenCodeConfigPlan;
+  displayName: string;
+  plan: OpenCodeConfigPlan | ExternalAgentConfigurationPlan;
   applying: boolean;
   error: string | null;
   onCancel: () => void;
@@ -1341,7 +1376,7 @@ function OpenCodeConfirmationDialog({
   return (
     <div className="dialog-backdrop" role="presentation">
       <section
-        aria-labelledby="opencode-dialog-title"
+        aria-labelledby="managed-agent-dialog-title"
         aria-modal="true"
         className="dialog"
         role="dialog"
@@ -1349,7 +1384,7 @@ function OpenCodeConfirmationDialog({
         <div className="dialog-heading">
           <div>
             <p className="eyebrow">需要确认</p>
-            <h2 id="opencode-dialog-title">配置 OpenCode</h2>
+            <h2 id="managed-agent-dialog-title">配置 {displayName}</h2>
           </div>
           <button
             aria-label="关闭"
@@ -1380,6 +1415,16 @@ function OpenCodeConfirmationDialog({
             不会修改默认模型或已有 Provider。
           </p>
         </div>
+        {"warnings" in plan && plan.warnings.length > 0 && (
+          <div className="warning-list">
+            <AlertTriangle size={17} />
+            <div>
+              {plan.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
         {!runtime && <p className="inline-notice">浏览器预览模式只能查看变更，不能应用。</p>}
         {error && <p className="inline-error">{error}</p>}
         <div className="dialog-actions">
@@ -1393,6 +1438,87 @@ function OpenCodeConfirmationDialog({
             type="button"
           >
             {applying ? "正在验证并应用…" : "确认并应用配置"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ManagedAgentDisconnectDialog({
+  displayName,
+  plan,
+  applying,
+  error,
+  onCancel,
+  onApply,
+}: {
+  displayName: string;
+  plan: ExternalAgentDisconnectPlan;
+  applying: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onApply: () => void;
+}) {
+  const runtime = isTauriRuntime();
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section
+        aria-labelledby="managed-agent-disconnect-title"
+        aria-modal="true"
+        className="dialog"
+        role="dialog"
+      >
+        <div className="dialog-heading">
+          <div>
+            <p className="eyebrow">需要确认</p>
+            <h2 id="managed-agent-disconnect-title">断开 {displayName}</h2>
+          </div>
+          <button
+            aria-label="关闭"
+            className="icon-button"
+            disabled={applying}
+            onClick={onCancel}
+            type="button"
+          >
+            <X size={17} />
+          </button>
+        </div>
+        <p className="dialog-intro">
+          只会从 <code>{plan.configPath}</code> 移除 HAL100 自己管理的内容：
+        </p>
+        <div className="change-preview">
+          {plan.changes.map((change) => (
+            <div key={`${change.action}:${change.path}`}>
+              <code>- {change.path}</code>
+              <span>
+                {change.action === "removeManagedCredential"
+                  ? "吊销并删除专属 Key"
+                  : "移除受管分片"}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="safety-summary">
+          <ShieldCheck size={17} />
+          <p>
+            应用前会备份配置。用户的默认模型、其他 Provider 和项目配置不会被修改；
+            {displayName} 专属 Key 吊销后无法继续调用 HAL100 Gateway。
+          </p>
+        </div>
+        {!runtime && <p className="inline-notice">浏览器预览模式只能查看变更，不能断开接入。</p>}
+        {error && <p className="inline-error">{error}</p>}
+        <div className="dialog-actions">
+          <button className="secondary-button" disabled={applying} onClick={onCancel} type="button">
+            取消
+          </button>
+          <button
+            className="danger-button"
+            disabled={applying || !runtime}
+            onClick={onApply}
+            type="button"
+          >
+            {applying ? "等待原生确认…" : "确认断开接入"}
           </button>
         </div>
       </section>
@@ -1573,10 +1699,631 @@ function GenericClientAccess() {
   );
 }
 
+function PiCodingAgentIntegrationCard() {
+  const queryClient = useQueryClient();
+  const detection = useQuery<ExternalAgentDetection>({
+    queryKey: ["pi-coding-agent-detection"],
+    queryFn: getPiCodingAgentDetection,
+  });
+  const [plan, setPlan] = useState<ExternalAgentConfigurationPlan | null>(null);
+  const [disconnectPlan, setDisconnectPlan] = useState<ExternalAgentDisconnectPlan | null>(null);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const planMutation = useMutation({
+    mutationFn: planPiCodingAgentConfiguration,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setPlan(nextPlan);
+    },
+  });
+  const applyMutation = useMutation({
+    mutationFn: (planId: string) => applyPiCodingAgentConfiguration(planId),
+    onSuccess: async (result) => {
+      setPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `Pi 配置完成，备份已保存到 ${result.backupPath}`
+          : "Pi 配置完成，独立凭据已生效。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["pi-coding-agent-detection"] });
+    },
+  });
+  const disconnectPlanMutation = useMutation({
+    mutationFn: planPiCodingAgentDisconnection,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setDisconnectPlan(nextPlan);
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: (planId: string) => applyPiCodingAgentDisconnection(planId),
+    onSuccess: async (result) => {
+      setDisconnectPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `Pi 接入已断开，配置备份保存在 ${result.backupPath}`
+          : "Pi 接入已断开，专属凭据已吊销。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["pi-coding-agent-detection"] });
+    },
+  });
+
+  if (detection.isPending) {
+    return <section className="integration-card state-message">正在检测 Pi Coding Agent…</section>;
+  }
+  if (detection.isError) {
+    return (
+      <section className="integration-card state-message error">
+        {errorMessage(detection.error)}
+      </section>
+    );
+  }
+
+  const data = detection.data;
+  const stateCopy = externalIntegrationStateCopy[data.integrationState];
+  const connected =
+    data.integrationState === "configured" || data.integrationState === "needsRefresh";
+  const cannotConfigure =
+    !data.installed ||
+    data.integrationState === "conflict" ||
+    data.integrationState === "modifiedOutsideHal100" ||
+    data.integrationState === "unsupportedVersion" ||
+    data.integrationState === "blocked";
+
+  return (
+    <>
+      <section className="integration-card">
+        <div className="integration-heading">
+          <div className="integration-brand">π</div>
+          <div>
+            <h2>Pi Coding Agent</h2>
+            <p>
+              {data.installed
+                ? `已检测到 ${data.version ?? "未知版本"}`
+                : "未从常用安装位置检测到官方 Pi CLI"}
+            </p>
+          </div>
+          <span className={`status-pill ${stateCopy.tone}`}>{stateCopy.label}</span>
+        </div>
+        <details className="inline-disclosure">
+          <summary>
+            <span>连接详情</span>
+            <ChevronRight size={14} />
+          </summary>
+          <dl className="integration-details">
+            <div>
+              <dt>Gateway Base URL</dt>
+              <dd>http://127.0.0.1:10100/v1</dd>
+            </div>
+            <div>
+              <dt>Pi 模型配置</dt>
+              <dd>{data.configPath}</dd>
+            </div>
+            <div>
+              <dt>模型契约</dt>
+              <dd>{data.modelProfileRevision}</dd>
+            </div>
+            <div>
+              <dt>隔离边界</dt>
+              <dd>{connected ? "Pi 专属 Key · 独立于内置 Runtime" : "配置后启用"}</dd>
+            </div>
+          </dl>
+        </details>
+        {data.warnings.length > 0 && (
+          <div className="warning-list">
+            <AlertTriangle size={17} />
+            <div>
+              {data.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
+        {(planMutation.isError || disconnectPlanMutation.isError) && (
+          <p className="inline-error">
+            {errorMessage(planMutation.error ?? disconnectPlanMutation.error)}
+          </p>
+        )}
+        {resultMessage && <p className="inline-success">{resultMessage}</p>}
+        <div className="integration-actions">
+          <button
+            className="secondary-button"
+            disabled={detection.isFetching}
+            onClick={() => detection.refetch()}
+            type="button"
+          >
+            {detection.isFetching ? "检测中…" : "重新检测"}
+          </button>
+          <button
+            className="primary-button"
+            disabled={
+              cannotConfigure || planMutation.isPending || data.integrationState === "configured"
+            }
+            onClick={() => planMutation.mutate()}
+            type="button"
+          >
+            {planMutation.isPending
+              ? "正在生成预览…"
+              : data.integrationState === "configured"
+                ? "配置已生效"
+                : data.integrationState === "needsRefresh"
+                  ? "刷新 Pi 配置"
+                  : "配置 Pi"}
+          </button>
+          {connected && (
+            <button
+              className="danger-button"
+              disabled={disconnectPlanMutation.isPending}
+              onClick={() => disconnectPlanMutation.mutate()}
+              type="button"
+            >
+              {disconnectPlanMutation.isPending ? "正在生成预览…" : "断开接入"}
+            </button>
+          )}
+        </div>
+      </section>
+      {plan && (
+        <ManagedAgentConfigurationDialog
+          applying={applyMutation.isPending}
+          displayName="Pi Coding Agent"
+          error={applyMutation.isError ? errorMessage(applyMutation.error) : null}
+          onApply={() => applyMutation.mutate(plan.planId)}
+          onCancel={() => {
+            if (!applyMutation.isPending) {
+              void discardPiCodingAgentConfigurationPlan(plan.planId);
+              setPlan(null);
+            }
+          }}
+          plan={plan}
+        />
+      )}
+      {disconnectPlan && (
+        <ManagedAgentDisconnectDialog
+          applying={disconnectMutation.isPending}
+          displayName="Pi Coding Agent"
+          error={disconnectMutation.isError ? errorMessage(disconnectMutation.error) : null}
+          onApply={() => disconnectMutation.mutate(disconnectPlan.planId)}
+          onCancel={() => {
+            if (!disconnectMutation.isPending) {
+              void discardPiCodingAgentDisconnectionPlan(disconnectPlan.planId);
+              setDisconnectPlan(null);
+            }
+          }}
+          plan={disconnectPlan}
+        />
+      )}
+    </>
+  );
+}
+
+function OpenClawIntegrationCard() {
+  const queryClient = useQueryClient();
+  const detection = useQuery<ExternalAgentDetection>({
+    queryKey: ["openclaw-detection"],
+    queryFn: getOpenClawDetection,
+  });
+  const [protocol, setProtocol] = useState<ExternalAgentGatewayProtocol>("openAiChatCompletions");
+  const [plan, setPlan] = useState<ExternalAgentConfigurationPlan | null>(null);
+  const [disconnectPlan, setDisconnectPlan] = useState<ExternalAgentDisconnectPlan | null>(null);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (detection.data?.configuredProtocol) {
+      setProtocol(detection.data.configuredProtocol);
+    }
+  }, [detection.data?.configuredProtocol]);
+  const planMutation = useMutation({
+    mutationFn: (selectedProtocol: ExternalAgentGatewayProtocol) =>
+      planOpenClawConfiguration(selectedProtocol),
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setPlan(nextPlan);
+    },
+  });
+  const applyMutation = useMutation({
+    mutationFn: (planId: string) => applyOpenClawConfiguration(planId),
+    onSuccess: async (result) => {
+      setPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `OpenClaw 配置完成，备份已保存到 ${result.backupPath}`
+          : "OpenClaw 配置完成，独立凭据已生效。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["openclaw-detection"] });
+    },
+  });
+  const disconnectPlanMutation = useMutation({
+    mutationFn: planOpenClawDisconnection,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setDisconnectPlan(nextPlan);
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: (planId: string) => applyOpenClawDisconnection(planId),
+    onSuccess: async (result) => {
+      setDisconnectPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `OpenClaw 接入已断开，配置备份保存在 ${result.backupPath}`
+          : "OpenClaw 接入已断开，专属凭据已吊销。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["openclaw-detection"] });
+    },
+  });
+
+  if (detection.isPending) {
+    return <section className="integration-card state-message">正在检测 OpenClaw…</section>;
+  }
+  if (detection.isError) {
+    return (
+      <section className="integration-card state-message error">
+        {errorMessage(detection.error)}
+      </section>
+    );
+  }
+
+  const data = detection.data;
+  const stateCopy = externalIntegrationStateCopy[data.integrationState];
+  const connected =
+    data.integrationState === "configured" || data.integrationState === "needsRefresh";
+  const selectedProtocolAlreadyActive =
+    data.integrationState === "configured" && data.configuredProtocol === protocol;
+  const cannotConfigure =
+    !data.installed ||
+    data.integrationState === "conflict" ||
+    data.integrationState === "modifiedOutsideHal100" ||
+    data.integrationState === "unsupportedVersion" ||
+    data.integrationState === "blocked";
+
+  return (
+    <>
+      <section className="integration-card">
+        <div className="integration-heading">
+          <div className="integration-brand openclaw-brand">CL</div>
+          <div>
+            <h2>OpenClaw</h2>
+            <p>
+              {data.installed
+                ? `已检测到 ${data.version ?? "未知版本"}`
+                : "未从常用安装位置检测到官方 OpenClaw CLI"}
+            </p>
+          </div>
+          <span className={`status-pill ${stateCopy.tone}`}>{stateCopy.label}</span>
+        </div>
+        <details className="inline-disclosure">
+          <summary>
+            <span>连接详情</span>
+            <ChevronRight size={14} />
+          </summary>
+          <dl className="integration-details">
+            <div>
+              <dt>OpenClaw 配置</dt>
+              <dd>{data.configPath}</dd>
+            </div>
+            <div>
+              <dt>当前协议</dt>
+              <dd>
+                {data.configuredProtocol
+                  ? externalAgentProtocolCopy[data.configuredProtocol]
+                  : "尚未配置"}
+              </dd>
+            </div>
+            <div>
+              <dt>模型契约</dt>
+              <dd>{data.modelProfileRevision}</dd>
+            </div>
+            <div>
+              <dt>隔离边界</dt>
+              <dd>{connected ? "OpenClaw 专属 Key · 文件型 SecretRef" : "配置后启用"}</dd>
+            </div>
+          </dl>
+        </details>
+        <label className="integration-protocol-selector">
+          <span>Gateway 协议</span>
+          <select
+            disabled={planMutation.isPending || applyMutation.isPending}
+            onChange={(event) => setProtocol(event.target.value as ExternalAgentGatewayProtocol)}
+            value={protocol}
+          >
+            <option value="openAiChatCompletions">Chat Completions</option>
+            <option value="openAiResponses">Responses</option>
+            <option value="anthropicMessages">Anthropic Messages</option>
+          </select>
+          <small>切换协议只替换 HAL100 自己的 Provider 分片，不改变 OpenClaw 默认模型。</small>
+        </label>
+        {data.warnings.length > 0 && (
+          <div className="warning-list">
+            <AlertTriangle size={17} />
+            <div>
+              {data.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
+        {(planMutation.isError || disconnectPlanMutation.isError) && (
+          <p className="inline-error">
+            {errorMessage(planMutation.error ?? disconnectPlanMutation.error)}
+          </p>
+        )}
+        {resultMessage && <p className="inline-success">{resultMessage}</p>}
+        <div className="integration-actions">
+          <button
+            className="secondary-button"
+            disabled={detection.isFetching}
+            onClick={() => detection.refetch()}
+            type="button"
+          >
+            {detection.isFetching ? "检测中…" : "重新检测"}
+          </button>
+          <button
+            className="primary-button"
+            disabled={cannotConfigure || planMutation.isPending || selectedProtocolAlreadyActive}
+            onClick={() => planMutation.mutate(protocol)}
+            type="button"
+          >
+            {planMutation.isPending
+              ? "正在调用官方工具验证…"
+              : selectedProtocolAlreadyActive
+                ? "所选协议已生效"
+                : connected
+                  ? "切换 OpenClaw 协议"
+                  : "配置 OpenClaw"}
+          </button>
+          {connected && (
+            <button
+              className="danger-button"
+              disabled={disconnectPlanMutation.isPending}
+              onClick={() => disconnectPlanMutation.mutate()}
+              type="button"
+            >
+              {disconnectPlanMutation.isPending ? "正在生成预览…" : "断开接入"}
+            </button>
+          )}
+        </div>
+      </section>
+      {plan && (
+        <ManagedAgentConfigurationDialog
+          applying={applyMutation.isPending}
+          displayName="OpenClaw"
+          error={applyMutation.isError ? errorMessage(applyMutation.error) : null}
+          onApply={() => applyMutation.mutate(plan.planId)}
+          onCancel={() => {
+            if (!applyMutation.isPending) {
+              void discardOpenClawConfigurationPlan(plan.planId);
+              setPlan(null);
+            }
+          }}
+          plan={plan}
+        />
+      )}
+      {disconnectPlan && (
+        <ManagedAgentDisconnectDialog
+          applying={disconnectMutation.isPending}
+          displayName="OpenClaw"
+          error={disconnectMutation.isError ? errorMessage(disconnectMutation.error) : null}
+          onApply={() => disconnectMutation.mutate(disconnectPlan.planId)}
+          onCancel={() => {
+            if (!disconnectMutation.isPending) {
+              void discardOpenClawDisconnectionPlan(disconnectPlan.planId);
+              setDisconnectPlan(null);
+            }
+          }}
+          plan={disconnectPlan}
+        />
+      )}
+    </>
+  );
+}
+
+function HermesAgentIntegrationCard() {
+  const queryClient = useQueryClient();
+  const detection = useQuery<ExternalAgentDetection>({
+    queryKey: ["hermes-agent-detection"],
+    queryFn: getHermesAgentDetection,
+  });
+  const [plan, setPlan] = useState<ExternalAgentConfigurationPlan | null>(null);
+  const [disconnectPlan, setDisconnectPlan] = useState<ExternalAgentDisconnectPlan | null>(null);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const planMutation = useMutation({
+    mutationFn: planHermesAgentConfiguration,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setPlan(nextPlan);
+    },
+  });
+  const applyMutation = useMutation({
+    mutationFn: (planId: string) => applyHermesAgentConfiguration(planId),
+    onSuccess: async (result) => {
+      setPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `Hermes 配置完成，非敏感 YAML 备份已保存到 ${result.backupPath}`
+          : "Hermes 配置完成，独立凭据已生效。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["hermes-agent-detection"] });
+    },
+  });
+  const disconnectPlanMutation = useMutation({
+    mutationFn: planHermesAgentDisconnection,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setDisconnectPlan(nextPlan);
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: (planId: string) => applyHermesAgentDisconnection(planId),
+    onSuccess: async (result) => {
+      setDisconnectPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `Hermes 接入已断开，非敏感 YAML 备份保存在 ${result.backupPath}`
+          : "Hermes 接入已断开，专属凭据已吊销。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["hermes-agent-detection"] });
+    },
+  });
+
+  if (detection.isPending) {
+    return <section className="integration-card state-message">正在检测 Hermes Agent…</section>;
+  }
+  if (detection.isError) {
+    return (
+      <section className="integration-card state-message error">
+        {errorMessage(detection.error)}
+      </section>
+    );
+  }
+
+  const data = detection.data;
+  const stateCopy = externalIntegrationStateCopy[data.integrationState];
+  const connected =
+    data.integrationState === "configured" || data.integrationState === "needsRefresh";
+  const cannotConfigure =
+    !data.installed ||
+    data.integrationState === "conflict" ||
+    data.integrationState === "modifiedOutsideHal100" ||
+    data.integrationState === "unsupportedVersion" ||
+    data.integrationState === "blocked";
+
+  return (
+    <>
+      <section className="integration-card">
+        <div className="integration-heading">
+          <div className="integration-brand hermes-brand">H</div>
+          <div>
+            <h2>Hermes Agent</h2>
+            <p>
+              {data.installed
+                ? `已检测到 ${data.version ?? "未知版本"}`
+                : "未从常用安装位置检测到官方 Hermes CLI"}
+            </p>
+          </div>
+          <span className={`status-pill ${stateCopy.tone}`}>{stateCopy.label}</span>
+        </div>
+        <details className="inline-disclosure">
+          <summary>
+            <span>连接详情</span>
+            <ChevronRight size={14} />
+          </summary>
+          <dl className="integration-details">
+            <div>
+              <dt>Hermes default Profile</dt>
+              <dd>{data.configPath}</dd>
+            </div>
+            <div>
+              <dt>Gateway 协议</dt>
+              <dd>Chat Completions</dd>
+            </div>
+            <div>
+              <dt>运行前置条件</dt>
+              <dd>Hermes ≥ 0.18.2 · 上下文 ≥ 64000 Token</dd>
+            </div>
+            <div>
+              <dt>隔离边界</dt>
+              <dd>
+                {connected
+                  ? "Hermes 专属 Key · .env 独立变量"
+                  : "只管理 providers.hal100 与专属变量"}
+              </dd>
+            </div>
+          </dl>
+        </details>
+        {data.warnings.length > 0 && (
+          <div className="warning-list">
+            <AlertTriangle size={17} />
+            <div>
+              {data.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
+        {(planMutation.isError || disconnectPlanMutation.isError) && (
+          <p className="inline-error">
+            {errorMessage(planMutation.error ?? disconnectPlanMutation.error)}
+          </p>
+        )}
+        {resultMessage && <p className="inline-success">{resultMessage}</p>}
+        <div className="integration-actions">
+          <button
+            className="secondary-button"
+            disabled={detection.isFetching}
+            onClick={() => detection.refetch()}
+            type="button"
+          >
+            {detection.isFetching ? "检测中…" : "重新检测"}
+          </button>
+          <button
+            className="primary-button"
+            disabled={
+              cannotConfigure || planMutation.isPending || data.integrationState === "configured"
+            }
+            onClick={() => planMutation.mutate()}
+            type="button"
+          >
+            {planMutation.isPending
+              ? "正在调用官方 CLI 验证…"
+              : data.integrationState === "configured"
+                ? "配置已生效"
+                : data.integrationState === "needsRefresh"
+                  ? "刷新 Hermes 配置"
+                  : "配置 Hermes"}
+          </button>
+          {connected && (
+            <button
+              className="danger-button"
+              disabled={disconnectPlanMutation.isPending}
+              onClick={() => disconnectPlanMutation.mutate()}
+              type="button"
+            >
+              {disconnectPlanMutation.isPending ? "正在生成预览…" : "断开接入"}
+            </button>
+          )}
+        </div>
+      </section>
+      {plan && (
+        <ManagedAgentConfigurationDialog
+          applying={applyMutation.isPending}
+          displayName="Hermes Agent"
+          error={applyMutation.isError ? errorMessage(applyMutation.error) : null}
+          onApply={() => applyMutation.mutate(plan.planId)}
+          onCancel={() => {
+            if (!applyMutation.isPending) {
+              void discardHermesAgentConfigurationPlan(plan.planId);
+              setPlan(null);
+            }
+          }}
+          plan={plan}
+        />
+      )}
+      {disconnectPlan && (
+        <ManagedAgentDisconnectDialog
+          applying={disconnectMutation.isPending}
+          displayName="Hermes Agent"
+          error={disconnectMutation.isError ? errorMessage(disconnectMutation.error) : null}
+          onApply={() => disconnectMutation.mutate(disconnectPlan.planId)}
+          onCancel={() => {
+            if (!disconnectMutation.isPending) {
+              void discardHermesAgentDisconnectionPlan(disconnectPlan.planId);
+              setDisconnectPlan(null);
+            }
+          }}
+          plan={disconnectPlan}
+        />
+      )}
+    </>
+  );
+}
+
 function IntegrationsPage() {
   const queryClient = useQueryClient();
+  const ecosystem = useQuery({
+    queryKey: ["agent-ecosystem-catalog"],
+    queryFn: getAgentEcosystemCatalog,
+  });
   const detection = useQuery({ queryKey: ["opencode-detection"], queryFn: getOpenCodeDetection });
   const [plan, setPlan] = useState<OpenCodeConfigPlan | null>(null);
+  const [disconnectPlan, setDisconnectPlan] = useState<ExternalAgentDisconnectPlan | null>(null);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const planMutation = useMutation({
     mutationFn: planOpenCodeConfiguration,
@@ -1597,14 +2344,36 @@ function IntegrationsPage() {
       await queryClient.invalidateQueries({ queryKey: ["opencode-detection"] });
     },
   });
+  const disconnectPlanMutation = useMutation({
+    mutationFn: planOpenCodeDisconnection,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setDisconnectPlan(nextPlan);
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: (planId: string) => applyOpenCodeDisconnection(planId),
+    onSuccess: async (result) => {
+      setDisconnectPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `接入已断开，配置备份保存在 ${result.backupPath}`
+          : "接入已断开，OpenCode 专属凭据已吊销。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["opencode-detection"] });
+    },
+  });
 
-  if (detection.isPending) {
-    return <div className="state-message">正在只读检测 OpenCode 和全局配置…</div>;
+  if (detection.isPending || ecosystem.isPending) {
+    return <div className="state-message">正在读取 Agent 接入边界并检测外部客户端…</div>;
   }
-  if (detection.isError) {
-    return <div className="state-message error">{errorMessage(detection.error)}</div>;
+  if (detection.isError || ecosystem.isError) {
+    return (
+      <div className="state-message error">{errorMessage(detection.error ?? ecosystem.error)}</div>
+    );
   }
   const data = detection.data;
+  const ecosystemData = ecosystem.data;
   const stateCopy = integrationStateCopy[data.integrationState];
   const cannotPlan =
     data.integrationState === "conflict" || data.integrationState === "modifiedOutsideHal100";
@@ -1615,9 +2384,36 @@ function IntegrationsPage() {
         <div>
           <p className="eyebrow">客户端接入</p>
           <h1>软件接入</h1>
-          <p>让 OpenCode 通过固定的 HAL100 网关调用本地模型，并按专属凭据准确归集 Token。</p>
+          <p>让外部 Agent 通过固定的 HAL100 Gateway 调用模型，并按独立身份准确归集 Token。</p>
         </div>
       </header>
+
+      <section className="agent-boundary-card" aria-labelledby="agent-boundary-title">
+        <div className="agent-boundary-heading">
+          <div>
+            <p className="eyebrow">运行边界</p>
+            <h2 id="agent-boundary-title">内置 Runtime 与外部 Agent 相互独立</h2>
+          </div>
+          <ShieldCheck size={20} />
+        </div>
+        <div className="agent-boundary-grid">
+          <article>
+            <span className="boundary-kind">HAL100 私有组件</span>
+            <strong>{ecosystemData.builtInRuntime.displayName}（内置）</strong>
+            <p>
+              底层使用固定版本 {ecosystemData.builtInRuntime.engineName}；
+              {ecosystemData.builtInRuntime.isolationSummary}。
+            </p>
+            <code>{ecosystemData.builtInRuntime.clientAppId}</code>
+          </article>
+          <article>
+            <span className="boundary-kind">用户安装的软件</span>
+            <strong>外部 Agent 集成</strong>
+            <p>独立安装、配置、会话和升级；HAL100 只管理明确预览过的配置片段和专属 Key。</p>
+            <code>opencode · pi-coding-agent · openclaw · hermes-agent</code>
+          </article>
+        </div>
+      </section>
 
       <section className="integration-card">
         <div className="integration-heading">
@@ -1667,7 +2463,11 @@ function IntegrationsPage() {
             </div>
           </div>
         )}
-        {planMutation.isError && <p className="inline-error">{errorMessage(planMutation.error)}</p>}
+        {(planMutation.isError || disconnectPlanMutation.isError) && (
+          <p className="inline-error">
+            {errorMessage(planMutation.error ?? disconnectPlanMutation.error)}
+          </p>
+        )}
         {resultMessage && <p className="inline-success">{resultMessage}</p>}
 
         <div className="integration-actions">
@@ -1693,8 +2493,24 @@ function IntegrationsPage() {
                 ? "配置已生效"
                 : "配置 OpenCode"}
           </button>
+          {data.integrationState === "configured" && (
+            <button
+              className="danger-button"
+              disabled={disconnectPlanMutation.isPending}
+              onClick={() => disconnectPlanMutation.mutate()}
+              type="button"
+            >
+              {disconnectPlanMutation.isPending ? "正在生成预览…" : "断开接入"}
+            </button>
+          )}
         </div>
       </section>
+
+      <PiCodingAgentIntegrationCard />
+
+      <OpenClawIntegrationCard />
+
+      <HermesAgentIntegrationCard />
 
       <details className="disclosure-card generic-access-disclosure">
         <summary>
@@ -1713,14 +2529,33 @@ function IntegrationsPage() {
       </details>
 
       {plan && (
-        <OpenCodeConfirmationDialog
+        <ManagedAgentConfigurationDialog
           applying={applyMutation.isPending}
+          displayName="OpenCode"
           error={applyMutation.isError ? errorMessage(applyMutation.error) : null}
           onApply={() => applyMutation.mutate(plan.planId)}
           onCancel={() => {
-            if (!applyMutation.isPending) setPlan(null);
+            if (!applyMutation.isPending) {
+              void discardOpenCodeConfigurationPlan(plan.planId);
+              setPlan(null);
+            }
           }}
           plan={plan}
+        />
+      )}
+      {disconnectPlan && (
+        <ManagedAgentDisconnectDialog
+          applying={disconnectMutation.isPending}
+          displayName="OpenCode"
+          error={disconnectMutation.isError ? errorMessage(disconnectMutation.error) : null}
+          onApply={() => disconnectMutation.mutate(disconnectPlan.planId)}
+          onCancel={() => {
+            if (!disconnectMutation.isPending) {
+              void discardOpenCodeDisconnectionPlan(disconnectPlan.planId);
+              setDisconnectPlan(null);
+            }
+          }}
+          plan={disconnectPlan}
         />
       )}
     </div>
@@ -3089,1040 +3924,6 @@ function UsagePage() {
       <section className="idle-cost-note">
         <Database className="idle-cost-icon" size={16} />
         <p>统计页不轮询；用量由后台异步批量写入 SQLite WAL，只在打开本页或手动刷新时查询。</p>
-      </section>
-    </div>
-  );
-}
-
-const agentStateCopy: Record<AgentComponentState, { label: string; tone: string }> = {
-  unavailable: { label: "不可用", tone: "warning" },
-  stopped: { label: "按需待机", tone: "neutral" },
-  starting: { label: "正在启动", tone: "warning" },
-  running: { label: "运行中", tone: "ok" },
-  error: { label: "运行异常", tone: "warning" },
-};
-
-const defaultAgentPrompt = "检测这台 Mac，并根据真实硬件给出适合的本地模型参数范围和量化建议。";
-
-const agentActionCopy: Record<
-  AgentActionPlan["actionKind"],
-  { title: string; targetLabel: string; pendingSummary: string }
-> = {
-  startOrSwitchModel: {
-    title: "启动或切换本地模型",
-    targetLabel: "目标模型",
-    pendingSummary: "Agent 尚未执行任何模型切换",
-  },
-  removeModel: {
-    title: "移除本地模型",
-    targetLabel: "目标模型",
-    pendingSummary: "Agent 尚未移动模型文件或移除索引",
-  },
-  installLlamaCpp: {
-    title: "安装 llama.cpp",
-    targetLabel: "目标引擎",
-    pendingSummary: "Agent 尚未下载或安装引擎",
-  },
-  removeLlamaCpp: {
-    title: "卸载 llama.cpp",
-    targetLabel: "目标引擎",
-    pendingSummary: "Agent 尚未停止或删除引擎",
-  },
-  configureOpenCode: {
-    title: "配置 OpenCode",
-    targetLabel: "目标软件",
-    pendingSummary: "Agent 尚未写入任何配置",
-  },
-};
-
-const diagnosticStatusCopy: Record<
-  EnvironmentDiagnosticReport["status"],
-  { label: string; tone: string }
-> = {
-  healthy: { label: "环境健康", tone: "ok" },
-  needsAttention: { label: "需要关注", tone: "warning" },
-  error: { label: "存在错误", tone: "danger" },
-};
-
-const diagnosticComponentCopy: Record<
-  EnvironmentDiagnosticReport["findings"][number]["component"],
-  string
-> = {
-  gateway: "Gateway",
-  inferenceEngine: "推理引擎",
-  modelLibrary: "模型库",
-  openCode: "OpenCode",
-};
-
-function AgentPage() {
-  const queryClient = useQueryClient();
-  const runtime = isTauriRuntime();
-  const [prompt, setPrompt] = useState(defaultAgentPrompt);
-  const [result, setResult] = useState<AgentRunResult | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [providerMode, setProviderMode] = useState<"local" | "cloud-single" | "cloud-session">(
-    "local",
-  );
-  const [cloudBackendId, setCloudBackendId] = useState("");
-  const [cloudModel, setCloudModel] = useState("");
-  const [cloudRunPreview, setCloudRunPreview] = useState<AgentCloudRunPreview | null>(null);
-  const [cloudSessionPreview, setCloudSessionPreview] = useState<AgentCloudSessionPreview | null>(
-    null,
-  );
-  const status = useQuery({
-    queryKey: ["agent-status"],
-    queryFn: getAgentStatus,
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: false,
-  });
-  const backends = useQuery({
-    queryKey: ["backend-catalog"],
-    queryFn: getBackendCatalog,
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: false,
-  });
-  const cloudSession = useQuery({
-    queryKey: ["agent-cloud-session"],
-    queryFn: getAgentCloudSession,
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: false,
-  });
-  const diagnostics = useQuery({
-    queryKey: ["environment-diagnostics"],
-    queryFn: getEnvironmentDiagnostics,
-    enabled: false,
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: false,
-  });
-  useEffect(() => {
-    if (cloudSession.data?.active) {
-      setProviderMode("cloud-session");
-    }
-  }, [cloudSession.data?.active]);
-  const runMutation = useMutation({
-    mutationFn: runAgentPrompt,
-    onSuccess: (nextResult) => {
-      setResult(nextResult);
-      setCloudRunPreview(null);
-      setActionMessage(null);
-      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
-      queryClient.invalidateQueries({ queryKey: ["agent-cloud-session"] });
-      queryClient.invalidateQueries({ queryKey: ["usage-dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
-    },
-    onError: () => {
-      queryClient.invalidateQueries({ queryKey: ["agent-cloud-session"] });
-      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
-    },
-  });
-  const previewRunMutation = useMutation({
-    mutationFn: previewAgentCloudRun,
-    onSuccess: (preview) => setCloudRunPreview(preview),
-  });
-  const previewSessionMutation = useMutation({
-    mutationFn: previewAgentCloudSession,
-    onSuccess: (preview) => setCloudSessionPreview(preview),
-  });
-  const startSessionMutation = useMutation({
-    mutationFn: startAgentCloudSession,
-    onSuccess: (nextSession) => {
-      queryClient.setQueryData(["agent-cloud-session"], nextSession);
-      setProviderMode("cloud-session");
-      setCloudSessionPreview(null);
-      setResult(null);
-      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
-    },
-  });
-  const stopSessionMutation = useMutation({
-    mutationFn: stopAgentCloudSession,
-    onSuccess: (nextSession) => {
-      queryClient.setQueryData(["agent-cloud-session"], nextSession);
-      setProviderMode("local");
-      setCloudRunPreview(null);
-      setCloudSessionPreview(null);
-      setResult(null);
-      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
-    },
-  });
-  const stopMutation = useMutation({
-    mutationFn: stopAgentRuntime,
-    onSuccess: (nextStatus) => queryClient.setQueryData(["agent-status"], nextStatus),
-  });
-  const cancelMutation = useMutation({
-    mutationFn: cancelAgentRun,
-    onSuccess: (nextStatus) => queryClient.setQueryData(["agent-status"], nextStatus),
-  });
-  const actionMutation = useMutation({
-    mutationFn: applyAgentActionPlan,
-    onSuccess: (action, planId) => {
-      setActionMessage(action.outcomeSummary);
-      if (action.diagnosticReport) {
-        queryClient.setQueryData(["environment-diagnostics"], action.diagnosticReport);
-      }
-      setResult((previous) =>
-        previous
-          ? {
-              ...previous,
-              actionPlans: previous.actionPlans.filter((plan) => plan.planId !== planId),
-            }
-          : previous,
-      );
-      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
-      queryClient.invalidateQueries({ queryKey: ["llama-cpp-status"] });
-      queryClient.invalidateQueries({ queryKey: ["gateway-routing"] });
-      queryClient.invalidateQueries({ queryKey: ["opencode-detection"] });
-      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
-    },
-    onError: (_error, planId) =>
-      setResult((previous) =>
-        previous
-          ? {
-              ...previous,
-              actionPlans: previous.actionPlans.filter((plan) => plan.planId !== planId),
-            }
-          : previous,
-      ),
-  });
-
-  if (status.isPending || cloudSession.isPending) {
-    return <div className="state-message">正在读取 HAL100 Agent 状态…</div>;
-  }
-  if (status.isError || cloudSession.isError) {
-    return (
-      <div className="state-message error">{errorMessage(status.error ?? cloudSession.error)}</div>
-    );
-  }
-
-  const data = status.data;
-  const sessionData = cloudSession.data;
-  const cloudBackends: BackendSummary[] =
-    backends.data?.backends.filter(
-      (backend) =>
-        backend.enabled &&
-        backend.runtimeAvailable &&
-        backend.credentialConfigured &&
-        (backend.kind === "externalOpenAi" || backend.kind === "externalAnthropic"),
-    ) ?? [];
-  const effectiveCloudBackendId = cloudBackendId || cloudBackends[0]?.id || "";
-  const selectedCloudBackend = cloudBackends.find(
-    (backend) => backend.id === effectiveCloudBackendId,
-  );
-  const cloudTargetReady = Boolean(selectedCloudBackend && cloudModel.trim());
-  const sessionActive = sessionData.active;
-  const sessionHealthy = sessionData.available && !sessionData.lastErrorCode;
-  const agentTransitionPending =
-    runMutation.isPending ||
-    previewRunMutation.isPending ||
-    previewSessionMutation.isPending ||
-    startSessionMutation.isPending ||
-    stopSessionMutation.isPending;
-  const kernelState = runMutation.isPending ? "running" : data.kernelState;
-  const modelState =
-    runMutation.isPending && providerMode === "local" ? "running" : data.modelRuntimeState;
-  const canRun =
-    runtime &&
-    (providerMode === "local"
-      ? data.modelPrepared && !sessionActive
-      : providerMode === "cloud-single"
-        ? cloudTargetReady && !sessionActive
-        : sessionActive
-          ? sessionData.available
-          : cloudTargetReady) &&
-    !runMutation.isPending &&
-    !previewRunMutation.isPending &&
-    !previewSessionMutation.isPending &&
-    !startSessionMutation.isPending &&
-    !stopSessionMutation.isPending &&
-    !stopMutation.isPending &&
-    !actionMutation.isPending;
-  const operationError =
-    runMutation.error ??
-    previewRunMutation.error ??
-    previewSessionMutation.error ??
-    startSessionMutation.error ??
-    stopSessionMutation.error ??
-    stopMutation.error ??
-    cancelMutation.error ??
-    actionMutation.error ??
-    diagnostics.error;
-  const elapsedSeconds = result
-    ? Math.max(0, (result.completedAtMs - result.startedAtMs) / 1000).toFixed(1)
-    : null;
-
-  const updatePrompt = (nextPrompt: string) => {
-    setPrompt(nextPrompt);
-    setCloudRunPreview(null);
-  };
-
-  const submitPrompt = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const trimmed = prompt.trim();
-    if (canRun) {
-      setResult(null);
-      setActionMessage(null);
-      const target = { backendId: effectiveCloudBackendId, model: cloudModel.trim() };
-      if (providerMode === "cloud-single") {
-        if (trimmed) {
-          previewRunMutation.mutate({ prompt: trimmed, cloudTarget: target });
-        }
-      } else if (providerMode === "cloud-session" && !sessionActive) {
-        previewSessionMutation.mutate(target);
-      } else if (trimmed) {
-        runMutation.mutate({ prompt: trimmed, cloudTarget: null });
-      }
-    }
-  };
-
-  return (
-    <div className="page-content agent-page">
-      <header className="page-header model-page-header">
-        <div>
-          <p className="eyebrow">本机受控助手</p>
-          <h1>HAL100 Agent</h1>
-          <p>本地 Qwen 默认运行；云端可仅用一次或绑定当前内存会话，且不会保存聊天历史。</p>
-        </div>
-        <button
-          className="secondary-button refresh-button"
-          disabled={
-            status.isFetching ||
-            cloudSession.isFetching ||
-            backends.isFetching ||
-            runMutation.isPending
-          }
-          onClick={() => {
-            void status.refetch();
-            void cloudSession.refetch();
-            void backends.refetch();
-          }}
-          type="button"
-        >
-          <RefreshCw
-            className={
-              status.isFetching || cloudSession.isFetching || backends.isFetching ? "spinning" : ""
-            }
-            size={14}
-          />
-          {status.isFetching || cloudSession.isFetching || backends.isFetching
-            ? "刷新中…"
-            : "刷新状态"}
-        </button>
-      </header>
-
-      <details className="agent-boundary inline-disclosure">
-        <summary>
-          <ShieldCheck size={16} />
-          <strong>受控执行：Pi 负责推理，Rust 负责授权</strong>
-          <span className="disclosure-label">
-            <span className="details-closed-copy">了解边界</span>
-            <span className="details-open-copy">收起边界</span>
-            <ChevronRight size={14} />
-          </span>
-        </summary>
-        <p>
-          Agent
-          只能使用固定工具并为明确可修复的问题生成计划；计划不会自动执行，安装、卸载、删除和配置写入仍需原生确认。
-          模型搜索与下载仍未开放给 Agent。
-        </p>
-      </details>
-
-      {sessionActive && (
-        <section
-          className={`agent-cloud-session-banner ${sessionHealthy ? "" : "warning"}`}
-          aria-label="当前云端 Agent 会话"
-        >
-          <div className="agent-cloud-session-icon">
-            {sessionHealthy ? <ShieldCheck size={17} /> : <AlertTriangle size={17} />}
-          </div>
-          <div>
-            <strong>
-              当前会话：{sessionData.backendName ?? sessionData.backendId} · {sessionData.model}
-            </strong>
-            <span>
-              {sessionHealthy
-                ? "后续任务使用云端；每项任务仍创建独立临时路由与 Key，退出或重启后恢复本地默认。"
-                : sessionData.available
-                  ? `上次云端任务失败，可重试或退出；绝不会回退本地。错误：${sessionData.lastErrorCode}`
-                  : `后端当前不可用，任务会故障关闭且不会回退本地。错误：${sessionData.lastErrorCode ?? "unknown"}`}
-            </span>
-          </div>
-          <button
-            className="secondary-button"
-            disabled={!runtime || runMutation.isPending || stopSessionMutation.isPending}
-            onClick={() => stopSessionMutation.mutate()}
-            type="button"
-          >
-            {stopSessionMutation.isPending ? "正在退出…" : "退出云端会话"}
-          </button>
-        </section>
-      )}
-
-      <section className="agent-status-strip" aria-label="Agent 运行状态">
-        <article>
-          <span className="agent-status-icon">
-            <Bot size={18} />
-          </span>
-          <div>
-            <small>Pi Core</small>
-            <strong>v{data.piVersion}</strong>
-          </div>
-          <span className={`status-pill ${agentStateCopy[kernelState].tone}`}>
-            {agentStateCopy[kernelState].label}
-          </span>
-        </article>
-        <article>
-          <span className="agent-status-icon">
-            <Cpu size={18} />
-          </span>
-          <div>
-            <small>本地模型</small>
-            <strong>{data.modelName}</strong>
-          </div>
-          <span className={`status-pill ${agentStateCopy[modelState].tone}`}>
-            {data.modelPrepared ? agentStateCopy[modelState].label : "尚未准备"}
-          </span>
-        </article>
-        <article>
-          <span className="agent-status-icon">
-            <Moon size={18} />
-          </span>
-          <div>
-            <small>后台策略</small>
-            <strong>{data.idleTimeoutSeconds / 60} 分钟空闲退出</strong>
-          </div>
-        </article>
-        <button
-          className="secondary-button"
-          disabled={diagnostics.isFetching || runMutation.isPending || actionMutation.isPending}
-          onClick={() => void diagnostics.refetch()}
-          type="button"
-        >
-          <RefreshCw className={diagnostics.isFetching ? "spinning" : ""} size={13} />
-          {diagnostics.isFetching ? "诊断中…" : "环境诊断"}
-        </button>
-      </section>
-
-      {(diagnostics.data || diagnostics.isError) && (
-        <section className="agent-diagnostics" aria-label="环境诊断">
-          <div className="agent-diagnostics-heading">
-            <div>
-              <span className="agent-status-icon">
-                <CircleGauge size={18} />
-              </span>
-              <div>
-                <p className="eyebrow">Rust 快照</p>
-                <h2>环境诊断</h2>
-              </div>
-            </div>
-            <button
-              className="secondary-button"
-              disabled={diagnostics.isFetching || runMutation.isPending || actionMutation.isPending}
-              onClick={() => void diagnostics.refetch()}
-              type="button"
-            >
-              <RefreshCw className={diagnostics.isFetching ? "spinning" : ""} size={13} />
-              {diagnostics.isFetching ? "诊断中…" : "立即诊断"}
-            </button>
-          </div>
-          {diagnostics.data ? (
-            <>
-              <div className="agent-diagnostic-summary">
-                <div>
-                  <span>总体状态</span>
-                  <strong
-                    className={`status-pill ${diagnosticStatusCopy[diagnostics.data.status].tone}`}
-                  >
-                    {diagnosticStatusCopy[diagnostics.data.status].label}
-                  </strong>
-                </div>
-                <div>
-                  <span>模型</span>
-                  <strong>
-                    {diagnostics.data.readyModelCount} 就绪 · {diagnostics.data.unhealthyModelCount}{" "}
-                    异常
-                  </strong>
-                </div>
-                <div>
-                  <span>后端</span>
-                  <strong>{diagnostics.data.configuredBackendCount} 个已配置</strong>
-                </div>
-                <div>
-                  <span>问题</span>
-                  <strong>
-                    {diagnostics.data.errorCount} 错误 · {diagnostics.data.warningCount} 警告
-                  </strong>
-                </div>
-              </div>
-              {diagnostics.data.findings.length > 0 ? (
-                <div className="agent-diagnostic-findings">
-                  {diagnostics.data.findings.map((finding) => (
-                    <article className={`severity-${finding.severity}`} key={finding.findingId}>
-                      <span>{diagnosticComponentCopy[finding.component]}</span>
-                      <div>
-                        <strong>{finding.title}</strong>
-                        <small>{finding.summary}</small>
-                      </div>
-                      {finding.repairKind && <em>可生成修复计划</em>}
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <p className="agent-diagnostic-empty">未发现需要说明的问题。</p>
-              )}
-              <small className="agent-diagnostic-meta">
-                {new Date(diagnostics.data.generatedAtMs).toLocaleTimeString("zh-CN")} 按需生成 ·
-                不读取原始日志，不做完整模型哈希，不后台轮询
-              </small>
-            </>
-          ) : (
-            <p className="inline-error">{errorMessage(diagnostics.error)}</p>
-          )}
-        </section>
-      )}
-
-      {providerMode === "local" && !data.modelPrepared && (
-        <section className="agent-missing-model">
-          <AlertTriangle size={17} />
-          <div>
-            <strong>Agent 模型尚未准备好</strong>
-            <span>需要已校验的 Qwen3.5-2B Q4_K_M 与 HAL100 托管 llama.cpp。</span>
-          </div>
-          <NavLink className="secondary-button" to="/models">
-            前往模型库
-          </NavLink>
-        </section>
-      )}
-
-      <section className="agent-workspace">
-        <form className="agent-composer" onSubmit={submitPrompt}>
-          <div className="agent-section-heading">
-            <div>
-              <p className="eyebrow">单任务会话</p>
-              <h2>诊断环境或生成受控计划</h2>
-            </div>
-            <span className="agent-composer-context">
-              <ShieldCheck size={12} />
-              不保留历史
-            </span>
-          </div>
-          <fieldset className="agent-provider-picker">
-            <legend>推理范围</legend>
-            <div className="agent-provider-options">
-              <label className={providerMode === "local" ? "selected" : ""}>
-                <input
-                  checked={providerMode === "local"}
-                  disabled={agentTransitionPending || sessionActive}
-                  name="agent-provider"
-                  onChange={() => {
-                    setProviderMode("local");
-                    setCloudRunPreview(null);
-                    setCloudSessionPreview(null);
-                  }}
-                  type="radio"
-                />
-                <strong>本地 Qwen</strong>
-              </label>
-              <label className={providerMode === "cloud-single" ? "selected" : ""}>
-                <input
-                  checked={providerMode === "cloud-single"}
-                  disabled={agentTransitionPending || sessionActive}
-                  name="agent-provider"
-                  onChange={() => {
-                    setProviderMode("cloud-single");
-                    setCloudRunPreview(null);
-                    setCloudSessionPreview(null);
-                  }}
-                  type="radio"
-                />
-                <strong>云端单次增强</strong>
-              </label>
-              <label className={providerMode === "cloud-session" ? "selected" : ""}>
-                <input
-                  checked={providerMode === "cloud-session"}
-                  disabled={agentTransitionPending || sessionActive}
-                  name="agent-provider"
-                  onChange={() => {
-                    setProviderMode("cloud-session");
-                    setCloudRunPreview(null);
-                    setCloudSessionPreview(null);
-                  }}
-                  type="radio"
-                />
-                <strong>当前会话使用云端</strong>
-              </label>
-            </div>
-            <p className="agent-provider-note">
-              <ShieldCheck size={13} />
-              {providerMode === "local"
-                ? "默认在本机处理，任务数据不会离开这台 Mac。"
-                : providerMode === "cloud-single"
-                  ? "仅发送当前任务；发送范围会先预览，并由原生窗口确认。"
-                  : "授权仅存在于当前内存会话，退出或重启后自动恢复本地模式。"}
-            </p>
-          </fieldset>
-          {providerMode !== "local" && !sessionActive && (
-            <section className="agent-cloud-target" aria-label="云端 Agent 目标">
-              {cloudBackends.length > 0 ? (
-                <>
-                  <label htmlFor="agent-cloud-backend">已配置后端</label>
-                  <select
-                    disabled={agentTransitionPending}
-                    id="agent-cloud-backend"
-                    onChange={(event) => {
-                      setCloudBackendId(event.target.value);
-                      setCloudRunPreview(null);
-                      setCloudSessionPreview(null);
-                    }}
-                    value={effectiveCloudBackendId}
-                  >
-                    {cloudBackends.map((backend) => (
-                      <option key={backend.id} value={backend.id}>
-                        {backend.displayName} ·{" "}
-                        {backend.kind === "externalAnthropic" ? "Anthropic" : "OpenAI"}
-                      </option>
-                    ))}
-                  </select>
-                  <label htmlFor="agent-cloud-model">模型 ID</label>
-                  <input
-                    autoComplete="off"
-                    disabled={agentTransitionPending}
-                    id="agent-cloud-model"
-                    maxLength={256}
-                    onChange={(event) => {
-                      setCloudModel(event.target.value);
-                      setCloudRunPreview(null);
-                      setCloudSessionPreview(null);
-                    }}
-                    placeholder={
-                      selectedCloudBackend?.kind === "externalAnthropic"
-                        ? "例如 claude-sonnet-4-6"
-                        : "例如 gpt-4.1-mini"
-                    }
-                    value={cloudModel}
-                  />
-                  <small>
-                    {selectedCloudBackend?.apiRoot} · API Key 只由 Gateway 从 macOS Keychain 读取
-                  </small>
-                </>
-              ) : (
-                <div className="agent-cloud-empty">
-                  <span>暂无可用且已配置凭据的 OpenAI/Anthropic 兼容后端。</span>
-                  <NavLink to="/backends">前往推理后端配置</NavLink>
-                </div>
-              )}
-            </section>
-          )}
-          <div className="agent-task-field">
-            <div className="agent-task-label">
-              <label htmlFor="agent-prompt">任务</label>
-              <span>{prompt.length} / 4096</span>
-            </div>
-            <textarea
-              disabled={
-                (providerMode === "local" && !data.modelPrepared) ||
-                (sessionActive && !sessionData.available) ||
-                agentTransitionPending
-              }
-              id="agent-prompt"
-              maxLength={4096}
-              onChange={(event) => updatePrompt(event.target.value)}
-              value={prompt}
-            />
-          </div>
-          <section className="agent-templates" aria-label="快捷任务模板">
-            <div className="agent-templates-heading">
-              <strong>快捷任务</strong>
-              <span>选择后仍可编辑</span>
-            </div>
-            <div className="agent-prompt-shortcuts">
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() =>
-                  updatePrompt(
-                    "全面诊断 HAL100 当前运行环境，只依据 Rust 诊断结果说明问题，不要执行修复。",
-                  )
-                }
-                type="button"
-              >
-                <span>全面诊断环境</span>
-                <ChevronRight size={12} />
-              </button>
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() =>
-                  updatePrompt(
-                    "诊断并为 HAL100 当前最高优先级且可自动修复的问题生成修复计划；每次只处理一项。",
-                  )
-                }
-                type="button"
-              >
-                <span>生成单项修复计划</span>
-                <ChevronRight size={12} />
-              </button>
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() => updatePrompt(defaultAgentPrompt)}
-                type="button"
-              >
-                <span>硬件与模型建议</span>
-                <ChevronRight size={12} />
-              </button>
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() =>
-                  updatePrompt("列出 HAL100 当前可用模型和引擎状态，并说明当前活动模型。")
-                }
-                type="button"
-              >
-                <span>模型与引擎状态</span>
-                <ChevronRight size={12} />
-              </button>
-            </div>
-            <details className="agent-template-more">
-              <summary>
-                更多计划模板
-                <ChevronRight size={12} />
-              </summary>
-              <div className="agent-prompt-shortcuts">
-                <button
-                  className="agent-prompt-chip"
-                  disabled={agentTransitionPending}
-                  onClick={() =>
-                    updatePrompt("说明 HAL100 的本地 Gateway 和推理后端应该怎样配置。")
-                  }
-                  type="button"
-                >
-                  <span>Gateway 配置说明</span>
-                  <ChevronRight size={12} />
-                </button>
-                <button
-                  className="agent-prompt-chip"
-                  disabled={agentTransitionPending}
-                  onClick={() =>
-                    updatePrompt(
-                      "读取可用模型，并为 Qwen3.5-2B Q4_K_M 生成启动或安全切换计划；不要直接执行。",
-                    )
-                  }
-                  type="button"
-                >
-                  <span>生成模型切换计划</span>
-                  <ChevronRight size={12} />
-                </button>
-                <button
-                  className="agent-prompt-chip"
-                  disabled={agentTransitionPending}
-                  onClick={() => updatePrompt("检查当前引擎状态，并生成安装 llama.cpp 的计划。")}
-                  type="button"
-                >
-                  <span>生成引擎安装计划</span>
-                  <ChevronRight size={12} />
-                </button>
-                <button
-                  className="agent-prompt-chip"
-                  disabled={agentTransitionPending}
-                  onClick={() =>
-                    updatePrompt("检查 OpenCode 状态，并生成接入 HAL100 Gateway 的配置计划。")
-                  }
-                  type="button"
-                >
-                  <span>生成 OpenCode 配置计划</span>
-                  <ChevronRight size={12} />
-                </button>
-              </div>
-            </details>
-          </section>
-          {!runtime && (
-            <p className="inline-notice">
-              浏览器预览不会启动模型或生成模拟回答；请在 Tauri 开发版中运行。
-            </p>
-          )}
-          {data.lastErrorCode && <p className="inline-error">上次错误代码：{data.lastErrorCode}</p>}
-          {operationError && <p className="inline-error">{errorMessage(operationError)}</p>}
-          {cloudRunPreview && (
-            <section className="agent-cloud-preview" aria-label="云端发送预览">
-              <div>
-                <ShieldCheck size={15} />
-                <strong>脱敏发送预览</strong>
-              </div>
-              <dl>
-                <div>
-                  <dt>目标</dt>
-                  <dd>{cloudRunPreview.backendName}</dd>
-                </div>
-                <div>
-                  <dt>模型</dt>
-                  <dd>{cloudRunPreview.model}</dd>
-                </div>
-                <div>
-                  <dt>任务文字</dt>
-                  <dd>{cloudRunPreview.promptBytes} 字节</dd>
-                </div>
-                <div>
-                  <dt>凭据 / 路径</dt>
-                  <dd>
-                    {cloudRunPreview.sendsCredentialsToSidecar || cloudRunPreview.sendsLocalPaths
-                      ? "包含"
-                      : "不发送"}
-                  </dd>
-                </div>
-              </dl>
-              <p>{cloudRunPreview.confirmationSummary}</p>
-              <button
-                className="primary-button"
-                disabled={!canRun || !prompt.trim()}
-                onClick={() =>
-                  runMutation.mutate({
-                    prompt: prompt.trim(),
-                    cloudTarget: {
-                      backendId: effectiveCloudBackendId,
-                      model: cloudModel.trim(),
-                    },
-                  })
-                }
-                type="button"
-              >
-                <ShieldCheck size={13} />
-                在原生窗口确认本次发送
-              </button>
-            </section>
-          )}
-          {cloudSessionPreview && !sessionActive && (
-            <section className="agent-cloud-preview" aria-label="云端会话授权预览">
-              <div>
-                <ShieldCheck size={15} />
-                <strong>当前内存会话授权预览</strong>
-              </div>
-              <dl>
-                <div>
-                  <dt>目标</dt>
-                  <dd>{cloudSessionPreview.backendName}</dd>
-                </div>
-                <div>
-                  <dt>模型</dt>
-                  <dd>{cloudSessionPreview.model}</dd>
-                </div>
-                <div>
-                  <dt>后续任务</dt>
-                  <dd>{cloudSessionPreview.sendsFuturePrompts ? "发送到云端" : "不发送"}</dd>
-                </div>
-                <div>
-                  <dt>聊天历史</dt>
-                  <dd>{cloudSessionPreview.storesConversationHistory ? "保存" : "不保存"}</dd>
-                </div>
-                <div>
-                  <dt>工具结果</dt>
-                  <dd>{cloudSessionPreview.maySendToolResults ? "可能发送" : "不发送"}</dd>
-                </div>
-                <div>
-                  <dt>凭据 / 路径</dt>
-                  <dd>
-                    {cloudSessionPreview.sendsCredentialsToSidecar ||
-                    cloudSessionPreview.sendsLocalPaths
-                      ? "包含"
-                      : "不发送"}
-                  </dd>
-                </div>
-              </dl>
-              <p>{cloudSessionPreview.confirmationSummary}</p>
-              <button
-                className="primary-button"
-                disabled={!canRun}
-                onClick={() =>
-                  startSessionMutation.mutate({
-                    backendId: effectiveCloudBackendId,
-                    model: cloudModel.trim(),
-                  })
-                }
-                type="button"
-              >
-                <ShieldCheck size={13} />
-                在原生窗口确认并启用当前会话
-              </button>
-            </section>
-          )}
-          <div className="agent-composer-actions">
-            <span className="agent-execution-note">
-              <ShieldCheck size={13} />
-              系统变更仍需原生确认
-            </span>
-            <div>
-              {runMutation.isPending && (
-                <button
-                  className="secondary-button"
-                  disabled={!runtime || cancelMutation.isPending || data.cancellationRequested}
-                  onClick={() => cancelMutation.mutate()}
-                  type="button"
-                >
-                  <Square size={11} />
-                  {cancelMutation.isPending || data.cancellationRequested
-                    ? "正在取消…"
-                    : "取消当前任务"}
-                </button>
-              )}
-              <button
-                className="secondary-button"
-                disabled={
-                  !runtime ||
-                  modelState !== "running" ||
-                  runMutation.isPending ||
-                  stopMutation.isPending
-                }
-                onClick={() => stopMutation.mutate()}
-                type="button"
-              >
-                <Square size={11} />
-                {stopMutation.isPending ? "正在释放…" : "释放模型"}
-              </button>
-              <button
-                className="primary-button"
-                disabled={
-                  !canRun ||
-                  (!prompt.trim() && !(providerMode === "cloud-session" && !sessionActive))
-                }
-                type="submit"
-              >
-                <Play size={13} />
-                {runMutation.isPending
-                  ? "正在执行受控任务…"
-                  : previewRunMutation.isPending || previewSessionMutation.isPending
-                    ? "正在生成预览…"
-                    : providerMode === "cloud-single"
-                      ? "预览单次云端发送"
-                      : providerMode === "cloud-session"
-                        ? sessionActive
-                          ? "运行云端会话任务"
-                          : "预览会话授权"
-                        : "运行本地任务"}
-              </button>
-            </div>
-          </div>
-        </form>
-
-        <article className="agent-result" aria-live="polite">
-          <div className="agent-section-heading">
-            <div>
-              <p className="eyebrow">结果</p>
-              <h2>工具轨迹与回答</h2>
-            </div>
-            {elapsedSeconds && <span>{elapsedSeconds} 秒</span>}
-          </div>
-          <ol className="agent-result-flow" aria-label="任务处理流程">
-            <li className={runMutation.isPending || result ? "active" : ""}>
-              <span>1</span>
-              理解任务
-            </li>
-            <li className={runMutation.isPending || result ? "active" : ""}>
-              <span>2</span>
-              调用工具
-            </li>
-            <li className={result ? "active" : ""}>
-              <span>3</span>
-              生成回答
-            </li>
-          </ol>
-          {runMutation.isPending ? (
-            <div className="agent-empty-result">
-              <span className="agent-empty-icon">
-                <RefreshCw className="spinning" size={20} />
-              </span>
-              <strong>
-                {providerMode !== "local"
-                  ? "正在通过本机 Gateway 请求云端模型"
-                  : "正在启动独立模型运行时"}
-              </strong>
-              <span>
-                {providerMode !== "local"
-                  ? "失败时会直接报告错误，不会静默改用本地模型。"
-                  : "首次运行包含完整模型校验与冷启动，完成后将自动进入空闲倒计时。"}
-              </span>
-            </div>
-          ) : result ? (
-            <div className="agent-completed-result">
-              <div className="agent-tool-timeline">
-                {result.toolEvents.length > 0 ? (
-                  result.toolEvents.map((tool) => (
-                    <div key={tool.toolCallId}>
-                      <span className="agent-tool-check">
-                        {tool.status === "awaiting_confirmation" ? (
-                          <ShieldCheck size={11} />
-                        ) : (
-                          <Check size={11} />
-                        )}
-                      </span>
-                      <div>
-                        <strong>{tool.label}</strong>
-                        <small>{tool.summary}</small>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <span className="agent-no-tool">本次说明未请求系统工具。</span>
-                )}
-              </div>
-              {result.actionPlans.map((plan) => {
-                const copy = agentActionCopy[plan.actionKind];
-                return (
-                  <section className="agent-action-plan" key={plan.planId}>
-                    <div className="agent-action-plan-heading">
-                      <span className="agent-action-plan-icon">
-                        <ShieldCheck size={15} />
-                      </span>
-                      <div>
-                        <strong>等待原生确认：{copy.title}</strong>
-                        <small>计划 {plan.planId.slice(-8)} · 5 分钟内有效</small>
-                      </div>
-                    </div>
-                    <dl>
-                      <div>
-                        <dt>{copy.targetLabel}</dt>
-                        <dd>{plan.targetName}</dd>
-                      </div>
-                      <div>
-                        <dt>当前状态</dt>
-                        <dd>{plan.currentState ?? "等待 Rust 复核"}</dd>
-                      </div>
-                    </dl>
-                    <p>
-                      {plan.actionSummary}。{copy.pendingSummary}。
-                    </p>
-                    {plan.details.length > 0 && (
-                      <small className="agent-action-plan-details">
-                        {plan.details.join(" · ")}
-                      </small>
-                    )}
-                    <button
-                      className="primary-button"
-                      disabled={
-                        !runtime || actionMutation.isPending || Date.now() > plan.expiresAtMs
-                      }
-                      onClick={() => actionMutation.mutate(plan.planId)}
-                      type="button"
-                    >
-                      <ShieldCheck size={13} />
-                      {actionMutation.isPending ? "等待原生确认…" : "在原生窗口确认并执行"}
-                    </button>
-                  </section>
-                );
-              })}
-              {actionMessage && <p className="agent-action-success">{actionMessage}</p>}
-              <div className="agent-answer">{result.answer}</div>
-              <small className="agent-result-meta">
-                {result.modelName} · 会话 {result.runId.slice(-8)}
-              </small>
-            </div>
-          ) : (
-            <div className="agent-empty-result">
-              <span className="agent-empty-icon">
-                <Bot size={21} />
-              </span>
-              <strong>等待一项 HAL100 管理任务</strong>
-              <span>选择左侧快捷任务或输入目标，执行轨迹与受控计划会在这里逐项展开。</span>
-            </div>
-          )}
-        </article>
       </section>
     </div>
   );

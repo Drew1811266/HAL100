@@ -15,12 +15,12 @@
   <img alt="UI: Chinese" src="https://img.shields.io/badge/UI-%E4%B8%AD%E6%96%87-4F7561">
 </p>
 
-HAL100 不是通用聊天客户端。它是运行在用户电脑上的本地 AI 控制平面：负责下载和管理 GGUF 模型、托管或连接推理引擎，通过统一 Gateway 为 OpenCode 等软件提供模型服务，并按客户端记录后端返回的精确 Token 用量。
+HAL100 不是通用聊天客户端。它是运行在用户电脑上的本地 AI 控制平面：负责下载和管理 GGUF 模型、托管或连接推理引擎，通过统一 Gateway 为 OpenCode、Pi Coding Agent、OpenClaw、Hermes Agent 等软件提供模型服务，并按客户端记录后端返回的精确 Token 用量。
 
 内置 HAL100 Agent 使用本地小模型与 [Pi Agent Core](https://github.com/earendil-works/pi) 帮助用户诊断和配置本地推理环境；Pi 负责推理，Rust Core 始终是唯一授权与执行权威。
 
 > [!WARNING]
-> HAL100 当前版本为 `0.0.1` Alpha，仅用于 Apple Silicon Mac 内部开发测试。项目暂不提供签名、公证或正式安装包，也不支持 Intel Mac。Windows 10/11 目前只保留架构兼容边界，尚未实现。
+> HAL100 当前版本为 `1.0.1` 早期开发版，仅用于 Apple Silicon Mac 内部开发测试。项目暂不提供签名、公证或正式安装包，也不支持 Intel Mac。Windows 10/11 目前只保留架构兼容边界，尚未实现。
 
 ![HAL100 总览界面](docs/images/hal100-overview.png)
 
@@ -32,7 +32,7 @@ HAL100 不是通用聊天客户端。它是运行在用户电脑上的本地 AI 
 | 推理引擎 | 安装和管理固定、可校验的 Apple Silicon `llama.cpp`；连接外部 Ollama、vLLM、llama.cpp Server 及 OpenAI/Anthropic 兼容后端 |
 | 本地 Gateway | 固定回环入口，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、SSE、Tool Calling 与取消 |
 | 路由与切换 | `hal100-active` 活动模型、模型别名、安全排空切换、经原生确认的强制切换与故障关闭 |
-| 软件接入 | 首版专门适配 OpenCode，同时可为通用 OpenAI/Anthropic 客户端签发独立本地 Key |
+| 软件接入 | 专门适配 OpenCode、Pi Coding Agent、OpenClaw 与 Hermes Agent；每个客户端拥有独立配置、凭据、Usage 身份和可逆断开流程，同时支持通用 OpenAI/Anthropic 客户端 |
 | Token 统计 | 使用推理后端返回的 Usage 记录精确输入、缓存输入和输出 Token，并按客户端、模型、后端和时间归类 |
 | HAL100 Agent | 本地 Qwen 默认运行；可按用户选择使用单次云端增强或当前内存会话，支持环境诊断与受控操作计划 |
 | 后台运行 | 系统托盘、隐藏并复用主 WebView、按需启动 Sidecar/模型运行时，空闲时不轮询模型、统计或审计数据 |
@@ -41,7 +41,7 @@ HAL100 不是通用聊天客户端。它是运行在用户电脑上的本地 AI 
 
 ```mermaid
 flowchart LR
-    Clients["OpenCode / 通用 AI 客户端"] --> Gateway["HAL100 Gateway<br/>127.0.0.1:10100"]
+    Clients["OpenCode / Pi / OpenClaw / Hermes<br/>通用 AI 客户端"] --> Gateway["HAL100 Gateway<br/>127.0.0.1:10100"]
     Gateway --> Router["路由与模型别名"]
     Router --> Managed["HAL100 托管 llama.cpp"]
     Router --> Local["外部 Ollama / vLLM / llama.cpp"]
@@ -56,7 +56,7 @@ flowchart LR
     Sidecar -->|临时本地 Key| Gateway
 ```
 
-所有客户端只需要连接 HAL100 Gateway。模型切换发生在 Gateway 后方，因此 OpenCode 等软件不需要随模型变化反复修改地址；只要请求经过 HAL100，Token 就能按客户端准确归属。
+所有客户端只需要连接 HAL100 Gateway。模型切换发生在 Gateway 后方，因此外部 Agent 不需要随模型变化反复修改地址；只要请求经过 HAL100，Token 就能按客户端准确归属。HAL100 内置 Pi Agent Core 与用户安装的官方 Pi Coding Agent 使用完全独立的进程、HOME、会话和凭据生命周期。
 
 更完整的进程、模块和请求生命周期说明见[软件架构](docs/ARCHITECTURE.md)。
 
@@ -69,7 +69,7 @@ HAL100 Agent 只负责 HAL100、本地模型和推理环境，不作为通用聊
 - Pi Sidecar 不持有云端 API Key，不直接连接推理后端，也不能执行任意 Shell、文件或进程操作。
 - Agent 只能调用 HAL100 暴露的固定工具；Rust 会重新校验工具、参数、现实状态和请求关联。
 - 安装、卸载、删除、配置写入和强制切换始终需要 Rust 发起的原生确认。
-- 当前 Agent 可诊断环境并生成单项修复计划，但模型搜索、模型下载和任意引擎命令仍未开放。
+- 当前 Agent 可诊断环境、发现模型并生成受控的模型下载、启动、切换和单项修复计划；所有写操作仍由确定性 Rust 执行器和原生确认约束。
 
 详见[受控 Agent 架构决策](docs/adr/0004-controlled-agent.md)、[安全设计](docs/SECURITY.md)和[第三方 Agent 依赖登记](docs/THIRD_PARTY_AGENT_DEPENDENCIES.md)。
 

@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hal100_core::BUILT_IN_AGENT_RUNTIME;
 use hal100_protocol::{AgentComponentState, AgentStatus, LocalModelState};
 use reqwest::Client;
 use thiserror::Error;
@@ -23,7 +24,7 @@ use crate::{
 };
 
 pub const AGENT_MODEL_ALIAS: &str = "hal100-agent";
-const AGENT_BACKEND_ID: &str = "hal100-agent-runtime";
+const AGENT_BACKEND_ID: &str = BUILT_IN_AGENT_RUNTIME.runtime_id;
 const AGENT_MODEL_REPOSITORY: &str = "unsloth/Qwen3.5-2B-GGUF";
 const AGENT_MODEL_REVISION: &str = "f6d5376be1edb4d416d56da11e5397a961aca8ae";
 const AGENT_MODEL_FILE: &str = "Qwen3.5-2B-Q4_K_M.gguf";

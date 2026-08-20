@@ -16,6 +16,13 @@
 | 迭代 9：稳定性与内部测试准备 | 已完成：快速矩阵11/11，1小时后台门槛通过 |
 | 迭代 10：Pi受控操作与模型生命周期 | 已完成：8工具、RPC v2、四类写操作计划与安全模型移除 |
 | 迭代 11：环境诊断与受控修复 | 已完成：10工具、RPC v3、按需快照、单项修复计划与执行后复检 |
+| 迭代 12：应用边界与 Agent能力架构 | 已完成：模块化单体边界、10项能力模型、Agent职责拆分与首条前端切片 |
+| 迭代 13：Agent模型发现与受控下载 | 已完成：RPC v4、13项能力、搜索—检查—计划—确认下载闭环 |
+| 迭代 14：外部 Agent集成基础 | 已完成：内置Runtime/外部客户端边界、四客户端注册表、OpenCode专用适配器与Pi共存回归 |
+| 迭代 15：外部 Agent通用控制面 | 已完成：模型契约、资源所有权、一次性计划、命令边界与OpenCode可逆断开 |
+| 迭代 16：Pi Coding Agent接入 | 已完成：独立检测、配置、凭据、回滚、断开、桌面控制与官方CLI验收 |
+| 迭代 17：OpenClaw多协议接入 | 已完成：官方配置工具、独立Secret、三协议切换、回滚、断开与真实CLI验收 |
+| 迭代 18：Hermes Agent接入与共存收口 | 已完成：default Profile、YAML/.env隔离、64K门槛、真实CLI及四客户端共存验收 |
 
 ## 1. 迭代规则
 
@@ -221,7 +228,164 @@ Alpha核心已完成：按需 Apple Silicon硬件检测、保守适配建议、�
 
 完成条件已满足：双语言RPC/工具策略测试、Rust诊断与Agent服务测试、React交互测试和真实Qwen只读诊断验收覆盖该闭环；没有在验收中执行安装、卸载、删除或配置写入。
 
-## 14. 每个迭代的统一完成条件
+## 14. 迭代12：应用边界与 Agent能力架构
+
+迭代12不新增用户可见功能，也不以拆分大文件或限制代码行数作为目标。本迭代为后续模型搜索/下载、模型生命周期修复和更多Agent能力建立可扩展的应用边界，并以Agent/环境诊断作为第一条参考切片。长期决策见[ADR-0013](adr/0013-modular-monolith-and-agent-capabilities.md)。
+
+- 建立Gateway数据面、模型生命周期、推理运行时、软件接入、Agent、Usage/审计和平台/桌面七个业务上下文。（架构决策已完成）
+- 明确React、Tauri适配、应用用例、领域策略、Infra和Platform的依赖方向，保留单进程、单Gateway和单SQLite模块化单体。（架构决策已完成）
+- 为现有10个Agent工具建立内部能力模型，包含风险、数据范围、前置能力、计划语义和原生确认要求；未知能力故障关闭。（已完成）
+- 保持Agent RPC v3兼容，通过适配器把现有逐工具字段映射到内部能力集合；模型搜索/下载进入实现时再独立评审RPC v4。（已完成）
+- 分离Agent任务协调、Kernel/Sidecar RPC、能力策略、确定性操作计划和Provider会话职责，不再让单一服务直接承担所有变化轴。（已完成）
+- 只为Kernel执行、环境只读信息、确定性计划和Provider会话建立少量稳定边界，不为每个Manager方法增加机械接口。（已完成）
+- 让Tauri桌面层专注依赖装配、IPC适配、窗口/托盘生命周期和Rust原生确认；所有确定性操作仍由现有管理器复验并执行。（已完成）
+- 以前端Agent与环境诊断为第一条业务切片，分离页面与诊断组件；桌面API继续作为共享适配入口，其他页面在后续实际修改时渐进迁移，不进行全量目录重写。（已完成）
+- 使用特征测试固定现有行为，保留原生确认取消、一次性计划、伪造关联拒绝、取消回收、云端凭据隔离和无本地回退等安全语义。（已完成）
+- 记录所有过渡适配层、事实状态源和后续所有者，避免新旧路径长期并存而无人负责。（已完成）
+
+HAL12-02迁移记录：`hal100-core::agent_capability`是10项Agent能力身份、元数据和前置关系的事实状态源；Rust Tool Broker和桌面完成校验均查询该目录并对未知工具故障关闭。`agent_coordinator::AgentRunRequirements::to_rpc_v3`是当前过渡适配层，负责把内部能力集合映射为既有RPC v3布尔字段；Node Sidecar仍是v3契约消费者，不拥有能力策略。该适配层保留至未来独立的RPC版本决策。
+
+HAL12-03迁移记录：桌面`agent_provider`组件拥有云端目标校验、后端可用性解析、内存会话状态、会话审计和每次运行的Provider身份选择；SQLite后端目录与Gateway运行路由仍是事实状态源。`AgentService`只通过兼容外观调用该组件，并继续在外层持有任务互斥锁，防止会话启停与Agent任务竞态。该组件不依赖Tauri、Node Sidecar、本地Agent模型或引擎/OpenCode/模型管理器，可独立验证重启不持久化和云端失效不回退；现有Tauri IPC与错误码保持不变。
+
+HAL12-04迁移记录：桌面`agent_kernel`组件拥有固定Node运行时发现、Sidecar启动策略、0700临时会话目录、子进程/stdio生命周期、RPC帧边界、协议版本与关联ID校验、180秒响应超时、100毫秒取消感知、正常关闭和异常回收。应用层只能通过受限`AgentKernelChannel`交换已校验信封，不能接触子进程、原始流、启动环境或会话目录；工具授权和业务执行不进入传输组件。受管子进程守卫保证初始化中途失败或回调异常展开时也执行终止与回收。
+
+HAL12-05迁移记录：桌面`agent_action`组件拥有单一待确认计划、精确ID、原生确认标记、有效期、禁止替换、一次性取用和丢弃状态规则。`AgentService`负责持有任务互斥锁、调用确定性Manager、记录执行审计与执行后复检；引擎、模型移除和OpenCode Manager仍是具体计划及现实状态复验的事实状态源。
+
+HAL12-06迁移记录：桌面`agent_tools`应用组件拥有10个工具的Rust二次授权、前置步骤、按任务工具事件、脱敏只读快照、单计划限制、确定性Manager计划编排和计划注册审计。`agent_service`的Sidecar交换循环只处理RPC关联、次数上限、结果回传与任务完成，不再直接依赖数据库、Gateway、引擎、OpenCode、模型移除或诊断服务。具体Manager仍拥有现实状态复验与最终执行；没有为每个Manager方法增加机械接口。
+
+HAL12-07迁移记录：桌面`agent_coordinator`组件拥有提示词职责门禁、提示词到能力集合的推导、RPC v3兼容适配、完成结果校验以及活动任务/取消生命周期。`AgentRunRegistry`只保存当前run ID和取消标记，精确租约析构负责清理；`AgentService`保留稳定外观、运行互斥、Provider/凭据/临时路由装配、确定性操作执行和审计错误映射。新增测试固定任务重叠拒绝、取消可见和精确清理语义。
+
+HAL12-08迁移记录：React根路由只引用`features/agent/AgentPage`，Agent状态、Provider选择、运行与计划交互在该业务切片内演进；`EnvironmentDiagnosticsPanel`拥有诊断快照展示边界。现有查询键和`lib/desktop-api`保持兼容，后者继续作为Tauri与只读浏览器预览的共享适配入口，避免复制第二套业务逻辑。其他页面与全局样式不做一次性重写，后续在真实修改时按业务上下文渐进迁移。
+
+完成条件已满足：现有Agent能力全部进入统一内部能力模型并可脱离Tauri、SQLite、Node和真实模型测试；Agent协调器不再直接承担全部数据库、Gateway、引擎、OpenCode、模型移除与Sidecar协议细节；Agent RPC v3、10个工具、Tauri IPC、SQLite schema v7、Gateway热路径和浏览器预览权限保持兼容。`pnpm check`、生产构建、Gateway 10项非忽略契约测试和121秒快速后台稳定性检查全部通过。验收记录见[迭代12：应用边界与Agent能力架构](benchmarks/2026-08-20-iteration-12-application-boundaries.md)。
+
+## 15. 迭代13：Agent模型发现与受控下载
+
+迭代13用第一条新增纵向能力验证迭代12的应用边界，不重写模型目录或下载系统。架构决策见[ADR-0014](adr/0014-agent-rpc-v4-model-download.md)。
+
+- 能力注册表从10项扩展为13项，新增公开模型目录搜索、仓库GGUF检查和模型下载计划，明确公开目录数据范围、前置关系、只读/计划效果和原生确认要求。（已完成）
+- Agent私有RPC升级到v4，以规范有序`requiredTools`集合替代逐工具布尔字段；Rust与Sidecar共同读取精确工具清单回归，未知、重复、乱序、缺前置或多个写计划请求故障关闭。（已完成）
+- Agent搜索使用用户在HAL100选择的默认来源，最多返回8个公开仓库；仓库检查必须引用同任务搜索结果，最多返回12个带可信SHA-256的GGUF。（已完成）
+- 下载计划必须引用同任务仓库快照中的精确文件，并复用现有`ModelDownloadManager`重新检查来源、仓库、修订、文件、哈希、空间、重复项和安全目标路径。（已完成）
+- Agent和Pi只能生成一次性外层计划；底层下载计划ID不发送给Pi。原生确认后Rust再次复验空间并启动下载，取消确认、新任务、任务取消或失败同步废弃底层计划。（已完成）
+- Agent页面增加模型下载任务入口、下载动作卡和下载/模型库查询刷新；浏览器预览继续禁用Agent运行、下载和所有写操作。（已完成）
+- 保持Gateway数据面、SQLite schema v7、现有模型库Tauri IPC、既有10项工具安全语义和云端失败不回退兼容。（已完成）
+- 同步架构、安全、RPC合同、路线图与验收记录；通过`pnpm check`、生产构建、Gateway契约测试和快速后台稳定性检查。（已完成）
+
+完成条件：从自然语言任务推导出的下载能力必须按“搜索→仓库检查→一次性计划”顺序运行；任何来源未配置、仓库/文件不在同任务快照、私有或gated仓库、缺少SHA-256、空间不足、过期/取消/替换计划、浏览器写操作都故障关闭。模型下载只能在Rust原生确认后由既有管理器启动。
+
+完成条件已满足：`pnpm check`、生产构建、Gateway 10项非忽略契约测试和121秒快速后台稳定性检查通过；SQLite保持schema v7，Gateway数据面和既有Tauri IPC未改变。验收记录见[迭代13：Agent模型发现与受控下载](benchmarks/2026-08-20-iteration-13-agent-model-download.md)。
+
+## 16. 迭代13.1：Agent模型工具工程加固
+
+迭代13.1不新增用户功能，不按文件行数实施机械拆分；它针对迭代13首条网络型Agent能力补齐协议策略、取消语义、结果边界和确定性纵向测试。
+
+- 将RPC v4共享清单从工具名称数组扩展为版本化策略：固定当前最多4个必需工具、1个写计划、128 KiB成功结果预算，以及13项工具的顺序、效果、前置关系、原生确认和参数正反例。（已完成）
+- Rust能力注册表、Tool Policy、RPC常量与TypeScript TypeBox/运行策略共同读取并验证共享清单；修复Sidecar此前只按长度接受不安全仓库和远端路径的契约漂移。（已完成）
+- Agent远端目录和下载计划future每100毫秒观察Rust取消标记；取消时丢弃HTTP future，不等待15秒请求超时，并沿既有失败清理废弃计划、Sidecar和临时资源。（已完成）
+- Rust在发送前、Sidecar在接收后分别验证128 KiB工具结果预算；远端展示名、许可证、修订与Agent文件路径增加业务字段边界，避免超长上游元数据先进入计划或审计。（已完成）
+- 公开目录与下载错误向Agent暴露稳定、无敏感细节的可操作类别，区分来源/参数、网络、上游响应、空间不足、重复项与远端变化，不再统一折叠为目录或下载失败。（已完成）
+- 目录和下载管理器提供保持同等URL、超时、重定向与响应策略的显式端点组合缝；桌面测试使用本地模拟服务完整覆盖搜索、同任务仓库/文件约束、一次性计划、原生确认和既有管理器SHA-256/GGUF安装，不依赖公网。（已完成）
+- 保持Gateway数据面、SQLite schema v7、Tauri IPC、13项工具业务语义和前端结构不变；同步RPC、架构、安全、ADR与验收记录。（已完成）
+
+4项能力仍是RPC v4当前单任务复杂度预算，而不是软件规模上限。后续合法工作流需要更多步骤时，应显式修改共享策略或升级协议；不通过拆散业务语义或限制模块代码量迁就该数字。前端其他业务上下文继续按ADR-0013在实际触达时渐进迁移。
+
+完成条件已满足：`pnpm check`、生产构建、本地模拟纵向下载验收和121秒快速后台稳定性检查通过；取消等待测试小于1秒，工具结果在双方均有128 KiB故障关闭边界。SQLite保持schema v7，Gateway数据面和既有Tauri IPC未改变。验收记录见[迭代13.1：Agent模型工具工程加固](benchmarks/2026-08-20-iteration-13-1-agent-tool-hardening.md)。
+
+## 17. 迭代14：外部 Agent集成基础
+
+迭代14先解决HAL100内置 Agent使用 Pi Agent Core与用户独立安装 Pi Coding Agent的同机
+共存边界，再为OpenCode、Pi Coding Agent、OpenClaw和Hermes Agent建立长期可扩展的专用
+适配路径。架构决策见[ADR-0015](adr/0015-built-in-runtime-and-external-agent-integrations.md)。
+
+- `hal100-core`建立内置Runtime与四个外部客户端的稳定身份注册表，集中拥有唯一
+  Integration ID、Gateway客户端ID、凭据ID、协议能力、配置片段所有权和保留默认模型策略。
+- 内置`HAL100 Agent`固定为`hal100-agent-runtime`/`hal100-agent`，外部Pi固定为
+  `pi-coding-agent`；两者不能共享安装、命令、HOME、配置、会话、进程或凭据生命周期。
+- 现有OpenCode实现明确命名为`OpenCodeIntegrationAdapter`，并从统一注册表读取身份和凭据
+  边界；原有`OpenCodeManager`保留为兼容类型别名，IPC、SQLite schema v7、受控计划、
+  备份、原子写入、验证和回滚行为不变。
+- 新增只读Agent生态目录Tauri API和浏览器预览数据；软件接入页明确展示内置Runtime、
+  OpenCode当前能力及三个后续专用适配器，不为未实现客户端提供配置按钮或写操作。
+- Sidecar回归显式验证官方Pi配置、命令候选、`PI_CODING_AGENT_DIR`、
+  `PI_CODING_AGENT_SESSION_DIR`和用户HOME均不进入内置Kernel；Node依赖回归确保完整
+  `@earendil-works/pi-coding-agent`不会被嵌入。
+- 本迭代不修改Pi、OpenClaw或Hermes用户配置，不安装、升级或卸载外部软件，不新增
+  数据库迁移、后台轮询或通用插件系统。
+
+完成条件：官方Pi无论先于或晚于HAL100安装都不能参与内置Runtime的模块解析、环境、配置
+和进程生命周期；四个外部客户端身份与凭据互不冲突；OpenCode既有安全行为和前端交互保持
+通过；全量检查、生产构建、Gateway契约和快速后台稳定性验收通过。
+
+完成条件已满足：`pnpm check`、生产构建、Gateway 10项非忽略契约测试、双视口真实浏览器
+验证和121秒快速后台稳定性检查通过。验收记录见
+[迭代14：外部Agent集成基础](benchmarks/2026-08-20-iteration-14-external-agent-integration-foundation.md)。
+
+## 18. 迭代15：外部 Agent通用控制面
+
+迭代15不以文件行数或“统一万能适配器”为目标，而是提取所有外部Agent都必须遵守的稳定控制面。
+
+- 协议目录分离“上游声称支持”与“HAL100真实验收通过”，避免UI把未验证协议当作可用能力。
+- 建立版本化`hal100-active`模型契约，明确上下文、最大输出、输入模态、工具和推理能力；能力变化触发适配器刷新，而不是静默沿用乐观默认值。
+- SQLite升级到schema v8；一个接入可以登记配置、凭据和辅助配置等多项资源，秘密资源禁止创建明文备份。
+- 每个适配器拥有独立、5分钟、一次消费的配置与断开计划；配置计划之间不能互相替换或消费。
+- 外部命令使用清空环境、固定PATH、超时和输出上限的受限运行器；CLI探测不继承用户API Key或任意环境。
+- OpenCode补齐配置计划显式丢弃和完整断开流程：只移除`provider.hal100`，吊销专属Key，保留用户默认模型、其他Provider、注释和备份。
+
+完成条件已满足：数据库迁移、资源约束、JSONC保留式移除、命令超时、计划隔离、OpenCode配置/断开回滚、桌面原生确认与全量既有回归通过。
+
+## 19. 迭代16：Pi Coding Agent接入
+
+- 专用`PiCodingAgentIntegrationAdapter`只管理官方`~/.pi/agent/models.json`中的`providers.hal100`；配置必须是严格JSON，用户默认模型、其他Provider、设置、扩展、Skills和会话不在所有权范围内。
+- 仅从固定候选路径探测用户独立安装的`pi`，使用`PI_CODING_AGENT_DIR`时只提示覆盖风险，不静默写入自定义目录。
+- Provider固定使用Chat Completions和`hal100-active`模型契约；API Key通过固定`/bin/cat`命令按请求读取HAL100应用数据目录中的`0600`专属文件，命令路径做Shell单引号转义，不接受用户自定义命令。
+- 配置应用执行预览、原生确认、原文件摘要复验、备份、原子写入、严格解析验证、SQLite事务和Gateway凭据热更新；任一步失败回滚。
+- 断开只移除`providers.hal100`并吊销`pi-coding-agent`Key；内置`hal100-agent`、OpenCode及其他外部客户端身份不受影响。
+- 软件接入页提供Pi检测、配置刷新和可逆断开，明确显示它与内置Pi Agent Core的进程、HOME、会话和凭据隔离。
+- 官方`@earendil-works/pi-coding-agent@0.84.2`在隔离HOME中读取真实受管`models.json`和凭据，经真实HAL100 Gateway调用SSE模拟后端，响应成功并把Usage归属为`pi-coding-agent`；`hal100-agent`归属保持为零。
+
+完成条件已满足：Pi适配器单元测试、官方CLI隔离端到端、Rust workspace编译、桌面命令、前端类型检查和交互回归通过。验收记录见[迭代15–16：外部Agent控制面与Pi接入](benchmarks/2026-08-20-iteration-15-16-external-control-and-pi.md)。
+
+## 20. 迭代17：OpenClaw多协议接入
+
+- 专用`OpenClawIntegrationAdapter`只管理默认实例中的`models.providers.hal100`、
+  `secrets.providers.hal100_gateway`和独立`0600`凭据文件。
+- 配置通过官方`openclaw config patch`执行dry-run和应用；JSON5可以读取，官方工具可能
+  标准化注释与排版，因此预览明确提示并保存原字节备份。
+- 自定义HOME、STATE、CONFIG或Profile不会被猜测管理；低于`2026.7.1`的版本不自动配置。
+- Chat Completions、OpenAI Responses与Anthropic Messages均经过真实官方CLI验收，用户可
+  显式切换；切换只替换HAL100 Provider，不改变OpenClaw默认模型或运行中的服务。
+- 配置、协议刷新与断开均使用独立短期一次性计划、原生确认、摘要复验、写后验证和失败回滚。
+- Usage只归属`openclaw`，不与内置`hal100-agent`或其他外部客户端共享凭据。
+
+完成条件已满足：6项适配器单元测试、官方`openclaw@2026.7.1-2`三协议隔离端到端、桌面
+控制面、React回归和workspace编译通过。详见[OpenClaw接入](OPENCLAW_INTEGRATION.md)与
+[迭代17验收](benchmarks/2026-08-20-iteration-17-openclaw.md)。
+
+## 21. 迭代18：Hermes Agent接入与共存收口
+
+- 专用`HermesAgentIntegrationAdapter`只管理default Profile的`providers.hal100`和
+  `.env`中的`HAL100_HERMES_GATEWAY_KEY`，不修改粘性Profile、默认模型或其他变量。
+- 兼容基线固定为Hermes 0.18.2；候选配置先在临时`HERMES_HOME`经官方
+  `hermes -p default config show`验证，真实调用固定显式选择`custom:hal100`。
+- Hermes官方要求至少64,000 Token上下文；当前模型契约不足时状态为Blocked，并在生成计划前
+  故障关闭。真实验收使用65,536 Token契约，不伪造当前4K模型能力。
+- YAML语义重写前备份不含Key的原文件；可能包含其他秘密的`.env`不创建持久备份，只在内存
+  中保留事务回滚副本，并精确保留其他行、收紧为`0600`。
+- 软件接入页完成检测、前置条件展示、语义预览、原生确认、应用、刷新和精确断开。
+- 四个外部Agent均为可用状态，身份、凭据、受管片段、计划和Usage归属互相独立；内置Pi
+  Agent Core继续使用`hal100-agent`私有生命周期。
+
+完成条件已满足：9项Hermes单元测试、固定`hermes-agent==0.18.2`官方CLI隔离端到端、四客户端
+注册表共存约束、16项React回归、生产构建和Rust workspace全目标检查通过。详见
+[Hermes Agent接入](HERMES_AGENT_INTEGRATION.md)与
+[迭代18验收](benchmarks/2026-08-20-iteration-18-hermes-and-coexistence.md)。
+
+迭代15–18增加了真实适配能力和相应代码量，但没有采用文件行数硬上限。边界继续由稳定身份、
+资源所有权、变化原因、协议契约和可逆事务定义；只有出现第二个相同变化原因时才继续提取共享
+机制，不为减少行数合并无关客户端语义。
+
+## 22. 每个迭代的统一完成条件
 
 - 开发版能启动并保留已有完整闭环。
 - Rust测试、前端测试、类型检查和静态检查通过。
