@@ -41,10 +41,17 @@ import {
   activateExternalBackend,
   applyDataRetention,
   applyGgufImport,
+  applyHermesAgentConfiguration,
+  applyHermesAgentDisconnection,
   applyLlamaCppInstall,
   applyLlamaCppRemove,
   applyModelRemoval,
+  applyOpenClawConfiguration,
+  applyOpenClawDisconnection,
   applyOpenCodeConfiguration,
+  applyOpenCodeDisconnection,
+  applyPiCodingAgentConfiguration,
+  applyPiCodingAgentDisconnection,
   type BackendAuthMethod,
   type BackendDraft,
   type BackendKind,
@@ -56,14 +63,28 @@ import {
   type DownloadSource,
   deleteExternalBackend,
   deleteModelRoute,
+  discardHermesAgentConfigurationPlan,
+  discardHermesAgentDisconnectionPlan,
+  discardOpenClawConfigurationPlan,
+  discardOpenClawDisconnectionPlan,
+  discardOpenCodeConfigurationPlan,
+  discardOpenCodeDisconnectionPlan,
+  discardPiCodingAgentConfigurationPlan,
+  discardPiCodingAgentDisconnectionPlan,
   discoverLocalBackends,
   type EngineInstallPlan,
   type EngineRemovePlan,
+  type ExternalAgentConfigurationPlan,
+  type ExternalAgentDetection,
+  type ExternalAgentDisconnectPlan,
+  type ExternalAgentGatewayProtocol,
+  type ExternalAgentIntegrationState,
   forceActivateExternalBackend,
   forceStartLlamaCppModel,
   forceStopLlamaCpp,
   type GenericClientCredential,
   type GgufImportPlan,
+  getAgentEcosystemCatalog,
   getAppOverview,
   getAuditLog,
   getBackendCatalog,
@@ -71,10 +92,13 @@ import {
   getDesktopSettings,
   getGenericClientCatalog,
   getHardwareProfile,
+  getHermesAgentDetection,
   getLlamaCppStatus,
   getModelDownloads,
   getModelLibrary,
+  getOpenClawDetection,
   getOpenCodeDetection,
+  getPiCodingAgentDetection,
   getRemoteModelRepository,
   getUsageDashboard,
   isTauriRuntime,
@@ -84,11 +108,18 @@ import {
   type ModelRemovalPlan,
   type OpenCodeConfigPlan,
   type OpenCodeIntegrationState,
+  planHermesAgentConfiguration,
+  planHermesAgentDisconnection,
   planLlamaCppInstall,
   planLlamaCppRemove,
   planModelDownload,
   planModelRemoval,
+  planOpenClawConfiguration,
+  planOpenClawDisconnection,
   planOpenCodeConfiguration,
+  planOpenCodeDisconnection,
+  planPiCodingAgentConfiguration,
+  planPiCodingAgentDisconnection,
   probeExternalBackend,
   type RemoteModelRepository,
   type RetentionSettingsDraft,
@@ -1302,18 +1333,40 @@ const integrationStateCopy: Record<
   modifiedOutsideHal100: { label: "配置已被外部修改", tone: "warning" },
 };
 
+const externalIntegrationStateCopy: Record<
+  ExternalAgentIntegrationState,
+  { label: string; tone: "ok" | "neutral" | "warning" }
+> = {
+  notInstalled: { label: "未安装", tone: "neutral" },
+  installedNotConfigured: { label: "尚未配置", tone: "neutral" },
+  configured: { label: "已由 HAL100 配置", tone: "ok" },
+  needsRefresh: { label: "配置需要刷新", tone: "warning" },
+  conflict: { label: "存在配置冲突", tone: "warning" },
+  modifiedOutsideHal100: { label: "配置已被外部修改", tone: "warning" },
+  unsupportedVersion: { label: "版本暂不支持", tone: "warning" },
+  blocked: { label: "接入被阻止", tone: "warning" },
+};
+
+const externalAgentProtocolCopy: Record<ExternalAgentGatewayProtocol, string> = {
+  openAiChatCompletions: "Chat Completions",
+  openAiResponses: "Responses",
+  anthropicMessages: "Anthropic Messages",
+};
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function OpenCodeConfirmationDialog({
+function ManagedAgentConfigurationDialog({
+  displayName,
   plan,
   applying,
   error,
   onCancel,
   onApply,
 }: {
-  plan: OpenCodeConfigPlan;
+  displayName: string;
+  plan: OpenCodeConfigPlan | ExternalAgentConfigurationPlan;
   applying: boolean;
   error: string | null;
   onCancel: () => void;
@@ -1323,7 +1376,7 @@ function OpenCodeConfirmationDialog({
   return (
     <div className="dialog-backdrop" role="presentation">
       <section
-        aria-labelledby="opencode-dialog-title"
+        aria-labelledby="managed-agent-dialog-title"
         aria-modal="true"
         className="dialog"
         role="dialog"
@@ -1331,7 +1384,7 @@ function OpenCodeConfirmationDialog({
         <div className="dialog-heading">
           <div>
             <p className="eyebrow">需要确认</p>
-            <h2 id="opencode-dialog-title">配置 OpenCode</h2>
+            <h2 id="managed-agent-dialog-title">配置 {displayName}</h2>
           </div>
           <button
             aria-label="关闭"
@@ -1362,6 +1415,16 @@ function OpenCodeConfirmationDialog({
             不会修改默认模型或已有 Provider。
           </p>
         </div>
+        {"warnings" in plan && plan.warnings.length > 0 && (
+          <div className="warning-list">
+            <AlertTriangle size={17} />
+            <div>
+              {plan.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
         {!runtime && <p className="inline-notice">浏览器预览模式只能查看变更，不能应用。</p>}
         {error && <p className="inline-error">{error}</p>}
         <div className="dialog-actions">
@@ -1375,6 +1438,87 @@ function OpenCodeConfirmationDialog({
             type="button"
           >
             {applying ? "正在验证并应用…" : "确认并应用配置"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ManagedAgentDisconnectDialog({
+  displayName,
+  plan,
+  applying,
+  error,
+  onCancel,
+  onApply,
+}: {
+  displayName: string;
+  plan: ExternalAgentDisconnectPlan;
+  applying: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onApply: () => void;
+}) {
+  const runtime = isTauriRuntime();
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section
+        aria-labelledby="managed-agent-disconnect-title"
+        aria-modal="true"
+        className="dialog"
+        role="dialog"
+      >
+        <div className="dialog-heading">
+          <div>
+            <p className="eyebrow">需要确认</p>
+            <h2 id="managed-agent-disconnect-title">断开 {displayName}</h2>
+          </div>
+          <button
+            aria-label="关闭"
+            className="icon-button"
+            disabled={applying}
+            onClick={onCancel}
+            type="button"
+          >
+            <X size={17} />
+          </button>
+        </div>
+        <p className="dialog-intro">
+          只会从 <code>{plan.configPath}</code> 移除 HAL100 自己管理的内容：
+        </p>
+        <div className="change-preview">
+          {plan.changes.map((change) => (
+            <div key={`${change.action}:${change.path}`}>
+              <code>- {change.path}</code>
+              <span>
+                {change.action === "removeManagedCredential"
+                  ? "吊销并删除专属 Key"
+                  : "移除受管分片"}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="safety-summary">
+          <ShieldCheck size={17} />
+          <p>
+            应用前会备份配置。用户的默认模型、其他 Provider 和项目配置不会被修改；
+            {displayName} 专属 Key 吊销后无法继续调用 HAL100 Gateway。
+          </p>
+        </div>
+        {!runtime && <p className="inline-notice">浏览器预览模式只能查看变更，不能断开接入。</p>}
+        {error && <p className="inline-error">{error}</p>}
+        <div className="dialog-actions">
+          <button className="secondary-button" disabled={applying} onClick={onCancel} type="button">
+            取消
+          </button>
+          <button
+            className="danger-button"
+            disabled={applying || !runtime}
+            onClick={onApply}
+            type="button"
+          >
+            {applying ? "等待原生确认…" : "确认断开接入"}
           </button>
         </div>
       </section>
@@ -1555,10 +1699,631 @@ function GenericClientAccess() {
   );
 }
 
+function PiCodingAgentIntegrationCard() {
+  const queryClient = useQueryClient();
+  const detection = useQuery<ExternalAgentDetection>({
+    queryKey: ["pi-coding-agent-detection"],
+    queryFn: getPiCodingAgentDetection,
+  });
+  const [plan, setPlan] = useState<ExternalAgentConfigurationPlan | null>(null);
+  const [disconnectPlan, setDisconnectPlan] = useState<ExternalAgentDisconnectPlan | null>(null);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const planMutation = useMutation({
+    mutationFn: planPiCodingAgentConfiguration,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setPlan(nextPlan);
+    },
+  });
+  const applyMutation = useMutation({
+    mutationFn: (planId: string) => applyPiCodingAgentConfiguration(planId),
+    onSuccess: async (result) => {
+      setPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `Pi 配置完成，备份已保存到 ${result.backupPath}`
+          : "Pi 配置完成，独立凭据已生效。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["pi-coding-agent-detection"] });
+    },
+  });
+  const disconnectPlanMutation = useMutation({
+    mutationFn: planPiCodingAgentDisconnection,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setDisconnectPlan(nextPlan);
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: (planId: string) => applyPiCodingAgentDisconnection(planId),
+    onSuccess: async (result) => {
+      setDisconnectPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `Pi 接入已断开，配置备份保存在 ${result.backupPath}`
+          : "Pi 接入已断开，专属凭据已吊销。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["pi-coding-agent-detection"] });
+    },
+  });
+
+  if (detection.isPending) {
+    return <section className="integration-card state-message">正在检测 Pi Coding Agent…</section>;
+  }
+  if (detection.isError) {
+    return (
+      <section className="integration-card state-message error">
+        {errorMessage(detection.error)}
+      </section>
+    );
+  }
+
+  const data = detection.data;
+  const stateCopy = externalIntegrationStateCopy[data.integrationState];
+  const connected =
+    data.integrationState === "configured" || data.integrationState === "needsRefresh";
+  const cannotConfigure =
+    !data.installed ||
+    data.integrationState === "conflict" ||
+    data.integrationState === "modifiedOutsideHal100" ||
+    data.integrationState === "unsupportedVersion" ||
+    data.integrationState === "blocked";
+
+  return (
+    <>
+      <section className="integration-card">
+        <div className="integration-heading">
+          <div className="integration-brand">π</div>
+          <div>
+            <h2>Pi Coding Agent</h2>
+            <p>
+              {data.installed
+                ? `已检测到 ${data.version ?? "未知版本"}`
+                : "未从常用安装位置检测到官方 Pi CLI"}
+            </p>
+          </div>
+          <span className={`status-pill ${stateCopy.tone}`}>{stateCopy.label}</span>
+        </div>
+        <details className="inline-disclosure">
+          <summary>
+            <span>连接详情</span>
+            <ChevronRight size={14} />
+          </summary>
+          <dl className="integration-details">
+            <div>
+              <dt>Gateway Base URL</dt>
+              <dd>http://127.0.0.1:10100/v1</dd>
+            </div>
+            <div>
+              <dt>Pi 模型配置</dt>
+              <dd>{data.configPath}</dd>
+            </div>
+            <div>
+              <dt>模型契约</dt>
+              <dd>{data.modelProfileRevision}</dd>
+            </div>
+            <div>
+              <dt>隔离边界</dt>
+              <dd>{connected ? "Pi 专属 Key · 独立于内置 Runtime" : "配置后启用"}</dd>
+            </div>
+          </dl>
+        </details>
+        {data.warnings.length > 0 && (
+          <div className="warning-list">
+            <AlertTriangle size={17} />
+            <div>
+              {data.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
+        {(planMutation.isError || disconnectPlanMutation.isError) && (
+          <p className="inline-error">
+            {errorMessage(planMutation.error ?? disconnectPlanMutation.error)}
+          </p>
+        )}
+        {resultMessage && <p className="inline-success">{resultMessage}</p>}
+        <div className="integration-actions">
+          <button
+            className="secondary-button"
+            disabled={detection.isFetching}
+            onClick={() => detection.refetch()}
+            type="button"
+          >
+            {detection.isFetching ? "检测中…" : "重新检测"}
+          </button>
+          <button
+            className="primary-button"
+            disabled={
+              cannotConfigure || planMutation.isPending || data.integrationState === "configured"
+            }
+            onClick={() => planMutation.mutate()}
+            type="button"
+          >
+            {planMutation.isPending
+              ? "正在生成预览…"
+              : data.integrationState === "configured"
+                ? "配置已生效"
+                : data.integrationState === "needsRefresh"
+                  ? "刷新 Pi 配置"
+                  : "配置 Pi"}
+          </button>
+          {connected && (
+            <button
+              className="danger-button"
+              disabled={disconnectPlanMutation.isPending}
+              onClick={() => disconnectPlanMutation.mutate()}
+              type="button"
+            >
+              {disconnectPlanMutation.isPending ? "正在生成预览…" : "断开接入"}
+            </button>
+          )}
+        </div>
+      </section>
+      {plan && (
+        <ManagedAgentConfigurationDialog
+          applying={applyMutation.isPending}
+          displayName="Pi Coding Agent"
+          error={applyMutation.isError ? errorMessage(applyMutation.error) : null}
+          onApply={() => applyMutation.mutate(plan.planId)}
+          onCancel={() => {
+            if (!applyMutation.isPending) {
+              void discardPiCodingAgentConfigurationPlan(plan.planId);
+              setPlan(null);
+            }
+          }}
+          plan={plan}
+        />
+      )}
+      {disconnectPlan && (
+        <ManagedAgentDisconnectDialog
+          applying={disconnectMutation.isPending}
+          displayName="Pi Coding Agent"
+          error={disconnectMutation.isError ? errorMessage(disconnectMutation.error) : null}
+          onApply={() => disconnectMutation.mutate(disconnectPlan.planId)}
+          onCancel={() => {
+            if (!disconnectMutation.isPending) {
+              void discardPiCodingAgentDisconnectionPlan(disconnectPlan.planId);
+              setDisconnectPlan(null);
+            }
+          }}
+          plan={disconnectPlan}
+        />
+      )}
+    </>
+  );
+}
+
+function OpenClawIntegrationCard() {
+  const queryClient = useQueryClient();
+  const detection = useQuery<ExternalAgentDetection>({
+    queryKey: ["openclaw-detection"],
+    queryFn: getOpenClawDetection,
+  });
+  const [protocol, setProtocol] = useState<ExternalAgentGatewayProtocol>("openAiChatCompletions");
+  const [plan, setPlan] = useState<ExternalAgentConfigurationPlan | null>(null);
+  const [disconnectPlan, setDisconnectPlan] = useState<ExternalAgentDisconnectPlan | null>(null);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (detection.data?.configuredProtocol) {
+      setProtocol(detection.data.configuredProtocol);
+    }
+  }, [detection.data?.configuredProtocol]);
+  const planMutation = useMutation({
+    mutationFn: (selectedProtocol: ExternalAgentGatewayProtocol) =>
+      planOpenClawConfiguration(selectedProtocol),
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setPlan(nextPlan);
+    },
+  });
+  const applyMutation = useMutation({
+    mutationFn: (planId: string) => applyOpenClawConfiguration(planId),
+    onSuccess: async (result) => {
+      setPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `OpenClaw 配置完成，备份已保存到 ${result.backupPath}`
+          : "OpenClaw 配置完成，独立凭据已生效。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["openclaw-detection"] });
+    },
+  });
+  const disconnectPlanMutation = useMutation({
+    mutationFn: planOpenClawDisconnection,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setDisconnectPlan(nextPlan);
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: (planId: string) => applyOpenClawDisconnection(planId),
+    onSuccess: async (result) => {
+      setDisconnectPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `OpenClaw 接入已断开，配置备份保存在 ${result.backupPath}`
+          : "OpenClaw 接入已断开，专属凭据已吊销。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["openclaw-detection"] });
+    },
+  });
+
+  if (detection.isPending) {
+    return <section className="integration-card state-message">正在检测 OpenClaw…</section>;
+  }
+  if (detection.isError) {
+    return (
+      <section className="integration-card state-message error">
+        {errorMessage(detection.error)}
+      </section>
+    );
+  }
+
+  const data = detection.data;
+  const stateCopy = externalIntegrationStateCopy[data.integrationState];
+  const connected =
+    data.integrationState === "configured" || data.integrationState === "needsRefresh";
+  const selectedProtocolAlreadyActive =
+    data.integrationState === "configured" && data.configuredProtocol === protocol;
+  const cannotConfigure =
+    !data.installed ||
+    data.integrationState === "conflict" ||
+    data.integrationState === "modifiedOutsideHal100" ||
+    data.integrationState === "unsupportedVersion" ||
+    data.integrationState === "blocked";
+
+  return (
+    <>
+      <section className="integration-card">
+        <div className="integration-heading">
+          <div className="integration-brand openclaw-brand">CL</div>
+          <div>
+            <h2>OpenClaw</h2>
+            <p>
+              {data.installed
+                ? `已检测到 ${data.version ?? "未知版本"}`
+                : "未从常用安装位置检测到官方 OpenClaw CLI"}
+            </p>
+          </div>
+          <span className={`status-pill ${stateCopy.tone}`}>{stateCopy.label}</span>
+        </div>
+        <details className="inline-disclosure">
+          <summary>
+            <span>连接详情</span>
+            <ChevronRight size={14} />
+          </summary>
+          <dl className="integration-details">
+            <div>
+              <dt>OpenClaw 配置</dt>
+              <dd>{data.configPath}</dd>
+            </div>
+            <div>
+              <dt>当前协议</dt>
+              <dd>
+                {data.configuredProtocol
+                  ? externalAgentProtocolCopy[data.configuredProtocol]
+                  : "尚未配置"}
+              </dd>
+            </div>
+            <div>
+              <dt>模型契约</dt>
+              <dd>{data.modelProfileRevision}</dd>
+            </div>
+            <div>
+              <dt>隔离边界</dt>
+              <dd>{connected ? "OpenClaw 专属 Key · 文件型 SecretRef" : "配置后启用"}</dd>
+            </div>
+          </dl>
+        </details>
+        <label className="integration-protocol-selector">
+          <span>Gateway 协议</span>
+          <select
+            disabled={planMutation.isPending || applyMutation.isPending}
+            onChange={(event) => setProtocol(event.target.value as ExternalAgentGatewayProtocol)}
+            value={protocol}
+          >
+            <option value="openAiChatCompletions">Chat Completions</option>
+            <option value="openAiResponses">Responses</option>
+            <option value="anthropicMessages">Anthropic Messages</option>
+          </select>
+          <small>切换协议只替换 HAL100 自己的 Provider 分片，不改变 OpenClaw 默认模型。</small>
+        </label>
+        {data.warnings.length > 0 && (
+          <div className="warning-list">
+            <AlertTriangle size={17} />
+            <div>
+              {data.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
+        {(planMutation.isError || disconnectPlanMutation.isError) && (
+          <p className="inline-error">
+            {errorMessage(planMutation.error ?? disconnectPlanMutation.error)}
+          </p>
+        )}
+        {resultMessage && <p className="inline-success">{resultMessage}</p>}
+        <div className="integration-actions">
+          <button
+            className="secondary-button"
+            disabled={detection.isFetching}
+            onClick={() => detection.refetch()}
+            type="button"
+          >
+            {detection.isFetching ? "检测中…" : "重新检测"}
+          </button>
+          <button
+            className="primary-button"
+            disabled={cannotConfigure || planMutation.isPending || selectedProtocolAlreadyActive}
+            onClick={() => planMutation.mutate(protocol)}
+            type="button"
+          >
+            {planMutation.isPending
+              ? "正在调用官方工具验证…"
+              : selectedProtocolAlreadyActive
+                ? "所选协议已生效"
+                : connected
+                  ? "切换 OpenClaw 协议"
+                  : "配置 OpenClaw"}
+          </button>
+          {connected && (
+            <button
+              className="danger-button"
+              disabled={disconnectPlanMutation.isPending}
+              onClick={() => disconnectPlanMutation.mutate()}
+              type="button"
+            >
+              {disconnectPlanMutation.isPending ? "正在生成预览…" : "断开接入"}
+            </button>
+          )}
+        </div>
+      </section>
+      {plan && (
+        <ManagedAgentConfigurationDialog
+          applying={applyMutation.isPending}
+          displayName="OpenClaw"
+          error={applyMutation.isError ? errorMessage(applyMutation.error) : null}
+          onApply={() => applyMutation.mutate(plan.planId)}
+          onCancel={() => {
+            if (!applyMutation.isPending) {
+              void discardOpenClawConfigurationPlan(plan.planId);
+              setPlan(null);
+            }
+          }}
+          plan={plan}
+        />
+      )}
+      {disconnectPlan && (
+        <ManagedAgentDisconnectDialog
+          applying={disconnectMutation.isPending}
+          displayName="OpenClaw"
+          error={disconnectMutation.isError ? errorMessage(disconnectMutation.error) : null}
+          onApply={() => disconnectMutation.mutate(disconnectPlan.planId)}
+          onCancel={() => {
+            if (!disconnectMutation.isPending) {
+              void discardOpenClawDisconnectionPlan(disconnectPlan.planId);
+              setDisconnectPlan(null);
+            }
+          }}
+          plan={disconnectPlan}
+        />
+      )}
+    </>
+  );
+}
+
+function HermesAgentIntegrationCard() {
+  const queryClient = useQueryClient();
+  const detection = useQuery<ExternalAgentDetection>({
+    queryKey: ["hermes-agent-detection"],
+    queryFn: getHermesAgentDetection,
+  });
+  const [plan, setPlan] = useState<ExternalAgentConfigurationPlan | null>(null);
+  const [disconnectPlan, setDisconnectPlan] = useState<ExternalAgentDisconnectPlan | null>(null);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const planMutation = useMutation({
+    mutationFn: planHermesAgentConfiguration,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setPlan(nextPlan);
+    },
+  });
+  const applyMutation = useMutation({
+    mutationFn: (planId: string) => applyHermesAgentConfiguration(planId),
+    onSuccess: async (result) => {
+      setPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `Hermes 配置完成，非敏感 YAML 备份已保存到 ${result.backupPath}`
+          : "Hermes 配置完成，独立凭据已生效。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["hermes-agent-detection"] });
+    },
+  });
+  const disconnectPlanMutation = useMutation({
+    mutationFn: planHermesAgentDisconnection,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setDisconnectPlan(nextPlan);
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: (planId: string) => applyHermesAgentDisconnection(planId),
+    onSuccess: async (result) => {
+      setDisconnectPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `Hermes 接入已断开，非敏感 YAML 备份保存在 ${result.backupPath}`
+          : "Hermes 接入已断开，专属凭据已吊销。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["hermes-agent-detection"] });
+    },
+  });
+
+  if (detection.isPending) {
+    return <section className="integration-card state-message">正在检测 Hermes Agent…</section>;
+  }
+  if (detection.isError) {
+    return (
+      <section className="integration-card state-message error">
+        {errorMessage(detection.error)}
+      </section>
+    );
+  }
+
+  const data = detection.data;
+  const stateCopy = externalIntegrationStateCopy[data.integrationState];
+  const connected =
+    data.integrationState === "configured" || data.integrationState === "needsRefresh";
+  const cannotConfigure =
+    !data.installed ||
+    data.integrationState === "conflict" ||
+    data.integrationState === "modifiedOutsideHal100" ||
+    data.integrationState === "unsupportedVersion" ||
+    data.integrationState === "blocked";
+
+  return (
+    <>
+      <section className="integration-card">
+        <div className="integration-heading">
+          <div className="integration-brand hermes-brand">H</div>
+          <div>
+            <h2>Hermes Agent</h2>
+            <p>
+              {data.installed
+                ? `已检测到 ${data.version ?? "未知版本"}`
+                : "未从常用安装位置检测到官方 Hermes CLI"}
+            </p>
+          </div>
+          <span className={`status-pill ${stateCopy.tone}`}>{stateCopy.label}</span>
+        </div>
+        <details className="inline-disclosure">
+          <summary>
+            <span>连接详情</span>
+            <ChevronRight size={14} />
+          </summary>
+          <dl className="integration-details">
+            <div>
+              <dt>Hermes default Profile</dt>
+              <dd>{data.configPath}</dd>
+            </div>
+            <div>
+              <dt>Gateway 协议</dt>
+              <dd>Chat Completions</dd>
+            </div>
+            <div>
+              <dt>运行前置条件</dt>
+              <dd>Hermes ≥ 0.18.2 · 上下文 ≥ 64000 Token</dd>
+            </div>
+            <div>
+              <dt>隔离边界</dt>
+              <dd>
+                {connected
+                  ? "Hermes 专属 Key · .env 独立变量"
+                  : "只管理 providers.hal100 与专属变量"}
+              </dd>
+            </div>
+          </dl>
+        </details>
+        {data.warnings.length > 0 && (
+          <div className="warning-list">
+            <AlertTriangle size={17} />
+            <div>
+              {data.warnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
+        {(planMutation.isError || disconnectPlanMutation.isError) && (
+          <p className="inline-error">
+            {errorMessage(planMutation.error ?? disconnectPlanMutation.error)}
+          </p>
+        )}
+        {resultMessage && <p className="inline-success">{resultMessage}</p>}
+        <div className="integration-actions">
+          <button
+            className="secondary-button"
+            disabled={detection.isFetching}
+            onClick={() => detection.refetch()}
+            type="button"
+          >
+            {detection.isFetching ? "检测中…" : "重新检测"}
+          </button>
+          <button
+            className="primary-button"
+            disabled={
+              cannotConfigure || planMutation.isPending || data.integrationState === "configured"
+            }
+            onClick={() => planMutation.mutate()}
+            type="button"
+          >
+            {planMutation.isPending
+              ? "正在调用官方 CLI 验证…"
+              : data.integrationState === "configured"
+                ? "配置已生效"
+                : data.integrationState === "needsRefresh"
+                  ? "刷新 Hermes 配置"
+                  : "配置 Hermes"}
+          </button>
+          {connected && (
+            <button
+              className="danger-button"
+              disabled={disconnectPlanMutation.isPending}
+              onClick={() => disconnectPlanMutation.mutate()}
+              type="button"
+            >
+              {disconnectPlanMutation.isPending ? "正在生成预览…" : "断开接入"}
+            </button>
+          )}
+        </div>
+      </section>
+      {plan && (
+        <ManagedAgentConfigurationDialog
+          applying={applyMutation.isPending}
+          displayName="Hermes Agent"
+          error={applyMutation.isError ? errorMessage(applyMutation.error) : null}
+          onApply={() => applyMutation.mutate(plan.planId)}
+          onCancel={() => {
+            if (!applyMutation.isPending) {
+              void discardHermesAgentConfigurationPlan(plan.planId);
+              setPlan(null);
+            }
+          }}
+          plan={plan}
+        />
+      )}
+      {disconnectPlan && (
+        <ManagedAgentDisconnectDialog
+          applying={disconnectMutation.isPending}
+          displayName="Hermes Agent"
+          error={disconnectMutation.isError ? errorMessage(disconnectMutation.error) : null}
+          onApply={() => disconnectMutation.mutate(disconnectPlan.planId)}
+          onCancel={() => {
+            if (!disconnectMutation.isPending) {
+              void discardHermesAgentDisconnectionPlan(disconnectPlan.planId);
+              setDisconnectPlan(null);
+            }
+          }}
+          plan={disconnectPlan}
+        />
+      )}
+    </>
+  );
+}
+
 function IntegrationsPage() {
   const queryClient = useQueryClient();
+  const ecosystem = useQuery({
+    queryKey: ["agent-ecosystem-catalog"],
+    queryFn: getAgentEcosystemCatalog,
+  });
   const detection = useQuery({ queryKey: ["opencode-detection"], queryFn: getOpenCodeDetection });
   const [plan, setPlan] = useState<OpenCodeConfigPlan | null>(null);
+  const [disconnectPlan, setDisconnectPlan] = useState<ExternalAgentDisconnectPlan | null>(null);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const planMutation = useMutation({
     mutationFn: planOpenCodeConfiguration,
@@ -1579,14 +2344,36 @@ function IntegrationsPage() {
       await queryClient.invalidateQueries({ queryKey: ["opencode-detection"] });
     },
   });
+  const disconnectPlanMutation = useMutation({
+    mutationFn: planOpenCodeDisconnection,
+    onSuccess: (nextPlan) => {
+      setResultMessage(null);
+      setDisconnectPlan(nextPlan);
+    },
+  });
+  const disconnectMutation = useMutation({
+    mutationFn: (planId: string) => applyOpenCodeDisconnection(planId),
+    onSuccess: async (result) => {
+      setDisconnectPlan(null);
+      setResultMessage(
+        result.backupPath
+          ? `接入已断开，配置备份保存在 ${result.backupPath}`
+          : "接入已断开，OpenCode 专属凭据已吊销。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["opencode-detection"] });
+    },
+  });
 
-  if (detection.isPending) {
-    return <div className="state-message">正在只读检测 OpenCode 和全局配置…</div>;
+  if (detection.isPending || ecosystem.isPending) {
+    return <div className="state-message">正在读取 Agent 接入边界并检测外部客户端…</div>;
   }
-  if (detection.isError) {
-    return <div className="state-message error">{errorMessage(detection.error)}</div>;
+  if (detection.isError || ecosystem.isError) {
+    return (
+      <div className="state-message error">{errorMessage(detection.error ?? ecosystem.error)}</div>
+    );
   }
   const data = detection.data;
+  const ecosystemData = ecosystem.data;
   const stateCopy = integrationStateCopy[data.integrationState];
   const cannotPlan =
     data.integrationState === "conflict" || data.integrationState === "modifiedOutsideHal100";
@@ -1597,9 +2384,36 @@ function IntegrationsPage() {
         <div>
           <p className="eyebrow">客户端接入</p>
           <h1>软件接入</h1>
-          <p>让 OpenCode 通过固定的 HAL100 网关调用本地模型，并按专属凭据准确归集 Token。</p>
+          <p>让外部 Agent 通过固定的 HAL100 Gateway 调用模型，并按独立身份准确归集 Token。</p>
         </div>
       </header>
+
+      <section className="agent-boundary-card" aria-labelledby="agent-boundary-title">
+        <div className="agent-boundary-heading">
+          <div>
+            <p className="eyebrow">运行边界</p>
+            <h2 id="agent-boundary-title">内置 Runtime 与外部 Agent 相互独立</h2>
+          </div>
+          <ShieldCheck size={20} />
+        </div>
+        <div className="agent-boundary-grid">
+          <article>
+            <span className="boundary-kind">HAL100 私有组件</span>
+            <strong>{ecosystemData.builtInRuntime.displayName}（内置）</strong>
+            <p>
+              底层使用固定版本 {ecosystemData.builtInRuntime.engineName}；
+              {ecosystemData.builtInRuntime.isolationSummary}。
+            </p>
+            <code>{ecosystemData.builtInRuntime.clientAppId}</code>
+          </article>
+          <article>
+            <span className="boundary-kind">用户安装的软件</span>
+            <strong>外部 Agent 集成</strong>
+            <p>独立安装、配置、会话和升级；HAL100 只管理明确预览过的配置片段和专属 Key。</p>
+            <code>opencode · pi-coding-agent · openclaw · hermes-agent</code>
+          </article>
+        </div>
+      </section>
 
       <section className="integration-card">
         <div className="integration-heading">
@@ -1649,7 +2463,11 @@ function IntegrationsPage() {
             </div>
           </div>
         )}
-        {planMutation.isError && <p className="inline-error">{errorMessage(planMutation.error)}</p>}
+        {(planMutation.isError || disconnectPlanMutation.isError) && (
+          <p className="inline-error">
+            {errorMessage(planMutation.error ?? disconnectPlanMutation.error)}
+          </p>
+        )}
         {resultMessage && <p className="inline-success">{resultMessage}</p>}
 
         <div className="integration-actions">
@@ -1675,8 +2493,24 @@ function IntegrationsPage() {
                 ? "配置已生效"
                 : "配置 OpenCode"}
           </button>
+          {data.integrationState === "configured" && (
+            <button
+              className="danger-button"
+              disabled={disconnectPlanMutation.isPending}
+              onClick={() => disconnectPlanMutation.mutate()}
+              type="button"
+            >
+              {disconnectPlanMutation.isPending ? "正在生成预览…" : "断开接入"}
+            </button>
+          )}
         </div>
       </section>
+
+      <PiCodingAgentIntegrationCard />
+
+      <OpenClawIntegrationCard />
+
+      <HermesAgentIntegrationCard />
 
       <details className="disclosure-card generic-access-disclosure">
         <summary>
@@ -1695,14 +2529,33 @@ function IntegrationsPage() {
       </details>
 
       {plan && (
-        <OpenCodeConfirmationDialog
+        <ManagedAgentConfigurationDialog
           applying={applyMutation.isPending}
+          displayName="OpenCode"
           error={applyMutation.isError ? errorMessage(applyMutation.error) : null}
           onApply={() => applyMutation.mutate(plan.planId)}
           onCancel={() => {
-            if (!applyMutation.isPending) setPlan(null);
+            if (!applyMutation.isPending) {
+              void discardOpenCodeConfigurationPlan(plan.planId);
+              setPlan(null);
+            }
           }}
           plan={plan}
+        />
+      )}
+      {disconnectPlan && (
+        <ManagedAgentDisconnectDialog
+          applying={disconnectMutation.isPending}
+          displayName="OpenCode"
+          error={disconnectMutation.isError ? errorMessage(disconnectMutation.error) : null}
+          onApply={() => disconnectMutation.mutate(disconnectPlan.planId)}
+          onCancel={() => {
+            if (!disconnectMutation.isPending) {
+              void discardOpenCodeDisconnectionPlan(disconnectPlan.planId);
+              setDisconnectPlan(null);
+            }
+          }}
+          plan={disconnectPlan}
         />
       )}
     </div>

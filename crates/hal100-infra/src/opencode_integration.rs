@@ -1,17 +1,17 @@
 use std::{
-    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::{Arc, Mutex},
-    thread,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use hal100_core::OPENCODE_INTEGRATION;
 use hal100_protocol::{
-    OpenCodeApplyResult, OpenCodeConfigChange, OpenCodeConfigFormat, OpenCodeConfigPlan,
-    OpenCodeDetection, OpenCodeIntegrationState, OpenCodeProjectDiagnosis,
+    ExternalAgentDisconnectPlan, ExternalAgentDisconnectResult, ExternalAgentManagedChange,
+    ExternalAgentManagedChangeAction, OpenCodeApplyResult, OpenCodeConfigChange,
+    OpenCodeConfigFormat, OpenCodeConfigPlan, OpenCodeDetection, OpenCodeIntegrationState,
+    OpenCodeProjectDiagnosis,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -19,15 +19,16 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    ClientCredentialError, CredentialRegistry, Database, DatabaseError, ManagedIntegrationRecord,
-    jsonc_patch::{JsoncPatchError, hal100_provider, parse_jsonc, patch_hal100_provider},
+    BoundedCommandRunner, ClientCredentialError, CredentialRegistry, Database, DatabaseError,
+    ManagedIntegrationRecord, ManagedIntegrationResourceRecord, PendingPlanStore,
+    StoredClientCredential, hash_client_key,
+    jsonc_patch::{
+        JsoncPatchError, hal100_provider, parse_jsonc, patch_hal100_provider,
+        remove_hal100_provider,
+    },
     stored_client_credential,
 };
 
-const INTEGRATION_ID: &str = "opencode";
-const CLIENT_APP_ID: &str = "opencode";
-const CLIENT_DISPLAY_NAME: &str = "OpenCode";
-const CREDENTIAL_ID: &str = "opencode-gateway-key";
 const PROVIDER_DISPLAY_NAME: &str = "HAL100 · 由 HAL100 管理";
 const PLAN_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_CONFIG_BYTES: u64 = 2 * 1024 * 1024;
@@ -90,6 +91,10 @@ pub enum OpenCodeIntegrationError {
     UnownedCredentialFile,
     #[error("HAL100 OpenCode凭据文件无效")]
     InvalidCredentialFile,
+    #[error("OpenCode尚未由HAL100配置，无可断开的受管接入")]
+    NotConfigured,
+    #[error("HAL100管理的OpenCode凭据已被外部修改，请先检查")]
+    ManagedCredentialModified,
     #[error("写入后验证失败，已经恢复原配置")]
     VerificationFailed,
     #[error("文件操作失败: {0}")]
@@ -102,17 +107,24 @@ pub enum OpenCodeIntegrationError {
     Jsonc(#[from] JsoncPatchError),
 }
 
-pub struct OpenCodeManager {
+/// Dedicated adapter for OpenCode's JSON/JSONC configuration and CLI lifecycle.
+///
+/// The shared external-Agent registry owns stable identity and credential boundaries; this
+/// adapter deliberately retains the OpenCode-specific parser, plan and rollback behavior.
+pub struct OpenCodeIntegrationAdapter {
     database: Arc<Database>,
     credentials: CredentialRegistry,
     paths: OpenCodePaths,
     gateway_base_url: String,
-    pending: Mutex<HashMap<String, PendingPlan>>,
+    pending: PendingPlanStore<PendingPlan>,
+    pending_disconnect: PendingPlanStore<PendingDisconnect>,
 }
+
+/// Compatibility name retained for existing desktop and Agent application boundaries.
+pub type OpenCodeManager = OpenCodeIntegrationAdapter;
 
 struct PendingPlan {
     config_path: PathBuf,
-    expires_at_ms: i64,
     original_digest: [u8; 32],
     original: Vec<u8>,
     config_existed: bool,
@@ -124,7 +136,19 @@ struct PendingPlan {
     prior_integration: Option<ManagedIntegrationRecord>,
 }
 
-impl OpenCodeManager {
+struct PendingDisconnect {
+    config_path: PathBuf,
+    original_digest: [u8; 32],
+    original: Vec<u8>,
+    patched: Vec<u8>,
+    credential_digest: [u8; 32],
+    plaintext_key: String,
+    integration: ManagedIntegrationRecord,
+    resources: Vec<ManagedIntegrationResourceRecord>,
+    credential: StoredClientCredential,
+}
+
+impl OpenCodeIntegrationAdapter {
     pub fn new(
         database: Arc<Database>,
         credentials: CredentialRegistry,
@@ -149,7 +173,8 @@ impl OpenCodeManager {
             credentials,
             paths,
             gateway_base_url,
-            pending: Mutex::new(HashMap::new()),
+            pending: PendingPlanStore::new(PLAN_TTL),
+            pending_disconnect: PendingPlanStore::new(PLAN_TTL),
         }
     }
 
@@ -175,7 +200,9 @@ impl OpenCodeManager {
         }
         let config_path = self.current_config_path();
         let config_exists = config_path.exists();
-        let prior = self.database.managed_integration(INTEGRATION_ID)?;
+        let prior = self
+            .database
+            .managed_integration(OPENCODE_INTEGRATION.integration_id)?;
         let integration_state = if config_exists {
             match read_config(&config_path).and_then(|bytes| {
                 let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -237,7 +264,9 @@ impl OpenCodeManager {
         let source = std::str::from_utf8(&original)
             .map_err(|_| JsoncPatchError::InvalidJson("configuration is not UTF-8".to_owned()))?;
         let parsed = parse_jsonc(source)?;
-        let prior = self.database.managed_integration(INTEGRATION_ID)?;
+        let prior = self
+            .database
+            .managed_integration(OPENCODE_INTEGRATION.integration_id)?;
         let state = self.integration_state(&parsed, prior.as_ref(), &config_path);
         match state {
             OpenCodeIntegrationState::Conflict => {
@@ -267,12 +296,8 @@ impl OpenCodeManager {
             &fragment,
             state == OpenCodeIntegrationState::Configured,
         )?;
-        let plan_id = Uuid::new_v4().to_string();
-        let expires_at_ms =
-            now_ms().saturating_add(i64::try_from(PLAN_TTL.as_millis()).unwrap_or(i64::MAX));
         let pending = PendingPlan {
             config_path: config_path.clone(),
-            expires_at_ms,
             original_digest: bytes_hash(&original),
             original,
             config_existed,
@@ -283,14 +308,10 @@ impl OpenCodeManager {
             create_credential_file,
             prior_integration: prior,
         };
-        let mut plans = self
+        let ticket = self
             .pending
-            .lock()
+            .replace(pending)
             .map_err(|_| OpenCodeIntegrationError::InvalidPlan)?;
-        // Only one OpenCode mutation can be awaiting confirmation. Replacing an older preview
-        // bounds memory and drops its plaintext key immediately.
-        plans.clear();
-        plans.insert(plan_id.clone(), pending);
         tracing::info!(
             action = "configure_opencode",
             config_existed,
@@ -299,8 +320,8 @@ impl OpenCodeManager {
         );
 
         Ok(OpenCodeConfigPlan {
-            plan_id,
-            expires_at_ms,
+            plan_id: ticket.plan_id,
+            expires_at_ms: ticket.expires_at_ms,
             config_path: display_path(&config_path, &self.paths.home_directory),
             credential_path: display_path(&self.paths.credential_path, &self.paths.home_directory),
             changes: vec![
@@ -396,11 +417,208 @@ impl OpenCodeManager {
         &self,
         plan_id: &str,
     ) -> Result<bool, OpenCodeIntegrationError> {
-        let mut plans = self
-            .pending
-            .lock()
+        self.pending
+            .discard(plan_id)
+            .map_err(|_| OpenCodeIntegrationError::InvalidPlan)
+    }
+
+    pub fn plan_disconnection(
+        &self,
+    ) -> Result<ExternalAgentDisconnectPlan, OpenCodeIntegrationError> {
+        if self.paths.config_path.exists() && self.paths.alternate_config_path.exists() {
+            return Err(OpenCodeIntegrationError::AmbiguousGlobalConfig);
+        }
+        let config_path = self.current_config_path();
+        reject_symlink(&config_path, true)?;
+        reject_symlink(&self.paths.credential_path, false)?;
+        let integration = self
+            .database
+            .managed_integration(OPENCODE_INTEGRATION.integration_id)?
+            .ok_or(OpenCodeIntegrationError::NotConfigured)?;
+        if Path::new(&integration.config_path) != config_path
+            || Path::new(&integration.credential_path) != self.paths.credential_path
+        {
+            return Err(OpenCodeIntegrationError::ManagedProviderModified);
+        }
+        let original = read_config(&config_path)?;
+        let source = std::str::from_utf8(&original)
+            .map_err(|_| JsoncPatchError::InvalidJson("configuration is not UTF-8".to_owned()))?;
+        let parsed = parse_jsonc(source)?;
+        if self.integration_state(&parsed, Some(&integration), &config_path)
+            != OpenCodeIntegrationState::Configured
+        {
+            return Err(OpenCodeIntegrationError::ManagedProviderModified);
+        }
+        let plaintext_key = read_credential(&self.paths.credential_path)?;
+        let credential = self
+            .database
+            .load_client_credentials()?
+            .into_iter()
+            .find(|credential| {
+                credential.key_id == OPENCODE_INTEGRATION.credential_id
+                    && credential.client_app_id == OPENCODE_INTEGRATION.client_app_id
+            })
+            .ok_or(OpenCodeIntegrationError::ManagedCredentialModified)?;
+        if hash_client_key(&plaintext_key) != credential.key_hash {
+            return Err(OpenCodeIntegrationError::ManagedCredentialModified);
+        }
+        let patched = remove_hal100_provider(source)?.output.into_bytes();
+        let resources = self
+            .database
+            .managed_integration_resources(OPENCODE_INTEGRATION.integration_id)?;
+        let pending = PendingDisconnect {
+            config_path: config_path.clone(),
+            original_digest: bytes_hash(&original),
+            original,
+            patched,
+            credential_digest: credential.key_hash,
+            plaintext_key,
+            integration,
+            resources,
+            credential,
+        };
+        let ticket = self
+            .pending_disconnect
+            .replace(pending)
             .map_err(|_| OpenCodeIntegrationError::InvalidPlan)?;
-        Ok(plans.remove(plan_id).is_some())
+        tracing::info!(
+            action = "disconnect_opencode",
+            requires_confirmation = true,
+            "opencode_disconnection_plan_created"
+        );
+
+        Ok(ExternalAgentDisconnectPlan {
+            plan_id: ticket.plan_id,
+            integration_id: OPENCODE_INTEGRATION.integration_id.to_owned(),
+            expires_at_ms: ticket.expires_at_ms,
+            config_path: display_path(&config_path, &self.paths.home_directory),
+            credential_path: display_path(&self.paths.credential_path, &self.paths.home_directory),
+            changes: vec![
+                ExternalAgentManagedChange {
+                    path: "provider.hal100".to_owned(),
+                    action: ExternalAgentManagedChangeAction::RemoveManagedFragment,
+                },
+                ExternalAgentManagedChange {
+                    path: "opencode-gateway-key".to_owned(),
+                    action: ExternalAgentManagedChangeAction::RemoveManagedCredential,
+                },
+            ],
+            creates_backup: true,
+            revokes_credential: true,
+            requires_confirmation: true,
+        })
+    }
+
+    pub fn discard_disconnection_plan(
+        &self,
+        plan_id: &str,
+    ) -> Result<bool, OpenCodeIntegrationError> {
+        self.pending_disconnect
+            .discard(plan_id)
+            .map_err(|_| OpenCodeIntegrationError::InvalidPlan)
+    }
+
+    pub fn apply_disconnection(
+        &self,
+        plan_id: &str,
+    ) -> Result<ExternalAgentDisconnectResult, OpenCodeIntegrationError> {
+        let pending = self
+            .pending_disconnect
+            .take(plan_id)
+            .map_err(|_| OpenCodeIntegrationError::InvalidPlan)?;
+        let current = read_config(&pending.config_path)?;
+        if bytes_hash(&current) != pending.original_digest {
+            return Err(OpenCodeIntegrationError::ConfigChangedAfterPreview);
+        }
+        let current_key = read_credential(&self.paths.credential_path)?;
+        if hash_client_key(&current_key) != pending.credential_digest {
+            return Err(OpenCodeIntegrationError::ConfigChangedAfterPreview);
+        }
+        let config_mode = existing_mode(&pending.config_path)?;
+        let credential_mode = existing_mode(&self.paths.credential_path)?;
+        let backup = backup_path(&pending.config_path);
+        atomic_write(&backup, &pending.original, config_mode)?;
+        if let Err(error) = atomic_write(&pending.config_path, &pending.patched, config_mode) {
+            let _ = fs::remove_file(&backup);
+            return Err(error);
+        }
+        if let Err(error) = fs::remove_file(&self.paths.credential_path) {
+            rollback_disconnection_files(
+                &pending,
+                config_mode,
+                credential_mode,
+                &self.paths.credential_path,
+                &backup,
+            );
+            return Err(error.into());
+        }
+        if let Some(parent) = self.paths.credential_path.parent() {
+            let _ = sync_directory(parent);
+        }
+        let verified = std::str::from_utf8(&pending.patched)
+            .ok()
+            .and_then(|source| parse_jsonc(source).ok())
+            .is_some_and(|config| hal100_provider(&config).is_none());
+        if !verified {
+            rollback_disconnection_files(
+                &pending,
+                config_mode,
+                credential_mode,
+                &self.paths.credential_path,
+                &backup,
+            );
+            return Err(OpenCodeIntegrationError::VerificationFailed);
+        }
+        if let Err(error) = self
+            .credentials
+            .remove_client(OPENCODE_INTEGRATION.client_app_id)
+        {
+            rollback_disconnection_files(
+                &pending,
+                config_mode,
+                credential_mode,
+                &self.paths.credential_path,
+                &backup,
+            );
+            return Err(error.into());
+        }
+        let database_result = self.database.remove_managed_integration_and_client(
+            OPENCODE_INTEGRATION.integration_id,
+            OPENCODE_INTEGRATION.client_app_id,
+            now_ms(),
+        );
+        if !matches!(database_result.as_ref(), Ok(true)) {
+            rollback_disconnection_files(
+                &pending,
+                config_mode,
+                credential_mode,
+                &self.paths.credential_path,
+                &backup,
+            );
+            let _ = self.credentials.upsert(pending.credential.clone());
+            let _ = self.database.upsert_integration_resources_and_credential(
+                &pending.integration,
+                &pending.resources,
+                &pending.credential,
+            );
+            return match database_result {
+                Ok(false) => Err(OpenCodeIntegrationError::NotConfigured),
+                Err(error) => Err(error.into()),
+                Ok(true) => unreachable!(),
+            };
+        }
+        tracing::info!(
+            action = "disconnect_opencode",
+            result = "succeeded",
+            "opencode_disconnected"
+        );
+        Ok(ExternalAgentDisconnectResult {
+            disconnected: true,
+            integration_id: OPENCODE_INTEGRATION.integration_id.to_owned(),
+            config_path: display_path(&pending.config_path, &self.paths.home_directory),
+            backup_path: Some(display_path(&backup, &self.paths.home_directory)),
+            credential_revoked: true,
+        })
     }
 
     fn apply_with_verifier(
@@ -408,18 +626,10 @@ impl OpenCodeManager {
         plan_id: &str,
         verifier: impl FnOnce(&str, &Value) -> Result<(), OpenCodeIntegrationError>,
     ) -> Result<OpenCodeApplyResult, OpenCodeIntegrationError> {
-        let pending = {
-            let mut plans = self
-                .pending
-                .lock()
-                .map_err(|_| OpenCodeIntegrationError::InvalidPlan)?;
-            plans
-                .remove(plan_id)
-                .ok_or(OpenCodeIntegrationError::InvalidPlan)?
-        };
-        if pending.expires_at_ms < now_ms() {
-            return Err(OpenCodeIntegrationError::InvalidPlan);
-        }
+        let pending = self
+            .pending
+            .take(plan_id)
+            .map_err(|_| OpenCodeIntegrationError::InvalidPlan)?;
         if self.current_config_path() != pending.config_path {
             return Err(OpenCodeIntegrationError::ConfigChangedAfterPreview);
         }
@@ -498,13 +708,13 @@ impl OpenCodeManager {
 
         let now = now_ms();
         let credential = stored_client_credential(
-            CREDENTIAL_ID,
-            CLIENT_APP_ID,
-            CLIENT_DISPLAY_NAME,
+            OPENCODE_INTEGRATION.credential_id,
+            OPENCODE_INTEGRATION.client_app_id,
+            OPENCODE_INTEGRATION.display_name,
             &pending.plaintext_key,
         )?;
         let integration = ManagedIntegrationRecord {
-            id: INTEGRATION_ID.to_owned(),
+            id: OPENCODE_INTEGRATION.integration_id.to_owned(),
             kind: "opencode-global-provider".to_owned(),
             config_path: pending.config_path.to_string_lossy().into_owned(),
             credential_path: self.paths.credential_path.to_string_lossy().into_owned(),
@@ -784,6 +994,33 @@ fn rollback_files(
     }
 }
 
+fn rollback_disconnection_files(
+    pending: &PendingDisconnect,
+    config_mode: u32,
+    credential_mode: u32,
+    credential_path: &Path,
+    backup_path: &Path,
+) {
+    let _ = atomic_write(&pending.config_path, &pending.original, config_mode);
+    if credential_path.exists() {
+        let _ = atomic_write(
+            credential_path,
+            pending.plaintext_key.as_bytes(),
+            credential_mode,
+        );
+    } else {
+        let _ = write_new_file(
+            credential_path,
+            pending.plaintext_key.as_bytes(),
+            credential_mode,
+        );
+    }
+    let _ = fs::remove_file(backup_path);
+    if let Some(parent) = backup_path.parent() {
+        let _ = sync_directory(parent);
+    }
+}
+
 fn display_path(path: &Path, home: &Path) -> String {
     path.strip_prefix(home).map_or_else(
         |_| path.to_string_lossy().into_owned(),
@@ -815,30 +1052,11 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 fn opencode_version(binary: &Path) -> Option<String> {
-    let mut child = Command::new(binary)
-        .arg("--version")
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
+    let version = BoundedCommandRunner::new(Duration::from_secs(2), 128)
+        .run_utf8(binary, &["--version"])
         .ok()?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        if child.try_wait().ok().flatten().is_some() {
-            let output = child.wait_with_output().ok()?;
-            let version = String::from_utf8(output.stdout).ok()?;
-            let version = version.trim();
-            return (!version.is_empty() && version.len() <= 128).then(|| version.to_owned());
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
+    let version = version.trim();
+    (!version.is_empty()).then(|| version.to_owned())
 }
 
 fn stable_version_triplet(version: &str) -> Option<(u64, u64, u64)> {
@@ -963,7 +1181,7 @@ mod tests {
         );
         assert!(result.backup_path.is_some());
         let backup = database
-            .managed_integration(INTEGRATION_ID)
+            .managed_integration(OPENCODE_INTEGRATION.integration_id)
             .expect("integration query")
             .expect("integration record")
             .backup_path
@@ -989,6 +1207,98 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[test]
+    fn confirmed_disconnect_removes_only_owned_state_and_revokes_the_client() {
+        let temp = TestDirectory::new();
+        let (manager, database, credentials) = manager(&temp.0);
+        let config = temp.0.join(".config/opencode/opencode.json");
+        fs::create_dir_all(config.parent().expect("config parent")).expect("config directory");
+        fs::write(
+            &config,
+            "{\n  // keep user configuration\n  \"model\": \"existing/default\",\n  \"provider\": {\"other\": {\"name\": \"keep\"}}\n}\n",
+        )
+        .expect("write config");
+        let configure = manager.plan_configuration().expect("configure plan");
+        manager
+            .apply_configuration(&configure.plan_id)
+            .expect("configure");
+        let credential_path = temp.0.join("app-data/credentials/opencode-gateway.key");
+        let plaintext_key = fs::read_to_string(&credential_path).expect("credential");
+        assert!(credentials.authenticate(&plaintext_key).is_some());
+
+        let disconnect = manager.plan_disconnection().expect("disconnect plan");
+        assert!(disconnect.revokes_credential);
+        assert_eq!(disconnect.changes.len(), 2);
+        let result = manager
+            .apply_disconnection(&disconnect.plan_id)
+            .expect("disconnect");
+
+        let written = fs::read_to_string(&config).expect("disconnected config");
+        let parsed = parse_jsonc(&written).expect("parse disconnected config");
+        assert_eq!(parsed["model"], "existing/default");
+        assert_eq!(parsed["provider"]["other"]["name"], "keep");
+        assert!(hal100_provider(&parsed).is_none());
+        assert!(written.contains("// keep user configuration"));
+        assert!(!credential_path.exists());
+        assert!(credentials.authenticate(&plaintext_key).is_none());
+        assert_eq!(
+            database
+                .managed_integration(OPENCODE_INTEGRATION.integration_id)
+                .expect("integration query"),
+            None
+        );
+        assert!(
+            database
+                .managed_integration_resources(OPENCODE_INTEGRATION.integration_id)
+                .expect("resource query")
+                .is_empty()
+        );
+        assert!(result.credential_revoked);
+        assert!(result.backup_path.is_some());
+    }
+
+    #[test]
+    fn discarded_and_stale_disconnect_plans_never_mutate_owned_state() {
+        let temp = TestDirectory::new();
+        let (manager, _, credentials) = manager(&temp.0);
+        let config = temp.0.join(".config/opencode/opencode.json");
+        fs::create_dir_all(config.parent().expect("config parent")).expect("config directory");
+        fs::write(&config, "{\"user\":true}\n").expect("write config");
+        let configure = manager.plan_configuration().expect("configure plan");
+        manager
+            .apply_configuration(&configure.plan_id)
+            .expect("configure");
+        let credential_path = temp.0.join("app-data/credentials/opencode-gateway.key");
+        let key = fs::read_to_string(&credential_path).expect("credential");
+
+        let discarded = manager.plan_disconnection().expect("discarded plan");
+        assert!(
+            manager
+                .discard_disconnection_plan(&discarded.plan_id)
+                .expect("discard")
+        );
+        assert!(matches!(
+            manager.apply_disconnection(&discarded.plan_id),
+            Err(OpenCodeIntegrationError::InvalidPlan)
+        ));
+        assert!(credentials.authenticate(&key).is_some());
+
+        let stale = manager.plan_disconnection().expect("stale plan");
+        let mut changed = fs::read_to_string(&config).expect("read config");
+        changed.push_str("\n// changed after preview\n");
+        fs::write(&config, &changed).expect("change config");
+        assert!(matches!(
+            manager.apply_disconnection(&stale.plan_id),
+            Err(OpenCodeIntegrationError::ConfigChangedAfterPreview)
+        ));
+        assert_eq!(
+            fs::read_to_string(&config).expect("preserved change"),
+            changed
+        );
+        assert!(credential_path.exists());
+        assert!(credentials.authenticate(&key).is_some());
     }
 
     #[test]

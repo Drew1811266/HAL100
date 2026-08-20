@@ -74,7 +74,11 @@ impl LocalBackendDiscoveryService {
             .connect_timeout(Duration::from_millis(350))
             .timeout(Duration::from_secs(1))
             .no_proxy()
-            .user_agent("HAL100/0.0.1-dev local-backend-discovery")
+            .user_agent(concat!(
+                "HAL100/",
+                env!("CARGO_PKG_VERSION"),
+                " local-backend-discovery"
+            ))
             .build()
             .map_err(|_| BackendDiscoveryError::Client)?;
         Ok(Self { client, targets })

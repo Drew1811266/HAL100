@@ -18,6 +18,11 @@
 | 迭代 11：环境诊断与受控修复 | 已完成：10工具、RPC v3、按需快照、单项修复计划与执行后复检 |
 | 迭代 12：应用边界与 Agent能力架构 | 已完成：模块化单体边界、10项能力模型、Agent职责拆分与首条前端切片 |
 | 迭代 13：Agent模型发现与受控下载 | 已完成：RPC v4、13项能力、搜索—检查—计划—确认下载闭环 |
+| 迭代 14：外部 Agent集成基础 | 已完成：内置Runtime/外部客户端边界、四客户端注册表、OpenCode专用适配器与Pi共存回归 |
+| 迭代 15：外部 Agent通用控制面 | 已完成：模型契约、资源所有权、一次性计划、命令边界与OpenCode可逆断开 |
+| 迭代 16：Pi Coding Agent接入 | 已完成：独立检测、配置、凭据、回滚、断开、桌面控制与官方CLI验收 |
+| 迭代 17：OpenClaw多协议接入 | 已完成：官方配置工具、独立Secret、三协议切换、回滚、断开与真实CLI验收 |
+| 迭代 18：Hermes Agent接入与共存收口 | 已完成：default Profile、YAML/.env隔离、64K门槛、真实CLI及四客户端共存验收 |
 
 ## 1. 迭代规则
 
@@ -287,7 +292,100 @@ HAL12-08迁移记录：React根路由只引用`features/agent/AgentPage`，Agent
 
 完成条件已满足：`pnpm check`、生产构建、本地模拟纵向下载验收和121秒快速后台稳定性检查通过；取消等待测试小于1秒，工具结果在双方均有128 KiB故障关闭边界。SQLite保持schema v7，Gateway数据面和既有Tauri IPC未改变。验收记录见[迭代13.1：Agent模型工具工程加固](benchmarks/2026-08-20-iteration-13-1-agent-tool-hardening.md)。
 
-## 17. 每个迭代的统一完成条件
+## 17. 迭代14：外部 Agent集成基础
+
+迭代14先解决HAL100内置 Agent使用 Pi Agent Core与用户独立安装 Pi Coding Agent的同机
+共存边界，再为OpenCode、Pi Coding Agent、OpenClaw和Hermes Agent建立长期可扩展的专用
+适配路径。架构决策见[ADR-0015](adr/0015-built-in-runtime-and-external-agent-integrations.md)。
+
+- `hal100-core`建立内置Runtime与四个外部客户端的稳定身份注册表，集中拥有唯一
+  Integration ID、Gateway客户端ID、凭据ID、协议能力、配置片段所有权和保留默认模型策略。
+- 内置`HAL100 Agent`固定为`hal100-agent-runtime`/`hal100-agent`，外部Pi固定为
+  `pi-coding-agent`；两者不能共享安装、命令、HOME、配置、会话、进程或凭据生命周期。
+- 现有OpenCode实现明确命名为`OpenCodeIntegrationAdapter`，并从统一注册表读取身份和凭据
+  边界；原有`OpenCodeManager`保留为兼容类型别名，IPC、SQLite schema v7、受控计划、
+  备份、原子写入、验证和回滚行为不变。
+- 新增只读Agent生态目录Tauri API和浏览器预览数据；软件接入页明确展示内置Runtime、
+  OpenCode当前能力及三个后续专用适配器，不为未实现客户端提供配置按钮或写操作。
+- Sidecar回归显式验证官方Pi配置、命令候选、`PI_CODING_AGENT_DIR`、
+  `PI_CODING_AGENT_SESSION_DIR`和用户HOME均不进入内置Kernel；Node依赖回归确保完整
+  `@earendil-works/pi-coding-agent`不会被嵌入。
+- 本迭代不修改Pi、OpenClaw或Hermes用户配置，不安装、升级或卸载外部软件，不新增
+  数据库迁移、后台轮询或通用插件系统。
+
+完成条件：官方Pi无论先于或晚于HAL100安装都不能参与内置Runtime的模块解析、环境、配置
+和进程生命周期；四个外部客户端身份与凭据互不冲突；OpenCode既有安全行为和前端交互保持
+通过；全量检查、生产构建、Gateway契约和快速后台稳定性验收通过。
+
+完成条件已满足：`pnpm check`、生产构建、Gateway 10项非忽略契约测试、双视口真实浏览器
+验证和121秒快速后台稳定性检查通过。验收记录见
+[迭代14：外部Agent集成基础](benchmarks/2026-08-20-iteration-14-external-agent-integration-foundation.md)。
+
+## 18. 迭代15：外部 Agent通用控制面
+
+迭代15不以文件行数或“统一万能适配器”为目标，而是提取所有外部Agent都必须遵守的稳定控制面。
+
+- 协议目录分离“上游声称支持”与“HAL100真实验收通过”，避免UI把未验证协议当作可用能力。
+- 建立版本化`hal100-active`模型契约，明确上下文、最大输出、输入模态、工具和推理能力；能力变化触发适配器刷新，而不是静默沿用乐观默认值。
+- SQLite升级到schema v8；一个接入可以登记配置、凭据和辅助配置等多项资源，秘密资源禁止创建明文备份。
+- 每个适配器拥有独立、5分钟、一次消费的配置与断开计划；配置计划之间不能互相替换或消费。
+- 外部命令使用清空环境、固定PATH、超时和输出上限的受限运行器；CLI探测不继承用户API Key或任意环境。
+- OpenCode补齐配置计划显式丢弃和完整断开流程：只移除`provider.hal100`，吊销专属Key，保留用户默认模型、其他Provider、注释和备份。
+
+完成条件已满足：数据库迁移、资源约束、JSONC保留式移除、命令超时、计划隔离、OpenCode配置/断开回滚、桌面原生确认与全量既有回归通过。
+
+## 19. 迭代16：Pi Coding Agent接入
+
+- 专用`PiCodingAgentIntegrationAdapter`只管理官方`~/.pi/agent/models.json`中的`providers.hal100`；配置必须是严格JSON，用户默认模型、其他Provider、设置、扩展、Skills和会话不在所有权范围内。
+- 仅从固定候选路径探测用户独立安装的`pi`，使用`PI_CODING_AGENT_DIR`时只提示覆盖风险，不静默写入自定义目录。
+- Provider固定使用Chat Completions和`hal100-active`模型契约；API Key通过固定`/bin/cat`命令按请求读取HAL100应用数据目录中的`0600`专属文件，命令路径做Shell单引号转义，不接受用户自定义命令。
+- 配置应用执行预览、原生确认、原文件摘要复验、备份、原子写入、严格解析验证、SQLite事务和Gateway凭据热更新；任一步失败回滚。
+- 断开只移除`providers.hal100`并吊销`pi-coding-agent`Key；内置`hal100-agent`、OpenCode及其他外部客户端身份不受影响。
+- 软件接入页提供Pi检测、配置刷新和可逆断开，明确显示它与内置Pi Agent Core的进程、HOME、会话和凭据隔离。
+- 官方`@earendil-works/pi-coding-agent@0.84.2`在隔离HOME中读取真实受管`models.json`和凭据，经真实HAL100 Gateway调用SSE模拟后端，响应成功并把Usage归属为`pi-coding-agent`；`hal100-agent`归属保持为零。
+
+完成条件已满足：Pi适配器单元测试、官方CLI隔离端到端、Rust workspace编译、桌面命令、前端类型检查和交互回归通过。验收记录见[迭代15–16：外部Agent控制面与Pi接入](benchmarks/2026-08-20-iteration-15-16-external-control-and-pi.md)。
+
+## 20. 迭代17：OpenClaw多协议接入
+
+- 专用`OpenClawIntegrationAdapter`只管理默认实例中的`models.providers.hal100`、
+  `secrets.providers.hal100_gateway`和独立`0600`凭据文件。
+- 配置通过官方`openclaw config patch`执行dry-run和应用；JSON5可以读取，官方工具可能
+  标准化注释与排版，因此预览明确提示并保存原字节备份。
+- 自定义HOME、STATE、CONFIG或Profile不会被猜测管理；低于`2026.7.1`的版本不自动配置。
+- Chat Completions、OpenAI Responses与Anthropic Messages均经过真实官方CLI验收，用户可
+  显式切换；切换只替换HAL100 Provider，不改变OpenClaw默认模型或运行中的服务。
+- 配置、协议刷新与断开均使用独立短期一次性计划、原生确认、摘要复验、写后验证和失败回滚。
+- Usage只归属`openclaw`，不与内置`hal100-agent`或其他外部客户端共享凭据。
+
+完成条件已满足：6项适配器单元测试、官方`openclaw@2026.7.1-2`三协议隔离端到端、桌面
+控制面、React回归和workspace编译通过。详见[OpenClaw接入](OPENCLAW_INTEGRATION.md)与
+[迭代17验收](benchmarks/2026-08-20-iteration-17-openclaw.md)。
+
+## 21. 迭代18：Hermes Agent接入与共存收口
+
+- 专用`HermesAgentIntegrationAdapter`只管理default Profile的`providers.hal100`和
+  `.env`中的`HAL100_HERMES_GATEWAY_KEY`，不修改粘性Profile、默认模型或其他变量。
+- 兼容基线固定为Hermes 0.18.2；候选配置先在临时`HERMES_HOME`经官方
+  `hermes -p default config show`验证，真实调用固定显式选择`custom:hal100`。
+- Hermes官方要求至少64,000 Token上下文；当前模型契约不足时状态为Blocked，并在生成计划前
+  故障关闭。真实验收使用65,536 Token契约，不伪造当前4K模型能力。
+- YAML语义重写前备份不含Key的原文件；可能包含其他秘密的`.env`不创建持久备份，只在内存
+  中保留事务回滚副本，并精确保留其他行、收紧为`0600`。
+- 软件接入页完成检测、前置条件展示、语义预览、原生确认、应用、刷新和精确断开。
+- 四个外部Agent均为可用状态，身份、凭据、受管片段、计划和Usage归属互相独立；内置Pi
+  Agent Core继续使用`hal100-agent`私有生命周期。
+
+完成条件已满足：9项Hermes单元测试、固定`hermes-agent==0.18.2`官方CLI隔离端到端、四客户端
+注册表共存约束、16项React回归、生产构建和Rust workspace全目标检查通过。详见
+[Hermes Agent接入](HERMES_AGENT_INTEGRATION.md)与
+[迭代18验收](benchmarks/2026-08-20-iteration-18-hermes-and-coexistence.md)。
+
+迭代15–18增加了真实适配能力和相应代码量，但没有采用文件行数硬上限。边界继续由稳定身份、
+资源所有权、变化原因、协议契约和可逆事务定义；只有出现第二个相同变化原因时才继续提取共享
+机制，不为减少行数合并无关客户端语义。
+
+## 22. 每个迭代的统一完成条件
 
 - 开发版能启动并保留已有完整闭环。
 - Rust测试、前端测试、类型检查和静态检查通过。

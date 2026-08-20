@@ -28,11 +28,29 @@ pub fn parse_jsonc(source: &str) -> Result<Value, JsoncPatchError> {
 }
 
 pub fn hal100_provider(value: &Value) -> Option<&Value> {
-    value.get("provider")?.as_object()?.get("hal100")
+    nested_object_member(value, "provider", "hal100")
+}
+
+pub fn nested_object_member<'a>(
+    value: &'a Value,
+    parent_key: &str,
+    member_key: &str,
+) -> Option<&'a Value> {
+    value.get(parent_key)?.as_object()?.get(member_key)
 }
 
 pub fn patch_hal100_provider(
     source: &str,
+    fragment: &Value,
+    allow_replace: bool,
+) -> Result<ProviderPatch, JsoncPatchError> {
+    patch_nested_object_member(source, "provider", "hal100", fragment, allow_replace)
+}
+
+pub fn patch_nested_object_member(
+    source: &str,
+    parent_key: &str,
+    member_key: &str,
     fragment: &Value,
     allow_replace: bool,
 ) -> Result<ProviderPatch, JsoncPatchError> {
@@ -41,7 +59,7 @@ pub fn patch_hal100_provider(
         return Err(JsoncPatchError::RootMustBeObject);
     }
     if value
-        .get("provider")
+        .get(parent_key)
         .is_some_and(|provider| !provider.is_object())
     {
         return Err(JsoncPatchError::ProviderMustBeObject);
@@ -50,7 +68,7 @@ pub fn patch_hal100_provider(
     let sanitized = sanitize_jsonc(source)?;
     let root = root_object_span(&sanitized)?;
     let root_members = object_members(&sanitized, root.clone())?;
-    let provider = root_members.iter().find(|member| member.key == "provider");
+    let provider = root_members.iter().find(|member| member.key == parent_key);
 
     match provider {
         Some(provider) => {
@@ -60,7 +78,7 @@ pub fn patch_hal100_provider(
             let provider_members = object_members(&sanitized, provider.value.clone())?;
             if let Some(existing) = provider_members
                 .iter()
-                .find(|member| member.key == "hal100")
+                .find(|member| member.key == member_key)
             {
                 if !allow_replace {
                     return Err(JsoncPatchError::ProviderConflict);
@@ -74,24 +92,61 @@ pub fn patch_hal100_provider(
                         source,
                         &sanitized,
                         provider.value.clone(),
-                        "hal100",
+                        member_key,
                         fragment,
                     )?,
                 })
             }
         }
         None => {
-            let provider = serde_json::json!({ "hal100": fragment });
+            let provider = Value::Object(serde_json::Map::from_iter([(
+                member_key.to_owned(),
+                fragment.clone(),
+            )]));
             Ok(ProviderPatch {
-                output: insert_member(source, &sanitized, root, "provider", &provider)?,
+                output: insert_member(source, &sanitized, root, parent_key, &provider)?,
             })
         }
     }
 }
 
+pub fn remove_hal100_provider(source: &str) -> Result<ProviderPatch, JsoncPatchError> {
+    remove_nested_object_member(source, "provider", "hal100")
+}
+
+pub fn remove_nested_object_member(
+    source: &str,
+    parent_key: &str,
+    member_key: &str,
+) -> Result<ProviderPatch, JsoncPatchError> {
+    let value = parse_jsonc(source)?;
+    if !value.is_object() {
+        return Err(JsoncPatchError::RootMustBeObject);
+    }
+    let sanitized = sanitize_jsonc(source)?;
+    let root = root_object_span(&sanitized)?;
+    let root_members = object_members(&sanitized, root)?;
+    let provider = root_members
+        .iter()
+        .find(|member| member.key == parent_key)
+        .ok_or(JsoncPatchError::StructureNotFound)?;
+    if sanitized.as_bytes().get(provider.value.start) != Some(&b'{') {
+        return Err(JsoncPatchError::ProviderMustBeObject);
+    }
+    let provider_members = object_members(&sanitized, provider.value.clone())?;
+    let index = provider_members
+        .iter()
+        .position(|member| member.key == member_key)
+        .ok_or(JsoncPatchError::StructureNotFound)?;
+    Ok(ProviderPatch {
+        output: remove_object_member(source, &sanitized, &provider_members, index)?,
+    })
+}
+
 #[derive(Debug)]
 struct ObjectMember {
     key: String,
+    key_start: usize,
     value: Range<usize>,
 }
 
@@ -225,6 +280,7 @@ fn object_members(
         if bytes.get(index) != Some(&b'"') {
             return Err(JsoncPatchError::StructureNotFound);
         }
+        let key_start = index;
         let key_end = skip_string(bytes, index)?;
         let key: String = serde_json::from_str(&source[index..key_end])
             .map_err(|_| JsoncPatchError::StructureNotFound)?;
@@ -236,6 +292,7 @@ fn object_members(
         let value_end = skip_value(bytes, value_start)?;
         members.push(ObjectMember {
             key,
+            key_start,
             value: value_start..value_end,
         });
         index = skip_whitespace(bytes, value_end);
@@ -246,6 +303,47 @@ fn object_members(
         }
     }
     Ok(members)
+}
+
+fn remove_object_member(
+    source: &str,
+    sanitized: &str,
+    members: &[ObjectMember],
+    index: usize,
+) -> Result<String, JsoncPatchError> {
+    let target = members
+        .get(index)
+        .ok_or(JsoncPatchError::StructureNotFound)?;
+    if index + 1 < members.len() {
+        let comma = skip_whitespace(sanitized.as_bytes(), target.value.end);
+        if sanitized.as_bytes().get(comma) != Some(&b',')
+            || !source[target.value.end..comma]
+                .chars()
+                .all(char::is_whitespace)
+        {
+            return Err(JsoncPatchError::StructureNotFound);
+        }
+        return Ok(format!(
+            "{}{}",
+            &source[..target.key_start],
+            &source[comma + 1..]
+        ));
+    }
+
+    let mut output = source.to_owned();
+    output.replace_range(target.key_start..target.value.end, "");
+    if let Some(previous) = index.checked_sub(1).and_then(|index| members.get(index)) {
+        let comma = skip_whitespace(sanitized.as_bytes(), previous.value.end);
+        if sanitized.as_bytes().get(comma) != Some(&b',')
+            || !source[previous.value.end..comma]
+                .chars()
+                .all(char::is_whitespace)
+        {
+            return Err(JsoncPatchError::StructureNotFound);
+        }
+        output.replace_range(comma..comma + 1, "");
+    }
+    Ok(output)
 }
 
 fn skip_value(bytes: &[u8], start: usize) -> Result<usize, JsoncPatchError> {
@@ -465,5 +563,40 @@ mod tests {
             parsed["provider"]["hal100"]["name"],
             "HAL100 · 由 HAL100 管理"
         );
+    }
+
+    #[test]
+    fn removes_only_the_managed_provider_and_preserves_other_members() {
+        let source = r#"{
+  "model": "anthropic/existing",
+  "provider": {
+    "hal100": { "name": "HAL100 · 由 HAL100 管理" },
+    // user comment stays with the next provider
+    "other": { "name": "keep" }
+  }
+}"#;
+        let removed = remove_hal100_provider(source).expect("remove provider");
+        let parsed = parse_jsonc(&removed.output).expect("parse removed config");
+
+        assert_eq!(parsed["model"], "anthropic/existing");
+        assert_eq!(parsed["provider"]["other"]["name"], "keep");
+        assert!(parsed["provider"].get("hal100").is_none());
+        assert!(removed.output.contains("// user comment stays"));
+    }
+
+    #[test]
+    fn removes_a_last_provider_without_reformatting_the_object() {
+        let source = r#"{
+  "provider": {
+    "other": { "name": "keep" },
+    // preserve this comment even though HAL100 follows it
+    "hal100": { "name": "HAL100 · 由 HAL100 管理" }
+  }
+}"#;
+        let removed = remove_hal100_provider(source).expect("remove last provider");
+        let parsed = parse_jsonc(&removed.output).expect("parse removed config");
+
+        assert_eq!(parsed["provider"]["other"]["name"], "keep");
+        assert!(removed.output.contains("// preserve this comment"));
     }
 }

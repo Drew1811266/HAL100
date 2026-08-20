@@ -95,6 +95,23 @@ pub struct ManagedIntegrationRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ManagedIntegrationResourceRole {
+    Configuration,
+    Credential,
+    AuxiliaryConfiguration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedIntegrationResourceRecord {
+    pub integration_id: String,
+    pub role: ManagedIntegrationResourceRole,
+    pub path: String,
+    pub managed_content_hash: [u8; 32],
+    pub backup_path: Option<String>,
+    pub contains_secret: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadRecord {
     pub id: String,
@@ -806,11 +823,93 @@ impl Database {
         }
     }
 
+    pub fn managed_integration_resources(
+        &self,
+        integration_id: &str,
+    ) -> Result<Vec<ManagedIntegrationResourceRecord>, DatabaseError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT integration_id, role, path, managed_content_hash, backup_path,
+                    contains_secret
+             FROM integration_resources
+             WHERE integration_id = ?1
+             ORDER BY role",
+        )?;
+        let rows = statement.query_map([integration_id], |row| {
+            let hash: Vec<u8> = row.get(3)?;
+            let managed_content_hash: [u8; 32] = hash
+                .try_into()
+                .map_err(|_| invalid_column("managed integration resource hash"))?;
+            Ok(ManagedIntegrationResourceRecord {
+                integration_id: row.get(0)?,
+                role: parse_managed_resource_role(&row.get::<_, String>(1)?)?,
+                path: row.get(2)?,
+                managed_content_hash,
+                backup_path: row.get(4)?,
+                contains_secret: row.get::<_, bool>(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn upsert_integration_and_credential(
         &self,
         integration: &ManagedIntegrationRecord,
         credential: &StoredClientCredential,
     ) -> Result<(), DatabaseError> {
+        let resources = [
+            ManagedIntegrationResourceRecord {
+                integration_id: integration.id.clone(),
+                role: ManagedIntegrationResourceRole::Configuration,
+                path: integration.config_path.clone(),
+                managed_content_hash: integration.managed_fragment_hash,
+                backup_path: integration.backup_path.clone(),
+                contains_secret: false,
+            },
+            ManagedIntegrationResourceRecord {
+                integration_id: integration.id.clone(),
+                role: ManagedIntegrationResourceRole::Credential,
+                path: integration.credential_path.clone(),
+                managed_content_hash: credential.key_hash,
+                backup_path: None,
+                contains_secret: true,
+            },
+        ];
+        self.upsert_integration_resources_and_credential(integration, &resources, credential)
+    }
+
+    pub fn upsert_integration_resources_and_credential(
+        &self,
+        integration: &ManagedIntegrationRecord,
+        resources: &[ManagedIntegrationResourceRecord],
+        credential: &StoredClientCredential,
+    ) -> Result<(), DatabaseError> {
+        if resources.is_empty() {
+            return Err(DatabaseError::InvalidData(
+                "managed integration must own at least one resource".to_owned(),
+            ));
+        }
+        let mut roles = std::collections::HashSet::new();
+        for resource in resources {
+            if resource.integration_id != integration.id {
+                return Err(DatabaseError::InvalidData(
+                    "managed integration resource belongs to another integration".to_owned(),
+                ));
+            }
+            if !roles.insert(resource.role) {
+                return Err(DatabaseError::InvalidData(
+                    "managed integration resource roles must be unique".to_owned(),
+                ));
+            }
+            if resource.contains_secret && resource.backup_path.is_some() {
+                return Err(DatabaseError::InvalidData(
+                    "secret resources cannot have plaintext backups".to_owned(),
+                ));
+            }
+        }
         let mut connection = self
             .connection
             .lock()
@@ -867,8 +966,66 @@ impl Database {
                 integration.updated_at_ms,
             ],
         )?;
+        transaction.execute(
+            "DELETE FROM integration_resources WHERE integration_id = ?1",
+            [&integration.id],
+        )?;
+        for resource in resources {
+            transaction.execute(
+                "INSERT INTO integration_resources (
+                    integration_id, role, path, managed_content_hash, backup_path,
+                    contains_secret
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    resource.integration_id,
+                    managed_resource_role_key(resource.role),
+                    resource.path,
+                    resource.managed_content_hash.as_slice(),
+                    resource.backup_path,
+                    resource.contains_secret,
+                ],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn remove_managed_integration_and_client(
+        &self,
+        integration_id: &str,
+        client_app_id: &str,
+        now_ms: i64,
+    ) -> Result<bool, DatabaseError> {
+        if integration_id.trim().is_empty() || client_app_id.trim().is_empty() {
+            return Err(DatabaseError::InvalidData(
+                "managed integration and client identifiers must be non-empty".to_owned(),
+            ));
+        }
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let transaction = connection.transaction()?;
+        let removed =
+            transaction.execute("DELETE FROM integrations WHERE id = ?1", [integration_id])?;
+        if removed == 0 {
+            transaction.rollback()?;
+            return Ok(false);
+        }
+        transaction.execute("DELETE FROM client_apps WHERE id = ?1", [client_app_id])?;
+        transaction.execute(
+            "INSERT INTO audit_events (
+                id, event_type, target_type, target_id, summary_json, created_at_ms
+             ) VALUES (?1, 'external_integration_disconnected', 'integration', ?2, ?3, ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                integration_id,
+                json!({"clientAppId": client_app_id}).to_string(),
+                now_ms,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     pub fn insert_usage_request(&self, usage: &UsageRequestRecord) -> Result<(), DatabaseError> {
@@ -2053,7 +2210,73 @@ fn migrations<'a>() -> Migrations<'a> {
 
             CREATE INDEX model_routes_backend ON model_routes(backend_id);",
         ),
+        M::up(
+            "CREATE TABLE integration_resources (
+                integration_id TEXT NOT NULL
+                    REFERENCES integrations(id) ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK(role IN (
+                    'configuration', 'credential', 'auxiliary_configuration'
+                )),
+                path TEXT NOT NULL,
+                managed_content_hash BLOB NOT NULL CHECK(length(managed_content_hash) = 32),
+                backup_path TEXT,
+                contains_secret INTEGER NOT NULL CHECK(contains_secret IN (0, 1)),
+                PRIMARY KEY(integration_id, role),
+                CHECK(contains_secret = 0 OR backup_path IS NULL)
+            );
+
+            CREATE INDEX integration_resources_path
+                ON integration_resources(path);
+
+            INSERT INTO integration_resources (
+                integration_id, role, path, managed_content_hash, backup_path,
+                contains_secret
+            )
+            SELECT
+                id, 'configuration', config_path, managed_fragment_hash, backup_path, 0
+            FROM integrations;
+
+            INSERT INTO integration_resources (
+                integration_id, role, path, managed_content_hash, backup_path,
+                contains_secret
+            )
+            SELECT
+                integrations.id,
+                'credential',
+                integrations.credential_path,
+                (
+                    SELECT api_key_hashes.key_hash
+                    FROM api_key_hashes
+                    WHERE api_key_hashes.client_app_id = integrations.id
+                    ORDER BY api_key_hashes.id
+                    LIMIT 1
+                ),
+                NULL,
+                1
+            FROM integrations
+            WHERE EXISTS (
+                SELECT 1 FROM api_key_hashes
+                WHERE api_key_hashes.client_app_id = integrations.id
+            );",
+        ),
     ])
+}
+
+fn managed_resource_role_key(role: ManagedIntegrationResourceRole) -> &'static str {
+    match role {
+        ManagedIntegrationResourceRole::Configuration => "configuration",
+        ManagedIntegrationResourceRole::Credential => "credential",
+        ManagedIntegrationResourceRole::AuxiliaryConfiguration => "auxiliary_configuration",
+    }
+}
+
+fn parse_managed_resource_role(value: &str) -> rusqlite::Result<ManagedIntegrationResourceRole> {
+    match value {
+        "configuration" => Ok(ManagedIntegrationResourceRole::Configuration),
+        "credential" => Ok(ManagedIntegrationResourceRole::Credential),
+        "auxiliary_configuration" => Ok(ManagedIntegrationResourceRole::AuxiliaryConfiguration),
+        _ => Err(invalid_column("managed integration resource role")),
+    }
 }
 
 fn model_source_key(source: ModelSource) -> &'static str {
@@ -2196,7 +2419,7 @@ mod tests {
     fn applies_initial_migration() {
         let database = Database::open_in_memory().expect("in-memory database");
 
-        assert_eq!(database.schema_version().expect("schema version"), 7);
+        assert_eq!(database.schema_version().expect("schema version"), 8);
     }
 
     #[test]
@@ -2642,6 +2865,74 @@ mod tests {
         assert_eq!(
             database.load_client_credentials().expect("load key hash"),
             vec![credential]
+        );
+        assert_eq!(
+            database
+                .managed_integration_resources("opencode")
+                .expect("load managed resources"),
+            vec![
+                ManagedIntegrationResourceRecord {
+                    integration_id: "opencode".to_owned(),
+                    role: ManagedIntegrationResourceRole::Configuration,
+                    path: "/tmp/opencode.json".to_owned(),
+                    managed_content_hash: [9; 32],
+                    backup_path: Some("/tmp/opencode.backup".to_owned()),
+                    contains_secret: false,
+                },
+                ManagedIntegrationResourceRecord {
+                    integration_id: "opencode".to_owned(),
+                    role: ManagedIntegrationResourceRole::Credential,
+                    path: "/tmp/opencode.key".to_owned(),
+                    managed_content_hash: [8; 32],
+                    backup_path: None,
+                    contains_secret: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn secret_managed_resources_can_never_record_plaintext_backups() {
+        let database = Database::open_in_memory().expect("in-memory database");
+        let credential = StoredClientCredential {
+            key_id: "hermes-key".to_owned(),
+            client_app_id: "hermes-agent".to_owned(),
+            display_name: "Hermes Agent".to_owned(),
+            display_prefix: "hal100_herm…".to_owned(),
+            key_hash: [3; 32],
+        };
+        let integration = ManagedIntegrationRecord {
+            id: "hermes-agent".to_owned(),
+            kind: "hermes-named-provider".to_owned(),
+            config_path: "/tmp/config.yaml".to_owned(),
+            credential_path: "/tmp/.env".to_owned(),
+            managed_fragment_hash: [4; 32],
+            backup_path: None,
+            created_at_ms: 10,
+            updated_at_ms: 11,
+        };
+        let resources = [ManagedIntegrationResourceRecord {
+            integration_id: integration.id.clone(),
+            role: ManagedIntegrationResourceRole::Credential,
+            path: integration.credential_path.clone(),
+            managed_content_hash: credential.key_hash,
+            backup_path: Some("/tmp/unsafe-env-backup".to_owned()),
+            contains_secret: true,
+        }];
+
+        assert!(matches!(
+            database.upsert_integration_resources_and_credential(
+                &integration,
+                &resources,
+                &credential
+            ),
+            Err(DatabaseError::InvalidData(_))
+        ));
+        assert_eq!(
+            database
+                .managed_integration("hermes-agent")
+                .expect("load integration"),
+            None
         );
     }
 

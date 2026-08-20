@@ -1,5 +1,6 @@
 mod agent_action;
 mod agent_coordinator;
+mod agent_ecosystem;
 mod agent_kernel;
 mod agent_provider;
 mod agent_service;
@@ -15,21 +16,26 @@ use std::{
 use hal100_core::AppCore;
 use hal100_infra::{
     BackendConfig, BackendManager, CredentialRegistry, DEFAULT_GATEWAY_ADDRESS, Database,
-    GatewayRoutingSnapshot, GatewayState, GenericClientManager, GgufImportManager, LlamaCppManager,
+    ExternalModelProfileRegistry, GatewayRoutingSnapshot, GatewayState, GenericClientManager,
+    GgufImportManager, HermesAgentIntegrationAdapter, HermesAgentPaths, LlamaCppManager,
     LocalBackendDiscoveryService, LoggingGuard, ModelDownloadManager, ModelRemovalManager,
-    OpenCodeManager, OpenCodePaths, RemoteModelCatalog, UsageWriter, init_structured_logging,
-    serve_gateway, stored_client_credential,
+    OpenClawIntegrationAdapter, OpenClawPaths, OpenCodeManager, OpenCodePaths,
+    PiCodingAgentIntegrationAdapter, PiCodingAgentPaths, RemoteModelCatalog, UsageWriter,
+    init_structured_logging, serve_gateway, stored_client_credential,
 };
 use hal100_platform::{MacOsKeychainSecretStore, MacOsSystemProbe};
 use hal100_protocol::{
-    AppOverview, AuditLog, BackendCatalog, BackendDraft, BackendProbeResult, BackendRouteDraft,
-    DataCleanupPreview, DataCleanupResult, DesktopSettings, DownloadSource, EngineInstallPlan,
-    EngineRemovePlan, GenericClientCatalog, GenericClientCredential, GgufImportPlan,
-    GgufImportResult, HardwareProfile, LlamaCppStatus, LocalBackendDiscovery, ModelDownloadPlan,
-    ModelDownloadSnapshot, ModelLibrary, ModelRemovalKind, ModelRemovalPlan, ModelRemovalResult,
-    ModelTestResult, OnboardingCompletion, OpenCodeApplyResult, OpenCodeConfigPlan,
-    OpenCodeDetection, OpenCodeProjectDiagnosis, RemoteModelRepository, RemoteModelSearchResults,
-    RetentionSettingsDraft, ServiceState, UsageDashboard,
+    AgentEcosystemCatalog, AppOverview, AuditLog, BackendCatalog, BackendDraft, BackendProbeResult,
+    BackendRouteDraft, DataCleanupPreview, DataCleanupResult, DesktopSettings, DownloadSource,
+    EngineInstallPlan, EngineRemovePlan, ExternalAgentConfigurationPlan,
+    ExternalAgentConfigurationResult, ExternalAgentDetection, ExternalAgentDisconnectPlan,
+    ExternalAgentDisconnectResult, ExternalAgentGatewayProtocol, GenericClientCatalog,
+    GenericClientCredential, GgufImportPlan, GgufImportResult, HardwareProfile, LlamaCppStatus,
+    LocalBackendDiscovery, ModelDownloadPlan, ModelDownloadSnapshot, ModelLibrary,
+    ModelRemovalKind, ModelRemovalPlan, ModelRemovalResult, ModelTestResult, OnboardingCompletion,
+    OpenCodeApplyResult, OpenCodeConfigPlan, OpenCodeDetection, OpenCodeProjectDiagnosis,
+    RemoteModelRepository, RemoteModelSearchResults, RetentionSettingsDraft, ServiceState,
+    UsageDashboard,
 };
 use tauri::{
     Manager, State,
@@ -86,6 +92,18 @@ struct GenericClientState {
 
 struct OpenCodeState {
     manager: Arc<OpenCodeManager>,
+}
+
+struct PiCodingAgentState {
+    manager: Arc<PiCodingAgentIntegrationAdapter>,
+}
+
+struct OpenClawState {
+    manager: Arc<OpenClawIntegrationAdapter>,
+}
+
+struct HermesAgentState {
+    manager: Arc<HermesAgentIntegrationAdapter>,
 }
 
 struct ModelManagementState {
@@ -1292,6 +1310,11 @@ async fn get_usage_dashboard(state: State<'_, DatabaseState>) -> Result<UsageDas
 }
 
 #[tauri::command]
+fn get_agent_ecosystem_catalog() -> AgentEcosystemCatalog {
+    agent_ecosystem::catalog()
+}
+
+#[tauri::command]
 async fn get_opencode_detection(
     state: State<'_, OpenCodeState>,
 ) -> Result<OpenCodeDetection, String> {
@@ -1334,6 +1357,61 @@ async fn apply_opencode_configuration(
 }
 
 #[tauri::command]
+async fn discard_opencode_configuration_plan(
+    plan_id: String,
+    state: State<'_, OpenCodeState>,
+) -> Result<bool, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.discard_configuration_plan(&plan_id))
+        .await
+        .map_err(|error| format!("OpenCode配置计划丢弃任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn plan_opencode_disconnection(
+    state: State<'_, OpenCodeState>,
+) -> Result<ExternalAgentDisconnectPlan, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.plan_disconnection())
+        .await
+        .map_err(|error| format!("OpenCode断开预览任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn discard_opencode_disconnection_plan(
+    plan_id: String,
+    state: State<'_, OpenCodeState>,
+) -> Result<bool, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.discard_disconnection_plan(&plan_id))
+        .await
+        .map_err(|error| format!("OpenCode断开计划丢弃任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn apply_opencode_disconnection(
+    app: tauri::AppHandle,
+    plan_id: String,
+    state: State<'_, OpenCodeState>,
+) -> Result<ExternalAgentDisconnectResult, String> {
+    require_native_confirmation(
+        app,
+        "确认断开 OpenCode",
+        "HAL100 将只移除自己管理的 Provider 分片，吊销 OpenCode 专属 Gateway Key，并保留配置备份。",
+        true,
+    )
+    .await?;
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.apply_disconnection(&plan_id))
+        .await
+        .map_err(|error| format!("OpenCode断开任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn diagnose_opencode_project(
     project_path: String,
     state: State<'_, OpenCodeState>,
@@ -1345,6 +1423,298 @@ async fn diagnose_opencode_project(
     .await
     .map_err(|error| format!("OpenCode项目配置诊断任务异常结束：{error}"))?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_pi_coding_agent_detection(
+    state: State<'_, PiCodingAgentState>,
+) -> Result<ExternalAgentDetection, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.detect())
+        .await
+        .map_err(|error| format!("Pi Coding Agent检测任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn plan_pi_coding_agent_configuration(
+    state: State<'_, PiCodingAgentState>,
+) -> Result<ExternalAgentConfigurationPlan, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.plan_configuration())
+        .await
+        .map_err(|error| format!("Pi Coding Agent配置预览任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn apply_pi_coding_agent_configuration(
+    app: tauri::AppHandle,
+    plan_id: String,
+    state: State<'_, PiCodingAgentState>,
+) -> Result<ExternalAgentConfigurationResult, String> {
+    require_native_confirmation(
+        app,
+        "确认配置 Pi Coding Agent",
+        "HAL100 将只写入 models.json 的 providers.hal100 分片，并创建 Pi 专属本地 Gateway 凭据。已有配置会先备份。",
+        false,
+    )
+    .await?;
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.apply_configuration(&plan_id))
+        .await
+        .map_err(|error| format!("Pi Coding Agent配置应用任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn discard_pi_coding_agent_configuration_plan(
+    plan_id: String,
+    state: State<'_, PiCodingAgentState>,
+) -> Result<bool, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.discard_configuration_plan(&plan_id))
+        .await
+        .map_err(|error| format!("Pi Coding Agent配置计划丢弃任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn plan_pi_coding_agent_disconnection(
+    state: State<'_, PiCodingAgentState>,
+) -> Result<ExternalAgentDisconnectPlan, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.plan_disconnection())
+        .await
+        .map_err(|error| format!("Pi Coding Agent断开预览任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn discard_pi_coding_agent_disconnection_plan(
+    plan_id: String,
+    state: State<'_, PiCodingAgentState>,
+) -> Result<bool, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.discard_disconnection_plan(&plan_id))
+        .await
+        .map_err(|error| format!("Pi Coding Agent断开计划丢弃任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn apply_pi_coding_agent_disconnection(
+    app: tauri::AppHandle,
+    plan_id: String,
+    state: State<'_, PiCodingAgentState>,
+) -> Result<ExternalAgentDisconnectResult, String> {
+    require_native_confirmation(
+        app,
+        "确认断开 Pi Coding Agent",
+        "HAL100 将只移除自己管理的 providers.hal100 分片，吊销 Pi 专属 Gateway Key，并保留配置备份。",
+        true,
+    )
+    .await?;
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.apply_disconnection(&plan_id))
+        .await
+        .map_err(|error| format!("Pi Coding Agent断开任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_openclaw_detection(
+    state: State<'_, OpenClawState>,
+) -> Result<ExternalAgentDetection, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.detect())
+        .await
+        .map_err(|error| format!("OpenClaw检测任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn plan_openclaw_configuration(
+    protocol: ExternalAgentGatewayProtocol,
+    state: State<'_, OpenClawState>,
+) -> Result<ExternalAgentConfigurationPlan, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.plan_configuration(protocol))
+        .await
+        .map_err(|error| format!("OpenClaw配置预览任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn apply_openclaw_configuration(
+    app: tauri::AppHandle,
+    plan_id: String,
+    state: State<'_, OpenClawState>,
+) -> Result<ExternalAgentConfigurationResult, String> {
+    require_native_confirmation(
+        app,
+        "确认配置 OpenClaw",
+        "HAL100 将通过 OpenClaw 官方配置工具写入两个专属分片，并创建 OpenClaw 专属本地 Gateway 凭据。已有配置会先备份；默认模型不会变化。",
+        false,
+    )
+    .await?;
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.apply_configuration(&plan_id))
+        .await
+        .map_err(|error| format!("OpenClaw配置应用任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn discard_openclaw_configuration_plan(
+    plan_id: String,
+    state: State<'_, OpenClawState>,
+) -> Result<bool, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.discard_configuration_plan(&plan_id))
+        .await
+        .map_err(|error| format!("OpenClaw配置计划丢弃任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn plan_openclaw_disconnection(
+    state: State<'_, OpenClawState>,
+) -> Result<ExternalAgentDisconnectPlan, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.plan_disconnection())
+        .await
+        .map_err(|error| format!("OpenClaw断开预览任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn discard_openclaw_disconnection_plan(
+    plan_id: String,
+    state: State<'_, OpenClawState>,
+) -> Result<bool, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.discard_disconnection_plan(&plan_id))
+        .await
+        .map_err(|error| format!("OpenClaw断开计划丢弃任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn apply_openclaw_disconnection(
+    app: tauri::AppHandle,
+    plan_id: String,
+    state: State<'_, OpenClawState>,
+) -> Result<ExternalAgentDisconnectResult, String> {
+    require_native_confirmation(
+        app,
+        "确认断开 OpenClaw",
+        "HAL100 将通过 OpenClaw 官方配置工具只移除自己管理的模型与 SecretRef 分片，吊销专属 Gateway Key，并保留配置备份。",
+        true,
+    )
+    .await?;
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.apply_disconnection(&plan_id))
+        .await
+        .map_err(|error| format!("OpenClaw断开任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_hermes_agent_detection(
+    state: State<'_, HermesAgentState>,
+) -> Result<ExternalAgentDetection, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.detect())
+        .await
+        .map_err(|error| format!("Hermes Agent检测任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn plan_hermes_agent_configuration(
+    state: State<'_, HermesAgentState>,
+) -> Result<ExternalAgentConfigurationPlan, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.plan_configuration())
+        .await
+        .map_err(|error| format!("Hermes Agent配置预览任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn apply_hermes_agent_configuration(
+    app: tauri::AppHandle,
+    plan_id: String,
+    state: State<'_, HermesAgentState>,
+) -> Result<ExternalAgentConfigurationResult, String> {
+    require_native_confirmation(
+        app,
+        "确认配置 Hermes Agent",
+        "HAL100 将只写入 default Profile 的 providers.hal100 与 .env 专属变量。YAML 会先备份，其他 Profile、默认模型和运行中的服务不会变化。",
+        false,
+    )
+    .await?;
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.apply_configuration(&plan_id))
+        .await
+        .map_err(|error| format!("Hermes Agent配置应用任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn discard_hermes_agent_configuration_plan(
+    plan_id: String,
+    state: State<'_, HermesAgentState>,
+) -> Result<bool, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.discard_configuration_plan(&plan_id))
+        .await
+        .map_err(|error| format!("Hermes Agent配置计划丢弃任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn plan_hermes_agent_disconnection(
+    state: State<'_, HermesAgentState>,
+) -> Result<ExternalAgentDisconnectPlan, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.plan_disconnection())
+        .await
+        .map_err(|error| format!("Hermes Agent断开预览任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn discard_hermes_agent_disconnection_plan(
+    plan_id: String,
+    state: State<'_, HermesAgentState>,
+) -> Result<bool, String> {
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.discard_disconnection_plan(&plan_id))
+        .await
+        .map_err(|error| format!("Hermes Agent断开计划丢弃任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn apply_hermes_agent_disconnection(
+    app: tauri::AppHandle,
+    plan_id: String,
+    state: State<'_, HermesAgentState>,
+) -> Result<ExternalAgentDisconnectResult, String> {
+    require_native_confirmation(
+        app,
+        "确认断开 Hermes Agent",
+        "HAL100 将只移除 default Profile 中自己管理的 Provider 与 .env 变量，吊销 Hermes 专属 Gateway Key，并保留不含密钥的 YAML 备份。",
+        true,
+    )
+    .await?;
+    let manager = state.manager.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.apply_disconnection(&plan_id))
+        .await
+        .map_err(|error| format!("Hermes Agent断开任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(feature = "benchmark-hooks")]
@@ -1574,12 +1944,38 @@ pub fn run() {
             force_stop_llama_cpp,
             test_active_model,
             get_usage_dashboard,
+            get_agent_ecosystem_catalog,
             select_and_plan_gguf_import,
             apply_gguf_import,
             get_opencode_detection,
             plan_opencode_configuration,
             apply_opencode_configuration,
-            diagnose_opencode_project
+            discard_opencode_configuration_plan,
+            plan_opencode_disconnection,
+            discard_opencode_disconnection_plan,
+            apply_opencode_disconnection,
+            diagnose_opencode_project,
+            get_pi_coding_agent_detection,
+            plan_pi_coding_agent_configuration,
+            apply_pi_coding_agent_configuration,
+            discard_pi_coding_agent_configuration_plan,
+            plan_pi_coding_agent_disconnection,
+            discard_pi_coding_agent_disconnection_plan,
+            apply_pi_coding_agent_disconnection,
+            get_openclaw_detection,
+            plan_openclaw_configuration,
+            apply_openclaw_configuration,
+            discard_openclaw_configuration_plan,
+            plan_openclaw_disconnection,
+            discard_openclaw_disconnection_plan,
+            apply_openclaw_disconnection,
+            get_hermes_agent_detection,
+            plan_hermes_agent_configuration,
+            apply_hermes_agent_configuration,
+            discard_hermes_agent_configuration_plan,
+            plan_hermes_agent_disconnection,
+            discard_hermes_agent_disconnection_plan,
+            apply_hermes_agent_disconnection
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event
@@ -1648,6 +2044,31 @@ pub fn run() {
                 OpenCodePaths::for_macos(&home_directory, &data_dir),
                 gateway_base_url.clone(),
             ));
+            let external_model_profiles =
+                ExternalModelProfileRegistry::conservative_managed_route();
+            let pi_coding_agent_manager =
+                Arc::new(PiCodingAgentIntegrationAdapter::with_gateway_base_url(
+                    database.clone(),
+                    credentials.clone(),
+                    external_model_profiles.clone(),
+                    PiCodingAgentPaths::for_macos(&home_directory, &data_dir),
+                    gateway_base_url.clone(),
+                ));
+            let openclaw_manager = Arc::new(OpenClawIntegrationAdapter::with_gateway_base_url(
+                database.clone(),
+                credentials.clone(),
+                external_model_profiles.clone(),
+                OpenClawPaths::for_macos(&home_directory, &data_dir),
+                gateway_base_url.clone(),
+            ));
+            let hermes_agent_manager =
+                Arc::new(HermesAgentIntegrationAdapter::with_gateway_base_url(
+                    database.clone(),
+                    credentials.clone(),
+                    external_model_profiles,
+                    HermesAgentPaths::for_macos(&home_directory, &data_dir),
+                    gateway_base_url.clone(),
+                ));
             let backend = std::env::var("HAL100_DEV_BACKEND_URL")
                 .ok()
                 .map(|url| {
@@ -1768,6 +2189,15 @@ pub fn run() {
             });
             app.manage(OpenCodeState {
                 manager: open_code_manager,
+            });
+            app.manage(PiCodingAgentState {
+                manager: pi_coding_agent_manager,
+            });
+            app.manage(OpenClawState {
+                manager: openclaw_manager,
+            });
+            app.manage(HermesAgentState {
+                manager: hermes_agent_manager,
             });
             app.manage(UsageWriterState {
                 writer: usage_writer,

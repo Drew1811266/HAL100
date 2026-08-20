@@ -28,9 +28,9 @@
 ## 3. 运行拓扑
 
 ```text
-OpenCode / 通用客户端
-        │
-        ▼
+OpenCode / Pi Coding Agent / OpenClaw / Hermes Agent / 通用客户端
+                            │
+                            ▼
 HAL100 Gateway (127.0.0.1)
         │
         ▼
@@ -88,6 +88,28 @@ Kernel Sidecar与 Model Runtime崩溃时不得带崩 Rust Core，也不得中断
 
 HAL100可以监测和连接外部 Ollama、vLLM和 llama.cpp，但不得假定拥有其进程、文件或安装环境。外部后端的停止、升级和卸载默认不属于 HAL100的管理权。
 
+### 4.4 内置 Runtime与外部 Agent
+
+`HAL100 Agent`是产品内置 Runtime，使用`hal100-agent-runtime`身份和固定Workspace中的 Pi
+Agent Core/Pi AI依赖；每个任务运行在独立Sidecar进程、临时HOME、会话目录和短期凭据中。
+它不执行全局`pi`、不读取`~/.pi/agent`，也不拥有用户安装的 Pi Coding Agent。
+
+OpenCode、Pi Coding Agent、OpenClaw和 Hermes Agent属于外部软件接入。它们独立安装、运行、
+升级和保存会话，只通过各自的Gateway客户端身份、专属Key和受管Provider片段连接HAL100。
+任一外部Agent撤销或卸载不得影响内置Runtime和其他客户端。稳定身份与跨客户端不变量由
+`hal100-core::ExternalAgentIntegrationRegistry`拥有，JSON/JSON5/YAML、版本检测、重载和
+回滚由各专用适配器拥有；不引入动态插件或用户代码加载。
+
+通用控制面提供版本化`hal100-active`模型契约、每适配器独立的一次性计划、受限命令运行器
+以及多资源所有权记录。它不抽象上游配置语法：OpenCode使用JSONC保留式补丁，Pi使用严格
+JSON，OpenClaw通过官方CLI管理JSON5，Hermes使用YAML Provider与精确`.env`变量补丁。
+
+迭代18后四个适配器均已可用。OpenClaw已经以固定官方版本真实验收Chat Completions、
+Responses与Anthropic Messages；Hermes以0.18.2验收Chat Completions，并在模型契约低于官方
+64,000 Token上下文门槛时返回Blocked。该兼容门槛属于适配器能力判断，不会反向限制Gateway、
+其他客户端或未来软件规模。Hermes的YAML可以保存不含Key的原字节备份；`.env`可能含其他
+用户秘密，因此只在事务内存中保留回滚副本，不持久复制整个文件。
+
 ## 5. Rust模块边界
 
 ```text
@@ -103,7 +125,7 @@ hal100-core
 ├── agent              Sidecar生命周期、私有 RPC、会话和本地/云端模型调度
 ├── tools              Agent白名单工具定义
 ├── policy             参数校验、风险等级和确认令牌
-├── integrations       OpenCode检测、配置补丁和回滚
+├── integrations       外部Agent稳定身份、专用适配器、配置所有权和回滚
 ├── credentials        系统凭据抽象和本地 Key哈希
 ├── audit              操作审计、结构化日志和脱敏
 └── platform           平台接口及 macOS/Windows实现边界
@@ -294,7 +316,23 @@ Detect → Parse → Validate → Preview → Confirm → Backup → Atomic Patc
 
 实现使用5分钟有效的一次性计划将预览与执行分离。预览只包含HAL100将写入的语义字段，不把现有配置正文或凭据发送给WebView。确认后Rust Core重新比较原文件SHA-256，再创建原始字节备份并通过同目录临时文件、`fsync`和原子替换提交。OpenCode专属Key位于HAL100应用数据目录的`0600`文件，OpenCode配置只保存`{file:...}`引用。
 
-SQLite schema v3的`integrations`记录配置路径、凭据路径和`provider.hal100`语义哈希；`api_key_hashes`只保存Key摘要。两个记录在同一事务中写入，成功后共享CredentialRegistry热更新，Gateway无需重启。OpenCode检测和配置只由界面或Agent受控工具按需触发，不存在常驻轮询任务。
+SQLite schema v8的`integrations`记录主配置路径、凭据路径和受管分片语义哈希；
+`integration_resources`登记配置、凭据和辅助配置资源，`api_key_hashes`只保存Key摘要。资源、
+接入与凭据在同一事务中写入，成功后共享CredentialRegistry热更新，Gateway无需重启。
+OpenCode检测和配置只由界面或Agent受控工具按需触发，不存在常驻轮询任务。
+
+### 12.1 Pi Coding Agent集成
+
+Pi适配器只管理`~/.pi/agent/models.json`中的`providers.hal100`。该文件按官方契约使用严格
+JSON；HAL100不读取或修改`settings.json`、`auth.json`、会话、扩展、Skills、Prompt模板或
+项目`.pi`资源。用户独立安装和升级官方`pi`，HAL100不运行安装器，也不把全局Pi模块加入
+内置Sidecar解析路径。
+
+Pi Provider使用`openai-completions`和版本化`hal100-active`模型描述。专属Gateway Key位于
+HAL100应用数据目录的`0600`文件，`models.json`只保存经过Shell单引号转义的固定
+`!/bin/cat '<absolute-path>'`读取命令；适配器不接受任意命令或用户脚本。配置和断开都使用
+独立的一次性计划、摘要复验、备份、同目录原子替换、严格解析验证、事务提交和失败回滚。
+外部Pi的Gateway身份固定为`pi-coding-agent`，不会与内置Runtime的`hal100-agent`共享Usage。
 
 ## 13. 平台抽象
 

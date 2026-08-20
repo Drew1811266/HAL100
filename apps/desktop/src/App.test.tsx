@@ -83,6 +83,30 @@ describe("HAL100 application shell", () => {
     expect(screen.getByText("浏览器预览模式只能查看变更，不能应用。")).toBeInTheDocument();
   });
 
+  it("distinguishes the built-in Agent runtime from external Agent integrations", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/integrations"]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "内置 Runtime 与外部 Agent 相互独立" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("HAL100 Agent（内置）")).toBeInTheDocument();
+    expect(screen.getByText(/固定版本 Pi Agent Core/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Pi Coding Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "OpenClaw" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Hermes Agent" })).toBeInTheDocument();
+    expect(screen.queryByText("规划接入")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "配置 Hermes" })).toBeDisabled();
+    expect(screen.getByText(/Hermes ≥ 0.18.2/)).toBeInTheDocument();
+  });
+
   it("shows the enabled OpenAI Responses and Anthropic Messages endpoints", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 

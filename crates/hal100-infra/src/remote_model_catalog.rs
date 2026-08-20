@@ -91,7 +91,11 @@ impl RemoteModelCatalog {
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
             .redirect(Policy::limited(3))
-            .user_agent("HAL100/0.0.1-dev model-catalog")
+            .user_agent(concat!(
+                "HAL100/",
+                env!("CARGO_PKG_VERSION"),
+                " model-catalog"
+            ))
             .build()
             .map_err(|error| RemoteModelCatalogError::Network(error.to_string()))?;
         Ok(Self {

@@ -13,11 +13,13 @@ flate2.workspace = true
 hal100-core = { path = "../hal100-core" }
 hal100-protocol = { path = "../hal100-protocol" }
 http-body-util.workspace = true
+json5.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml_ng.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 tar.workspace = true

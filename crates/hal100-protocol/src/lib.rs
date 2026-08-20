@@ -1,4 +1,5 @@
 mod agent;
+mod agent_ecosystem;
 mod agent_rpc;
 mod anthropic;
 mod backends;
@@ -17,6 +18,14 @@ pub use agent::{
     AgentCloudSessionPreview, AgentCloudSessionStatus, AgentCloudTarget, AgentComponentState,
     AgentPromptRequest, AgentProviderProtocol, AgentRunResult, AgentRuntimeCatalog,
     AgentRuntimeModel, AgentStatus, AgentSystemSummary, AgentToolEvent,
+};
+pub use agent_ecosystem::{
+    AgentEcosystemCatalog, BuiltInAgentRuntimeSummary, ExternalAgentConfigurationChange,
+    ExternalAgentConfigurationPlan, ExternalAgentConfigurationResult, ExternalAgentDetection,
+    ExternalAgentDisconnectPlan, ExternalAgentDisconnectResult, ExternalAgentGatewayProtocol,
+    ExternalAgentInputModality, ExternalAgentIntegrationAvailability,
+    ExternalAgentIntegrationState, ExternalAgentIntegrationSummary, ExternalAgentManagedChange,
+    ExternalAgentManagedChangeAction, ExternalAgentModelProfile,
 };
 pub use agent_rpc::{
     AGENT_RPC_MAX_ACTION_PLANS, AGENT_RPC_MAX_FRAME_BYTES, AGENT_RPC_MAX_REQUIRED_TOOLS,

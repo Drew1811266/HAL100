@@ -3,6 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use hal100_core::BUILT_IN_AGENT_RUNTIME;
 use hal100_infra::{AGENT_MODEL_ALIAS, Database, DatabaseError, GatewayState, StoredBackendRecord};
 use hal100_protocol::{
     AgentCloudRunPreview, AgentCloudSessionPreview, AgentCloudSessionStatus, AgentCloudTarget,
@@ -11,7 +12,7 @@ use hal100_protocol::{
 use serde_json::json;
 use uuid::Uuid;
 
-pub(super) const AGENT_CLIENT_APP_ID: &str = "hal100-agent";
+pub(super) const AGENT_CLIENT_APP_ID: &str = BUILT_IN_AGENT_RUNTIME.client_app_id;
 pub(super) const CLOUD_AGENT_CLIENT_APP_ID: &str = "hal100-agent-cloud";
 pub(super) const CLOUD_AGENT_ROUTE_PREFIX: &str = "hal100-agent-cloud-";
 

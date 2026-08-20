@@ -192,7 +192,11 @@ impl ModelDownloadManager {
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(30))
             .redirect(Policy::limited(5))
-            .user_agent("HAL100/0.0.1-dev model-download")
+            .user_agent(concat!(
+                "HAL100/",
+                env!("CARGO_PKG_VERSION"),
+                " model-download"
+            ))
             .build()
             .map_err(|error| ModelDownloadError::Network(network_error(&error)))?;
         let endpoints = DownloadEndpoints {
