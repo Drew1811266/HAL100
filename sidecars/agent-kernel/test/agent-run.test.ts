@@ -1,20 +1,32 @@
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 import {
+  ACTION_PLAN_TOOLS,
   AGENT_MODEL_ALIAS,
+  AGENT_TOOL_NAMES,
   AgentRunFailure,
+  MAX_ACTION_PLANS,
+  MAX_REQUIRED_TOOLS,
   nextRequiredAgentTool,
   runPiAgent,
+  TOOL_PREREQUISITES,
   validateAgentRunRequest,
 } from "../src/agent-run.js";
 import { AGENT_RPC_VERSION } from "../src/protocol.js";
 import {
   ENVIRONMENT_DIAGNOSTICS_TOOL,
+  MAX_TOOL_RESULT_BYTES,
+  MODEL_CATALOG_SEARCH_TOOL,
+  MODEL_REPOSITORY_INSPECTION_TOOL,
   OPENCODE_STATUS_TOOL,
   PLAN_DIAGNOSTIC_REPAIR_TOOL,
   PLAN_ENGINE_INSTALL_TOOL,
+  PLAN_ENGINE_REMOVE_TOOL,
+  PLAN_MODEL_DOWNLOAD_TOOL,
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_MODEL_START_TOOL,
   PLAN_OPENCODE_CONFIGURATION_TOOL,
@@ -25,16 +37,7 @@ import {
 
 const validRequest = {
   prompt: "检测这台 Mac，并用中文告诉我适合运行什么模型。",
-  requiresSystemSummary: true,
-  requiresRuntimeCatalog: false,
-  requiresModelStartPlan: false,
-  requiresModelRemovalPlan: false,
-  requiresEnvironmentDiagnostics: false,
-  requiresDiagnosticRepairPlan: false,
-  requiresEngineInstallPlan: false,
-  requiresEngineRemovePlan: false,
-  requiresOpenCodeStatus: false,
-  requiresOpenCodeConfigurationPlan: false,
+  requiredTools: [SYSTEM_SUMMARY_TOOL],
   gatewayBaseUrl: "http://127.0.0.1:10100/v1",
   apiKey: "hal100_agent_test_key_1234567890",
   modelId: AGENT_MODEL_ALIAS,
@@ -42,6 +45,69 @@ const validRequest = {
 } as const;
 
 describe("real HAL100 Agent run boundary", () => {
+  it("keeps the RPC v4 tool catalog at the thirteen compatible names", () => {
+    const bridge = new ToolBrokerBridge(() => undefined);
+    const tools = bridge.createAgentTools("run-contract");
+    const registeredTools = tools.map((tool) => tool.name);
+    expect(registeredTools).toEqual([
+      SYSTEM_SUMMARY_TOOL,
+      RUNTIME_CATALOG_TOOL,
+      PLAN_MODEL_START_TOOL,
+      PLAN_MODEL_REMOVAL_TOOL,
+      ENVIRONMENT_DIAGNOSTICS_TOOL,
+      PLAN_DIAGNOSTIC_REPAIR_TOOL,
+      PLAN_ENGINE_INSTALL_TOOL,
+      PLAN_ENGINE_REMOVE_TOOL,
+      OPENCODE_STATUS_TOOL,
+      PLAN_OPENCODE_CONFIGURATION_TOOL,
+      MODEL_CATALOG_SEARCH_TOOL,
+      MODEL_REPOSITORY_INSPECTION_TOOL,
+      PLAN_MODEL_DOWNLOAD_TOOL,
+    ]);
+    const manifest = JSON.parse(
+      readFileSync(new URL("../../../contracts/agent-rpc/v4-tools.json", import.meta.url), "utf8"),
+    ) as {
+      protocolVersion: number;
+      limits: {
+        maxRequiredTools: number;
+        maxActionPlans: number;
+        maxToolResultBytes: number;
+      };
+      tools: Array<{
+        name: string;
+        effect: "readOnly" | "actionPlan";
+        prerequisites: string[];
+        requiresNativeConfirmation: boolean;
+        validArguments: unknown;
+        invalidArguments: unknown[];
+      }>;
+    };
+    expect(manifest.protocolVersion).toBe(AGENT_RPC_VERSION);
+    expect(manifest.limits).toEqual({
+      maxRequiredTools: MAX_REQUIRED_TOOLS,
+      maxActionPlans: MAX_ACTION_PLANS,
+      maxToolResultBytes: MAX_TOOL_RESULT_BYTES,
+    });
+    expect(manifest.tools.map((tool) => tool.name)).toEqual(AGENT_TOOL_NAMES);
+    expect(registeredTools).toEqual(manifest.tools.map((tool) => tool.name));
+
+    for (const contract of manifest.tools) {
+      const tool = tools.find((candidate) => candidate.name === contract.name);
+      expect(tool, `registered ${contract.name}`).toBeDefined();
+      if (!tool) continue;
+      expect(ACTION_PLAN_TOOLS.has(contract.name)).toBe(contract.effect === "actionPlan");
+      expect(TOOL_PREREQUISITES.get(contract.name) ?? []).toEqual(contract.prerequisites);
+      expect(contract.requiresNativeConfirmation).toBe(contract.effect === "actionPlan");
+      expect(Value.Check(tool.parameters, contract.validArguments)).toBe(true);
+      for (const invalidArguments of contract.invalidArguments) {
+        expect(
+          Value.Check(tool.parameters, invalidArguments),
+          `${contract.name} accepted ${JSON.stringify(invalidArguments)}`,
+        ).toBe(false);
+      }
+    }
+  });
+
   it("runs one Pi tool loop while Rust remains the source of system information", async () => {
     const faux = createFauxCore({
       api: "openai-completions",
@@ -103,10 +169,9 @@ describe("real HAL100 Agent run boundary", () => {
     expect(() =>
       validateAgentRunRequest({
         ...validRequest,
-        requiresRuntimeCatalog: false,
-        requiresModelStartPlan: true,
+        requiredTools: [PLAN_MODEL_START_TOOL],
       }),
-    ).toThrow(/policy/);
+    ).toThrow(/required tool set/);
   });
 
   it("uses the Rust runtime catalog before creating a non-executing model plan", async () => {
@@ -156,9 +221,7 @@ describe("real HAL100 Agent run boundary", () => {
       {
         ...validRequest,
         prompt: "切换到 Qwen 模型",
-        requiresSystemSummary: false,
-        requiresRuntimeCatalog: true,
-        requiresModelStartPlan: true,
+        requiredTools: [RUNTIME_CATALOG_TOOL, PLAN_MODEL_START_TOOL],
       },
       bridge,
       { streamFn: faux.streamSimple, model: faux.getModel() as never },
@@ -171,16 +234,7 @@ describe("real HAL100 Agent run boundary", () => {
 
   it("forces the exact required tool sequence instead of letting the model choose any tool", () => {
     const requirements = {
-      requiresSystemSummary: true,
-      requiresRuntimeCatalog: true,
-      requiresModelStartPlan: true,
-      requiresModelRemovalPlan: false,
-      requiresEnvironmentDiagnostics: false,
-      requiresDiagnosticRepairPlan: false,
-      requiresEngineInstallPlan: false,
-      requiresEngineRemovePlan: false,
-      requiresOpenCodeStatus: false,
-      requiresOpenCodeConfigurationPlan: false,
+      requiredTools: [SYSTEM_SUMMARY_TOOL, RUNTIME_CATALOG_TOOL, PLAN_MODEL_START_TOOL],
     };
 
     expect(nextRequiredAgentTool(requirements, [])).toBe(SYSTEM_SUMMARY_TOOL);
@@ -199,10 +253,7 @@ describe("real HAL100 Agent run boundary", () => {
 
   it("orders engine and OpenCode plans behind their required Rust inspections", () => {
     const modelRemovalRequirements = {
-      ...validRequest,
-      requiresSystemSummary: false,
-      requiresRuntimeCatalog: true,
-      requiresModelRemovalPlan: true,
+      requiredTools: [RUNTIME_CATALOG_TOOL, PLAN_MODEL_REMOVAL_TOOL],
     };
     expect(nextRequiredAgentTool(modelRemovalRequirements, [])).toBe(RUNTIME_CATALOG_TOOL);
     expect(nextRequiredAgentTool(modelRemovalRequirements, [RUNTIME_CATALOG_TOOL])).toBe(
@@ -210,10 +261,7 @@ describe("real HAL100 Agent run boundary", () => {
     );
 
     const engineRequirements = {
-      ...validRequest,
-      requiresSystemSummary: false,
-      requiresRuntimeCatalog: true,
-      requiresEngineInstallPlan: true,
+      requiredTools: [RUNTIME_CATALOG_TOOL, PLAN_ENGINE_INSTALL_TOOL],
     };
     expect(nextRequiredAgentTool(engineRequirements, [])).toBe(RUNTIME_CATALOG_TOOL);
     expect(nextRequiredAgentTool(engineRequirements, [RUNTIME_CATALOG_TOOL])).toBe(
@@ -221,10 +269,7 @@ describe("real HAL100 Agent run boundary", () => {
     );
 
     const openCodeRequirements = {
-      ...validRequest,
-      requiresSystemSummary: false,
-      requiresOpenCodeStatus: true,
-      requiresOpenCodeConfigurationPlan: true,
+      requiredTools: [OPENCODE_STATUS_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL],
     };
     expect(nextRequiredAgentTool(openCodeRequirements, [])).toBe(OPENCODE_STATUS_TOOL);
     expect(nextRequiredAgentTool(openCodeRequirements, [OPENCODE_STATUS_TOOL])).toBe(
@@ -232,12 +277,35 @@ describe("real HAL100 Agent run boundary", () => {
     );
   });
 
+  it("orders model download planning behind bounded search and repository inspection", () => {
+    const requirements = {
+      requiredTools: [
+        MODEL_CATALOG_SEARCH_TOOL,
+        MODEL_REPOSITORY_INSPECTION_TOOL,
+        PLAN_MODEL_DOWNLOAD_TOOL,
+      ],
+    };
+    expect(nextRequiredAgentTool(requirements, [])).toBe(MODEL_CATALOG_SEARCH_TOOL);
+    expect(nextRequiredAgentTool(requirements, [MODEL_CATALOG_SEARCH_TOOL])).toBe(
+      MODEL_REPOSITORY_INSPECTION_TOOL,
+    );
+    expect(
+      nextRequiredAgentTool(requirements, [
+        MODEL_CATALOG_SEARCH_TOOL,
+        MODEL_REPOSITORY_INSPECTION_TOOL,
+      ]),
+    ).toBe(PLAN_MODEL_DOWNLOAD_TOOL);
+    expect(() =>
+      validateAgentRunRequest({
+        ...validRequest,
+        requiredTools: [MODEL_REPOSITORY_INSPECTION_TOOL, PLAN_MODEL_DOWNLOAD_TOOL],
+      }),
+    ).toThrow(/required tool set/);
+  });
+
   it("orders a diagnostic repair behind the exact report produced in the same run", () => {
     const requirements = {
-      ...validRequest,
-      requiresSystemSummary: false,
-      requiresEnvironmentDiagnostics: true,
-      requiresDiagnosticRepairPlan: true,
+      requiredTools: [ENVIRONMENT_DIAGNOSTICS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL],
     };
     expect(nextRequiredAgentTool(requirements, [])).toBe(ENVIRONMENT_DIAGNOSTICS_TOOL);
     expect(nextRequiredAgentTool(requirements, [ENVIRONMENT_DIAGNOSTICS_TOOL])).toBe(
@@ -310,9 +378,7 @@ describe("real HAL100 Agent run boundary", () => {
       {
         ...validRequest,
         prompt: "诊断并修复当前最高优先级问题",
-        requiresSystemSummary: false,
-        requiresEnvironmentDiagnostics: true,
-        requiresDiagnosticRepairPlan: true,
+        requiredTools: [ENVIRONMENT_DIAGNOSTICS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL],
       },
       bridge,
       { streamFn: faux.streamSimple, model: faux.getModel() as never },
@@ -362,9 +428,7 @@ describe("real HAL100 Agent run boundary", () => {
       {
         ...validRequest,
         prompt: "诊断并修复 HAL100 当前问题",
-        requiresSystemSummary: false,
-        requiresEnvironmentDiagnostics: true,
-        requiresDiagnosticRepairPlan: true,
+        requiredTools: [ENVIRONMENT_DIAGNOSTICS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL],
       },
       bridge,
       { streamFn: faux.streamSimple, model: faux.getModel() as never },
@@ -378,21 +442,18 @@ describe("real HAL100 Agent run boundary", () => {
     expect(() =>
       validateAgentRunRequest({
         ...validRequest,
-        requiresSystemSummary: false,
-        requiresDiagnosticRepairPlan: true,
+        requiredTools: [PLAN_DIAGNOSTIC_REPAIR_TOOL],
       }),
-    ).toThrow(/policy/);
+    ).toThrow(/required tool set/);
   });
 
   it("rejects a request that tries to require multiple mutating plans", () => {
     expect(() =>
       validateAgentRunRequest({
         ...validRequest,
-        requiresRuntimeCatalog: true,
-        requiresModelStartPlan: true,
-        requiresEngineInstallPlan: true,
+        requiredTools: [RUNTIME_CATALOG_TOOL, PLAN_MODEL_START_TOOL, PLAN_ENGINE_INSTALL_TOOL],
       }),
-    ).toThrow(/policy/);
+    ).toThrow(/required tool set/);
   });
 
   it("bounds required-tool correction prompts when the model keeps returning text", async () => {

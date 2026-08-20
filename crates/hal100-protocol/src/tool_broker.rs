@@ -12,6 +12,9 @@ pub const PLAN_ENGINE_INSTALL_TOOL: &str = "hal100.plan_engine_install";
 pub const PLAN_ENGINE_REMOVE_TOOL: &str = "hal100.plan_engine_remove";
 pub const OPENCODE_STATUS_TOOL: &str = "hal100.inspect_opencode_status";
 pub const PLAN_OPENCODE_CONFIGURATION_TOOL: &str = "hal100.plan_opencode_configuration";
+pub const MODEL_CATALOG_SEARCH_TOOL: &str = "hal100.search_model_catalog";
+pub const MODEL_REPOSITORY_INSPECTION_TOOL: &str = "hal100.inspect_model_repository";
+pub const PLAN_MODEL_DOWNLOAD_TOOL: &str = "hal100.plan_model_download";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

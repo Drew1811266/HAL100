@@ -1,3 +1,4 @@
+mod agent_capability;
 mod tool_broker;
 
 use std::{
@@ -8,6 +9,11 @@ use std::{
 
 use hal100_protocol::{AppOverview, DatabaseState, PlatformSummary, ServiceState};
 
+pub use agent_capability::{
+    AGENT_CAPABILITY_COUNT, AgentCapabilityDataScope, AgentCapabilityDescriptor,
+    AgentCapabilityEffect, AgentCapabilityId, AgentCapabilityRegistry, AgentCapabilityRisk,
+    AgentCapabilitySet,
+};
 pub use tool_broker::{AgentToolPolicy, AuthorizedAgentTool, SimulatedToolBroker};
 
 pub trait SystemProbe: Send + Sync + 'static {
@@ -80,7 +86,7 @@ where
         AppOverview {
             app_name: "HAL100".to_owned(),
             version: version.to_owned(),
-            phase: "迭代 8 · HAL100 Agent 云端单次增强".to_owned(),
+            phase: "迭代 13 · Agent 模型发现与受控下载".to_owned(),
             gateway_state: service_state_from_code(self.gateway_state.load(Ordering::Acquire)),
             database_state: DatabaseState::Ready,
             platform: self.system_probe.platform_summary(),

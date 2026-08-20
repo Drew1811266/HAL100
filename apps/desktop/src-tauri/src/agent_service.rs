@@ -1,60 +1,76 @@
 use std::{
     collections::HashSet,
-    env, fs,
-    io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
-    thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use hal100_core::{AgentToolPolicy, AuthorizedAgentTool};
+#[cfg(test)]
+use std::{
+    env, fs,
+    io::{Read, Write},
+    sync::mpsc,
+    thread,
+    time::Instant,
+};
+
+#[cfg(test)]
+use hal100_core::{AGENT_CAPABILITY_COUNT, AgentCapabilityId};
 use hal100_infra::{
-    AGENT_IDLE_TIMEOUT, AGENT_MODEL_ALIAS, AgentModelRuntime, AgentRuntimeError,
-    ClientCredentialError, CredentialRegistry, Database, DatabaseError, EngineManagerError,
-    EnvironmentDiagnosticError, EnvironmentDiagnostics, GatewayRouteError, GatewayState,
-    LlamaCppManager, ModelRemovalError, ModelRemovalManager, OpenCodeIntegrationError,
-    OpenCodeManager, stored_client_credential,
+    AGENT_IDLE_TIMEOUT, AgentModelRuntime, AgentRuntimeError, ClientCredentialError,
+    CredentialRegistry, Database, DatabaseError, EngineManagerError, EnvironmentDiagnosticError,
+    EnvironmentDiagnostics, GatewayRouteError, GatewayState, LlamaCppManager, ModelDownloadError,
+    ModelDownloadManager, ModelRemovalError, ModelRemovalManager, OpenCodeIntegrationError,
+    OpenCodeManager, RemoteModelCatalog, RemoteModelCatalogError, stored_client_credential,
 };
-use hal100_platform::{
-    AgentKernelLaunchSpec, HardwareProbeError, MacOsSystemProbe, SidecarIsolation,
-    SidecarLaunchError, prepare_agent_kernel_command,
-};
+use hal100_platform::{HardwareProbeError, SidecarLaunchError};
 use hal100_protocol::{
-    AGENT_RPC_MAX_FRAME_BYTES, AGENT_RPC_VERSION, AgentActionKind, AgentActionPlan,
-    AgentActionResult, AgentCloudRunPreview, AgentCloudSessionPreview, AgentCloudSessionStatus,
-    AgentCloudTarget, AgentComponentState, AgentPromptRequest, AgentProviderProtocol,
-    AgentRpcEnvelope, AgentRpcFrameError, AgentRunCompletedPayload, AgentRunResult,
-    AgentRunStartPayload, AgentRuntimeCatalog, AgentRuntimeModel, AgentStatus, AgentSystemSummary,
-    AgentToolEvent, BackendKind, DiagnosticRepairKind, ENVIRONMENT_DIAGNOSTICS_TOOL,
-    EngineInstallState, EnvironmentDiagnosticReport, LocalModelState, ModelRemovalKind,
-    OPENCODE_STATUS_TOOL, OpenCodeIntegrationState, PLAN_DIAGNOSTIC_REPAIR_TOOL,
-    PLAN_ENGINE_INSTALL_TOOL, PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL, RUNTIME_CATALOG_TOOL,
-    SYSTEM_SUMMARY_TOOL, ToolCallRequestPayload, ToolCallResultPayload, encode_agent_rpc_frame,
+    AGENT_RPC_MAX_REQUIRED_TOOLS, AGENT_RPC_VERSION, AgentActionPlan, AgentActionResult,
+    AgentCloudRunPreview, AgentCloudSessionPreview, AgentCloudSessionStatus, AgentCloudTarget,
+    AgentComponentState, AgentPromptRequest, AgentProviderProtocol, AgentRpcEnvelope,
+    AgentRpcFrameError, AgentRunCompletedPayload, AgentRunResult, AgentStatus, AgentToolEvent,
+    EnvironmentDiagnosticReport, ModelRemovalKind, ToolCallRequestPayload,
 };
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
-const PINNED_NODE_VERSION: &str = "v24.18.0";
-const AGENT_CLIENT_APP_ID: &str = "hal100-agent";
-const CLOUD_AGENT_CLIENT_APP_ID: &str = "hal100-agent-cloud";
-const CLOUD_AGENT_ROUTE_PREFIX: &str = "hal100-agent-cloud-";
-const MAX_PROMPT_BYTES: usize = 4 * 1024;
-const MAX_ANSWER_BYTES: usize = 64 * 1024;
-const MAX_TOOL_CALLS_PER_RUN: usize = 4;
-const MAX_ACTION_PLAN_ID_CHARS: usize = 128;
-const SIDECAR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
-const SIDECAR_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
-const SIDECAR_CANCELLATION_POLL: Duration = Duration::from_millis(100);
-const ACTION_PLAN_TTL_MS: i64 = 5 * 60 * 1_000;
+use crate::agent_action::{
+    AgentActionExecutor, AgentActionPlanError, AgentActionPlanStore, action_kind_key,
+};
+use crate::agent_coordinator::{
+    AgentCoordinationError, AgentRunRegistry, AgentRunRequirements, validate_completion,
+    validate_prompt,
+};
+#[cfg(test)]
+use crate::agent_coordinator::{
+    prompt_requires_diagnostic_repair_plan, prompt_requires_engine_install_plan,
+    prompt_requires_engine_remove_plan, prompt_requires_environment_diagnostics,
+    prompt_requires_model_catalog_search, prompt_requires_model_download_plan,
+    prompt_requires_model_removal_plan, prompt_requires_model_repository_inspection,
+    prompt_requires_model_start_plan, prompt_requires_opencode_configuration_plan,
+    prompt_requires_opencode_status, prompt_requires_runtime_catalog,
+    prompt_requires_system_summary,
+};
+use crate::agent_kernel::{AgentKernelChannel, AgentKernelError, AgentKernelRunner};
+#[cfg(test)]
+use crate::agent_provider::{
+    AGENT_CLIENT_APP_ID, CLOUD_AGENT_CLIENT_APP_ID, CLOUD_AGENT_ROUTE_PREFIX,
+};
+use crate::agent_provider::{AgentProviderError, AgentProviderService, ResolvedAgentProvider};
+use crate::agent_tools::{AgentToolExecutionError, AgentToolExecutor};
+#[cfg(test)]
+use hal100_protocol::{
+    AgentActionKind, BackendKind, ENVIRONMENT_DIAGNOSTICS_TOOL, EngineInstallState,
+    LocalModelState, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_REMOVAL_TOOL,
+    PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
+};
+
+const MAX_TOOL_CALLS_PER_RUN: usize = AGENT_RPC_MAX_REQUIRED_TOOLS;
 
 #[derive(Debug, Error)]
 pub enum AgentServiceError {
@@ -72,6 +88,12 @@ pub enum AgentServiceError {
     KernelTimeout,
     #[error("HAL100 Agent Kernel 私有协议校验失败")]
     InvalidProtocol,
+    #[error("HAL100 Agent 工具结果超过私有协议预算")]
+    ToolResultTooLarge,
+    #[error("HAL100 Agent 每项任务最多只能生成一个写操作计划，请拆分任务")]
+    MultipleActionPlans,
+    #[error("HAL100 Agent 单项任务需要的工具过多，请拆分任务")]
+    TooManyCapabilities,
     #[error("HAL100 Agent Kernel 拒绝了本次运行：{0}")]
     KernelRejected(String),
     #[error("HAL100 Agent 未按要求完成必需工具：{0}")]
@@ -109,6 +131,10 @@ pub enum AgentServiceError {
     #[error(transparent)]
     ModelRemoval(#[from] ModelRemovalError),
     #[error(transparent)]
+    ModelDownload(#[from] ModelDownloadError),
+    #[error(transparent)]
+    RemoteCatalog(#[from] RemoteModelCatalogError),
+    #[error(transparent)]
     Diagnostics(#[from] EnvironmentDiagnosticError),
     #[error(transparent)]
     Credential(#[from] ClientCredentialError),
@@ -138,6 +164,9 @@ impl AgentServiceError {
             Self::KernelStart => "kernel_start_failed",
             Self::KernelTimeout => "kernel_timeout",
             Self::InvalidProtocol => "invalid_protocol",
+            Self::ToolResultTooLarge => "tool_result_too_large",
+            Self::MultipleActionPlans => "multiple_action_plans",
+            Self::TooManyCapabilities => "too_many_agent_capabilities",
             Self::KernelRejected(_) => "kernel_rejected",
             Self::RequiredToolMissing(_) => "required_tool_missing",
             Self::AnswerTooLarge => "answer_too_large",
@@ -156,6 +185,8 @@ impl AgentServiceError {
             Self::Engine(_) => "managed_model_operation_failed",
             Self::OpenCode(_) => "opencode_configuration_failed",
             Self::ModelRemoval(_) => "model_removal_failed",
+            Self::ModelDownload(error) => error.code(),
+            Self::RemoteCatalog(error) => error.code(),
             Self::Diagnostics(_) => "environment_diagnostics_failed",
             Self::Credential(_) => "credential_failed",
             Self::Database(_) => "database_failed",
@@ -165,6 +196,83 @@ impl AgentServiceError {
             Self::Frame(_) => "rpc_frame_failed",
             Self::Io(_) => "kernel_io_failed",
             Self::Join => "agent_task_join_failed",
+        }
+    }
+}
+
+impl From<AgentProviderError> for AgentServiceError {
+    fn from(error: AgentProviderError) -> Self {
+        match error {
+            AgentProviderError::InvalidCloudTarget => Self::InvalidCloudTarget,
+            AgentProviderError::CloudBackendUnavailable => Self::CloudBackendUnavailable,
+            AgentProviderError::CloudBackendUnsupported => Self::CloudBackendUnsupported,
+            AgentProviderError::CloudCredentialMissing => Self::CloudCredentialMissing,
+            AgentProviderError::CloudSessionAlreadyActive => Self::CloudSessionAlreadyActive,
+            AgentProviderError::NoActiveCloudSession => Self::NoActiveCloudSession,
+            AgentProviderError::StateUnavailable => Self::KernelUnavailable,
+            AgentProviderError::Database(error) => Self::Database(error),
+        }
+    }
+}
+
+impl From<AgentKernelError> for AgentServiceError {
+    fn from(error: AgentKernelError) -> Self {
+        match error {
+            AgentKernelError::Unavailable => Self::KernelUnavailable,
+            AgentKernelError::RuntimeVersion => Self::KernelRuntimeVersion,
+            AgentKernelError::Start => Self::KernelStart,
+            AgentKernelError::Timeout => Self::KernelTimeout,
+            AgentKernelError::Cancelled => Self::Cancelled,
+            AgentKernelError::InvalidProtocol => Self::InvalidProtocol,
+            AgentKernelError::Launch(error) => Self::Launch(error),
+            AgentKernelError::Frame(error) => Self::Frame(error),
+            AgentKernelError::Io(error) => Self::Io(error),
+        }
+    }
+}
+
+impl From<AgentActionPlanError> for AgentServiceError {
+    fn from(error: AgentActionPlanError) -> Self {
+        match error {
+            AgentActionPlanError::Unavailable => Self::ActionPlanUnavailable,
+            AgentActionPlanError::Expired => Self::ActionPlanExpired,
+        }
+    }
+}
+
+impl From<AgentToolExecutionError> for AgentServiceError {
+    fn from(error: AgentToolExecutionError) -> Self {
+        match error {
+            AgentToolExecutionError::InvalidProtocol => Self::InvalidProtocol,
+            AgentToolExecutionError::ResultTooLarge => Self::ToolResultTooLarge,
+            AgentToolExecutionError::Cancelled => Self::Cancelled,
+            AgentToolExecutionError::ActionPlan(error) => Self::from(error),
+            AgentToolExecutionError::Probe(error) => Self::Probe(error),
+            AgentToolExecutionError::Database(error) => Self::Database(error),
+            AgentToolExecutionError::Engine(error) => Self::Engine(error),
+            AgentToolExecutionError::OpenCode(error) => Self::OpenCode(error),
+            AgentToolExecutionError::ModelRemoval(error) => Self::ModelRemoval(error),
+            AgentToolExecutionError::Diagnostics(error) => Self::Diagnostics(error),
+            AgentToolExecutionError::RemoteCatalog(error) => Self::RemoteCatalog(error),
+            AgentToolExecutionError::ModelDownload(error) => Self::ModelDownload(error),
+        }
+    }
+}
+
+impl From<AgentCoordinationError> for AgentServiceError {
+    fn from(error: AgentCoordinationError) -> Self {
+        match error {
+            AgentCoordinationError::InvalidPrompt => Self::InvalidPrompt,
+            AgentCoordinationError::OutsideDomain => Self::OutsideDomain,
+            AgentCoordinationError::InvalidProtocol => Self::InvalidProtocol,
+            AgentCoordinationError::MultipleActionPlans => Self::MultipleActionPlans,
+            AgentCoordinationError::TooManyCapabilities => Self::TooManyCapabilities,
+            AgentCoordinationError::RequiredToolMissing(tool_name) => {
+                Self::RequiredToolMissing(tool_name)
+            }
+            AgentCoordinationError::AnswerTooLarge => Self::AnswerTooLarge,
+            AgentCoordinationError::NoActiveRun => Self::NoActiveRun,
+            AgentCoordinationError::StateUnavailable => Self::KernelUnavailable,
         }
     }
 }
@@ -179,16 +287,13 @@ pub struct AgentService {
     database: Arc<Database>,
     credentials: CredentialRegistry,
     gateway_base_url: String,
-    model_storage_path: PathBuf,
-    workspace_root: PathBuf,
-    session_root: PathBuf,
-    node_binary: PathBuf,
-    entrypoint: PathBuf,
+    kernel: AgentKernelRunner,
     run_lock: AsyncMutex<()>,
     kernel_state: Mutex<KernelState>,
-    active_run: Arc<Mutex<Option<ActiveRun>>>,
-    pending_action_plan: Arc<Mutex<Option<PendingAgentAction>>>,
-    cloud_session: Mutex<Option<ActiveCloudSession>>,
+    runs: AgentRunRegistry,
+    action_plans: AgentActionPlanStore,
+    tools: AgentToolExecutor,
+    provider: AgentProviderService,
     idle_generation: AtomicU64,
     idle_timeout: Duration,
 }
@@ -198,54 +303,6 @@ struct KernelState {
     last_error_code: Option<String>,
 }
 
-struct ActiveRun {
-    run_id: String,
-    cancelled: Arc<AtomicBool>,
-}
-
-#[derive(Clone)]
-struct PendingAgentAction {
-    plan: AgentActionPlan,
-    executor: AgentActionExecutor,
-}
-
-#[derive(Clone)]
-enum AgentActionExecutor {
-    StartOrSwitchModel {
-        model_id: String,
-    },
-    InstallLlamaCpp {
-        engine_plan_id: String,
-    },
-    RemoveLlamaCpp {
-        engine_plan_id: String,
-    },
-    RemoveModel {
-        removal_plan_id: String,
-        model_id: String,
-    },
-    ConfigureOpenCode {
-        configuration_plan_id: String,
-    },
-}
-
-#[derive(Clone)]
-struct ActiveCloudSession {
-    target: AgentCloudTarget,
-    activated_at_ms: i64,
-    last_error_code: Option<String>,
-}
-
-struct ResolvedAgentProvider {
-    protocol: AgentProviderProtocol,
-    model_id: String,
-    model_name: String,
-    client_app_id: &'static str,
-    backend_id: Option<String>,
-    uses_local_runtime: bool,
-    session_bound: bool,
-}
-
 impl AgentService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -253,6 +310,8 @@ impl AgentService {
         engine: Arc<LlamaCppManager>,
         open_code: Arc<OpenCodeManager>,
         model_removal: Arc<ModelRemovalManager>,
+        remote_catalog: Arc<RemoteModelCatalog>,
+        model_download: Arc<ModelDownloadManager>,
         gateway: GatewayState,
         database: Arc<Database>,
         credentials: CredentialRegistry,
@@ -265,6 +324,8 @@ impl AgentService {
             engine,
             open_code,
             model_removal,
+            remote_catalog,
+            model_download,
             gateway,
             database,
             credentials,
@@ -281,6 +342,8 @@ impl AgentService {
         engine: Arc<LlamaCppManager>,
         open_code: Arc<OpenCodeManager>,
         model_removal: Arc<ModelRemovalManager>,
+        remote_catalog: Arc<RemoteModelCatalog>,
+        model_download: Arc<ModelDownloadManager>,
         gateway: GatewayState,
         database: Arc<Database>,
         credentials: CredentialRegistry,
@@ -289,25 +352,27 @@ impl AgentService {
         data_dir: &Path,
         idle_timeout: Duration,
     ) -> Result<Self, AgentServiceError> {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .canonicalize()
-            .map_err(|_| AgentServiceError::KernelUnavailable)?;
-        let entrypoint = workspace_root.join("sidecars/agent-kernel/dist/index.js");
-        if !entrypoint.is_file() {
-            return Err(AgentServiceError::KernelUnavailable);
-        }
-        let node_binary = resolve_node_binary(&workspace_root)?;
-        let session_root = data_dir.join("agent").join("sessions");
-        fs::create_dir_all(&session_root).map_err(AgentServiceError::Io)?;
-        set_owner_only_directory(&session_root).map_err(AgentServiceError::Io)?;
-
+        let kernel = AgentKernelRunner::discover(data_dir)?;
         let diagnostics = Arc::new(EnvironmentDiagnostics::new(
             database.clone(),
             engine.clone(),
             open_code.clone(),
             gateway.clone(),
         ));
+        let provider = AgentProviderService::new(database.clone(), gateway.clone());
+        let action_plans = AgentActionPlanStore::new();
+        let tools = AgentToolExecutor::new(
+            model_storage_path.clone(),
+            database.clone(),
+            engine.clone(),
+            open_code.clone(),
+            model_removal.clone(),
+            diagnostics.clone(),
+            remote_catalog,
+            model_download,
+            gateway.clone(),
+            action_plans.clone(),
+        );
         Ok(Self {
             runtime,
             engine,
@@ -318,19 +383,16 @@ impl AgentService {
             database,
             credentials,
             gateway_base_url,
-            model_storage_path,
-            workspace_root,
-            session_root,
-            node_binary,
-            entrypoint,
+            kernel,
             run_lock: AsyncMutex::new(()),
             kernel_state: Mutex::new(KernelState {
                 state: AgentComponentState::Stopped,
                 last_error_code: None,
             }),
-            active_run: Arc::new(Mutex::new(None)),
-            pending_action_plan: Arc::new(Mutex::new(None)),
-            cloud_session: Mutex::new(None),
+            runs: AgentRunRegistry::default(),
+            action_plans,
+            tools,
+            provider,
             idle_generation: AtomicU64::new(0),
             idle_timeout,
         })
@@ -347,14 +409,11 @@ impl AgentService {
         if kernel.last_error_code.is_some() {
             status.last_error_code.clone_from(&kernel.last_error_code);
         }
-        let active_run = self
-            .active_run
-            .lock()
-            .map_err(|_| AgentServiceError::KernelUnavailable)?;
+        let active_run = self.runs.snapshot()?;
         status.active_run_id = active_run.as_ref().map(|run| run.run_id.clone());
         status.cancellation_requested = active_run
             .as_ref()
-            .is_some_and(|run| run.cancelled.load(Ordering::Acquire));
+            .is_some_and(|run| run.cancellation_requested);
         Ok(status)
     }
 
@@ -373,84 +432,24 @@ impl AgentService {
             .cloud_target
             .as_ref()
             .ok_or(AgentServiceError::InvalidCloudTarget)?;
-        let (record, kind, _) = self.resolve_cloud_target(target)?;
-        Ok(AgentCloudRunPreview {
-            backend_id: record.id,
-            backend_name: record.display_name,
-            backend_kind: kind,
-            api_root: record.api_root,
-            model: target.model.trim().to_owned(),
-            prompt_bytes: u32::try_from(prompt.len()).unwrap_or(u32::MAX),
-            sends_system_instructions: true,
-            may_send_tool_results: true,
-            sends_credentials_to_sidecar: false,
-            sends_local_paths: false,
-            confirmation_summary:
-                "本次任务会把任务文字、HAL100 固定系统指令及本次任务需要的只读工具结果发送给所选云端后端；云端 API Key 与本地文件路径不会发送给 Agent Sidecar。"
-                    .to_owned(),
-        })
+        self.provider
+            .preview_cloud_run(target, u32::try_from(prompt.len()).unwrap_or(u32::MAX))
+            .map_err(AgentServiceError::from)
     }
 
     pub fn preview_cloud_session(
         &self,
         target: &AgentCloudTarget,
     ) -> Result<AgentCloudSessionPreview, AgentServiceError> {
-        let (record, kind, _) = self.resolve_cloud_target(target)?;
-        Ok(AgentCloudSessionPreview {
-            backend_id: record.id,
-            backend_name: record.display_name,
-            backend_kind: kind,
-            api_root: record.api_root,
-            model: target.model.clone(),
-            sends_future_prompts: true,
-            sends_system_instructions: true,
-            may_send_tool_results: true,
-            stores_conversation_history: false,
-            sends_credentials_to_sidecar: false,
-            sends_local_paths: false,
-            confirmation_summary:
-                "启用后，当前应用会话中后续每项 HAL100 Agent 任务的文字、固定系统指令及任务需要的只读工具结果会发送到所选云端后端；不会保存对话历史，不会把云端 API Key 或本地文件路径交给 Sidecar。明确退出或重启 HAL100 后恢复本地默认。"
-                    .to_owned(),
-        })
+        self.provider
+            .preview_cloud_session(target)
+            .map_err(AgentServiceError::from)
     }
 
     pub fn cloud_session_status(&self) -> Result<AgentCloudSessionStatus, AgentServiceError> {
-        let session = self
-            .cloud_session
-            .lock()
-            .map_err(|_| AgentServiceError::KernelUnavailable)?
-            .clone();
-        let Some(session) = session else {
-            return Ok(inactive_cloud_session_status());
-        };
-        match self.resolve_cloud_target(&session.target) {
-            Ok((record, kind, protocol)) => Ok(AgentCloudSessionStatus {
-                active: true,
-                available: true,
-                backend_id: Some(record.id),
-                backend_name: Some(record.display_name),
-                backend_kind: Some(kind),
-                api_root: Some(record.api_root),
-                model: Some(session.target.model),
-                provider_protocol: Some(protocol),
-                activated_at_ms: Some(session.activated_at_ms),
-                last_error_code: session.last_error_code,
-            }),
-            Err(error) => Ok(AgentCloudSessionStatus {
-                active: true,
-                available: false,
-                backend_id: Some(session.target.backend_id),
-                backend_name: None,
-                backend_kind: None,
-                api_root: None,
-                model: Some(session.target.model),
-                provider_protocol: None,
-                activated_at_ms: Some(session.activated_at_ms),
-                last_error_code: session
-                    .last_error_code
-                    .or_else(|| Some(error.code().to_owned())),
-            }),
-        }
+        self.provider
+            .cloud_session_status()
+            .map_err(AgentServiceError::from)
     }
 
     pub fn start_cloud_session(
@@ -461,44 +460,9 @@ impl AgentService {
             .run_lock
             .try_lock()
             .map_err(|_| AgentServiceError::Busy)?;
-        let (record, kind, protocol) = self.resolve_cloud_target(&target)?;
-        let activated_at_ms = now_ms();
-        let mut session = self
-            .cloud_session
-            .lock()
-            .map_err(|_| AgentServiceError::KernelUnavailable)?;
-        if session.is_some() {
-            return Err(AgentServiceError::CloudSessionAlreadyActive);
-        }
-        self.database.insert_audit_event(
-            "agent_cloud_session_started",
-            "agent_cloud_session",
-            &record.id,
-            &json!({
-                "provider": "cloud_session",
-                "backendId": &record.id,
-                "model": &target.model,
-            })
-            .to_string(),
-            activated_at_ms,
-        )?;
-        *session = Some(ActiveCloudSession {
-            target: target.clone(),
-            activated_at_ms,
-            last_error_code: None,
-        });
-        Ok(AgentCloudSessionStatus {
-            active: true,
-            available: true,
-            backend_id: Some(record.id),
-            backend_name: Some(record.display_name),
-            backend_kind: Some(kind),
-            api_root: Some(record.api_root),
-            model: Some(target.model),
-            provider_protocol: Some(protocol),
-            activated_at_ms: Some(activated_at_ms),
-            last_error_code: None,
-        })
+        self.provider
+            .start_cloud_session(target)
+            .map_err(AgentServiceError::from)
     }
 
     pub fn stop_cloud_session(&self) -> Result<AgentCloudSessionStatus, AgentServiceError> {
@@ -506,146 +470,26 @@ impl AgentService {
             .run_lock
             .try_lock()
             .map_err(|_| AgentServiceError::Busy)?;
-        let session = self
-            .cloud_session
-            .lock()
-            .map_err(|_| AgentServiceError::KernelUnavailable)?
-            .take()
-            .ok_or(AgentServiceError::NoActiveCloudSession)?;
-        let _ = self.database.insert_audit_event(
-            "agent_cloud_session_stopped",
-            "agent_cloud_session",
-            &session.target.backend_id,
-            &json!({
-                "provider": "cloud_session",
-                "backendId": session.target.backend_id,
-                "model": session.target.model,
-            })
-            .to_string(),
-            now_ms(),
-        );
-        Ok(inactive_cloud_session_status())
+        self.provider
+            .stop_cloud_session()
+            .map_err(AgentServiceError::from)
     }
 
     fn record_cloud_session_error(&self, error_code: &'static str) {
-        if let Ok(mut session) = self.cloud_session.lock()
-            && let Some(session) = session.as_mut()
-        {
-            session.last_error_code = Some(error_code.to_owned());
-        }
+        self.provider.record_cloud_session_error(error_code);
     }
 
     fn clear_cloud_session_error(&self) {
-        if let Ok(mut session) = self.cloud_session.lock()
-            && let Some(session) = session.as_mut()
-        {
-            session.last_error_code = None;
-        }
-    }
-
-    fn resolve_cloud_target(
-        &self,
-        target: &AgentCloudTarget,
-    ) -> Result<
-        (
-            hal100_infra::StoredBackendRecord,
-            BackendKind,
-            AgentProviderProtocol,
-        ),
-        AgentServiceError,
-    > {
-        let backend_id = target.backend_id.trim();
-        let model = target.model.trim();
-        if backend_id != target.backend_id
-            || model != target.model
-            || backend_id.is_empty()
-            || backend_id.len() > 128
-            || !backend_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-            || model.is_empty()
-            || model.len() > 256
-            || model.chars().any(char::is_control)
-        {
-            return Err(AgentServiceError::InvalidCloudTarget);
-        }
-        let record = self
-            .database
-            .backends()?
-            .into_iter()
-            .find(|record| record.id == backend_id && record.enabled)
-            .ok_or(AgentServiceError::CloudBackendUnavailable)?;
-        let (kind, protocol) = match record.kind.as_str() {
-            "external_openai" => (
-                BackendKind::ExternalOpenAi,
-                AgentProviderProtocol::CloudOpenAi,
-            ),
-            "external_anthropic" => (
-                BackendKind::ExternalAnthropic,
-                AgentProviderProtocol::CloudAnthropic,
-            ),
-            _ => return Err(AgentServiceError::CloudBackendUnsupported),
-        };
-        if record.credential_id.as_deref().is_none_or(str::is_empty) {
-            return Err(AgentServiceError::CloudCredentialMissing);
-        }
-        if !self
-            .gateway
-            .routing_snapshot()
-            .backend_ids
-            .iter()
-            .any(|loaded_id| loaded_id == backend_id)
-        {
-            return Err(AgentServiceError::CloudBackendUnavailable);
-        }
-        Ok((record, kind, protocol))
+        self.provider.clear_cloud_session_error();
     }
 
     fn resolve_agent_provider(
         &self,
         request: &AgentPromptRequest,
     ) -> Result<ResolvedAgentProvider, AgentServiceError> {
-        let (target, session_bound) = if let Some(target) = request.cloud_target.as_ref() {
-            (Some(target.clone()), false)
-        } else {
-            (
-                self.cloud_session
-                    .lock()
-                    .map_err(|_| AgentServiceError::KernelUnavailable)?
-                    .as_ref()
-                    .map(|session| session.target.clone()),
-                true,
-            )
-        };
-        let Some(target) = target else {
-            return Ok(ResolvedAgentProvider {
-                protocol: AgentProviderProtocol::LocalOpenAi,
-                model_id: AGENT_MODEL_ALIAS.to_owned(),
-                model_name: "Qwen3.5-2B Q4_K_M".to_owned(),
-                client_app_id: AGENT_CLIENT_APP_ID,
-                backend_id: None,
-                uses_local_runtime: true,
-                session_bound: false,
-            });
-        };
-        let (record, _, protocol) = match self.resolve_cloud_target(&target) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                if session_bound {
-                    self.record_cloud_session_error(error.code());
-                }
-                return Err(error);
-            }
-        };
-        Ok(ResolvedAgentProvider {
-            protocol,
-            model_id: format!("{CLOUD_AGENT_ROUTE_PREFIX}{}", Uuid::new_v4().simple()),
-            model_name: target.model,
-            client_app_id: CLOUD_AGENT_CLIENT_APP_ID,
-            backend_id: Some(record.id),
-            uses_local_runtime: false,
-            session_bound,
-        })
+        self.provider
+            .resolve_agent_provider(request)
+            .map_err(AgentServiceError::from)
     }
 
     pub async fn run_prompt(
@@ -657,51 +501,18 @@ impl AgentService {
             .run_lock
             .try_lock()
             .map_err(|_| AgentServiceError::Busy)?;
+        let requirements = AgentRunRequirements::for_prompt(&prompt);
+        requirements.validate()?;
         let provider = self.resolve_agent_provider(&request)?;
-        let requires_system_summary = prompt_requires_system_summary(&prompt);
-        let requires_model_start_plan = prompt_requires_model_start_plan(&prompt);
-        let requires_model_removal_plan = prompt_requires_model_removal_plan(&prompt);
-        let requires_engine_install_plan = prompt_requires_engine_install_plan(&prompt);
-        let requires_engine_remove_plan = prompt_requires_engine_remove_plan(&prompt);
-        let requires_opencode_configuration_plan =
-            prompt_requires_opencode_configuration_plan(&prompt);
-        let has_explicit_action = requires_model_start_plan
-            || requires_model_removal_plan
-            || requires_engine_install_plan
-            || requires_engine_remove_plan
-            || requires_opencode_configuration_plan;
-        let requires_diagnostic_repair_plan =
-            !has_explicit_action && prompt_requires_diagnostic_repair_plan(&prompt);
-        let requires_environment_diagnostics =
-            requires_diagnostic_repair_plan || prompt_requires_environment_diagnostics(&prompt);
-        let requires_opencode_status =
-            requires_opencode_configuration_plan || prompt_requires_opencode_status(&prompt);
-        let requires_runtime_catalog = requires_model_start_plan
-            || requires_model_removal_plan
-            || requires_engine_install_plan
-            || requires_engine_remove_plan
-            || prompt_requires_runtime_catalog(&prompt);
         if provider.uses_local_runtime {
             self.idle_generation.fetch_add(1, Ordering::AcqRel);
         }
         let started_at_ms = now_ms();
         let run_id = format!("agent-run-{}", Uuid::new_v4().simple());
         self.discard_any_action_plan("superseded_by_new_run");
-        let cancellation = Arc::new(AtomicBool::new(false));
-        {
-            let mut active_run = self
-                .active_run
-                .lock()
-                .map_err(|_| AgentServiceError::KernelUnavailable)?;
-            *active_run = Some(ActiveRun {
-                run_id: run_id.clone(),
-                cancelled: cancellation.clone(),
-            });
-        }
-        let _active_run = ActiveRunGuard {
-            active_run: self.active_run.clone(),
-            run_id: run_id.clone(),
-        };
+        let active_run = self.runs.begin(run_id.clone())?;
+        let cancellation = active_run.cancellation();
+        let _active_run = active_run;
         let provider_label = if provider.uses_local_runtime {
             "local"
         } else if provider.session_bound {
@@ -822,35 +633,15 @@ impl AgentService {
         let input = SidecarRunInput {
             run_id: run_id.clone(),
             prompt,
-            requirements: AgentRunRequirements {
-                system_summary: requires_system_summary,
-                runtime_catalog: requires_runtime_catalog,
-                model_start_plan: requires_model_start_plan,
-                model_removal_plan: requires_model_removal_plan,
-                environment_diagnostics: requires_environment_diagnostics,
-                diagnostic_repair_plan: requires_diagnostic_repair_plan,
-                engine_install_plan: requires_engine_install_plan,
-                engine_remove_plan: requires_engine_remove_plan,
-                opencode_status: requires_opencode_status,
-                opencode_configuration_plan: requires_opencode_configuration_plan,
-            },
+            requirements,
             gateway_base_url: self.gateway_base_url.clone(),
             api_key: client_key,
             model_id: provider.model_id,
             provider_protocol: provider.protocol,
-            model_storage_path: self.model_storage_path.clone(),
-            workspace_root: self.workspace_root.clone(),
-            session_base: self.session_root.clone(),
-            node_binary: self.node_binary.clone(),
-            entrypoint: self.entrypoint.clone(),
-            database: self.database.clone(),
-            engine: self.engine.clone(),
-            open_code: self.open_code.clone(),
-            model_removal: self.model_removal.clone(),
-            diagnostics: self.diagnostics.clone(),
-            gateway: self.gateway.clone(),
-            pending_action_plan: self.pending_action_plan.clone(),
+            kernel: self.kernel.clone(),
+            tools: self.tools.clone(),
             cancellation,
+            runtime_handle: tokio::runtime::Handle::current(),
         };
         let run_result = tauri::async_runtime::spawn_blocking(move || run_sidecar_once(input))
             .await
@@ -925,36 +716,18 @@ impl AgentService {
     }
 
     pub fn cancel_active_run(&self) -> Result<AgentStatus, AgentServiceError> {
-        {
-            let active_run = self
-                .active_run
-                .lock()
-                .map_err(|_| AgentServiceError::KernelUnavailable)?;
-            let active_run = active_run.as_ref().ok_or(AgentServiceError::NoActiveRun)?;
-            active_run.cancelled.store(true, Ordering::Release);
-        }
+        self.runs.cancel()?;
         self.status()
     }
 
     pub fn action_plan(&self, plan_id: &str) -> Result<AgentActionPlan, AgentServiceError> {
-        let pending = self
-            .pending_action_plan
-            .lock()
-            .map_err(|_| AgentServiceError::ActionPlanUnavailable)?;
-        clone_valid_action_plan(&pending, plan_id, now_ms())
+        self.action_plans
+            .current(plan_id, now_ms())
+            .map_err(AgentServiceError::from)
     }
 
     pub fn discard_action_plan(&self, plan_id: &str, reason: &'static str) {
-        let discarded = if let Ok(mut pending) = self.pending_action_plan.lock()
-            && pending
-                .as_ref()
-                .is_some_and(|pending| pending.plan.plan_id == plan_id)
-        {
-            pending.take()
-        } else {
-            None
-        };
-        if let Some(discarded) = discarded {
+        if let Some(discarded) = self.action_plans.discard(plan_id) {
             self.discard_executor_plan(&discarded.executor);
             let _ = self.database.insert_audit_event(
                 "agent_action_discarded",
@@ -967,12 +740,7 @@ impl AgentService {
     }
 
     fn discard_any_action_plan(&self, reason: &'static str) {
-        let discarded = self
-            .pending_action_plan
-            .lock()
-            .ok()
-            .and_then(|mut pending| pending.take());
-        if let Some(discarded) = discarded {
+        if let Some(discarded) = self.action_plans.discard_any() {
             self.discard_executor_plan(&discarded.executor);
             let _ = self.database.insert_audit_event(
                 "agent_action_discarded",
@@ -987,6 +755,9 @@ impl AgentService {
     fn discard_executor_plan(&self, executor: &AgentActionExecutor) {
         match executor {
             AgentActionExecutor::StartOrSwitchModel { .. } => {}
+            AgentActionExecutor::DownloadModel { download_plan_id } => {
+                let _ = self.tools.discard_model_download_plan(download_plan_id);
+            }
             AgentActionExecutor::InstallLlamaCpp { engine_plan_id } => {
                 let _ = self.engine.discard_install_plan(engine_plan_id);
             }
@@ -1016,13 +787,7 @@ impl AgentService {
             .run_lock
             .try_lock()
             .map_err(|_| AgentServiceError::Busy)?;
-        let pending = {
-            let mut pending = self
-                .pending_action_plan
-                .lock()
-                .map_err(|_| AgentServiceError::ActionPlanUnavailable)?;
-            take_valid_action_plan(&mut pending, plan_id, now_ms())?
-        };
+        let pending = self.action_plans.take(plan_id, now_ms())?;
         let plan = pending.plan;
         let execution = match pending.executor {
             AgentActionExecutor::StartOrSwitchModel { model_id } => self
@@ -1035,6 +800,11 @@ impl AgentService {
                         Some(status.runtime_state),
                     )
                 })
+                .map_err(AgentServiceError::from),
+            AgentActionExecutor::DownloadModel { download_plan_id } => self
+                .tools
+                .start_model_download(&download_plan_id)
+                .map(|snapshot| (format!("模型下载任务已启动：{}", snapshot.file_name), None))
                 .map_err(AgentServiceError::from),
             AgentActionExecutor::InstallLlamaCpp { engine_plan_id } => self
                 .engine
@@ -1233,45 +1003,6 @@ impl AgentService {
     }
 }
 
-fn clone_valid_action_plan(
-    pending: &Option<PendingAgentAction>,
-    plan_id: &str,
-    current_time_ms: i64,
-) -> Result<AgentActionPlan, AgentServiceError> {
-    if plan_id.is_empty() || plan_id.chars().count() > MAX_ACTION_PLAN_ID_CHARS {
-        return Err(AgentServiceError::ActionPlanUnavailable);
-    }
-    let plan = pending
-        .as_ref()
-        .map(|pending| &pending.plan)
-        .filter(|plan| plan.plan_id == plan_id && plan.requires_native_confirmation)
-        .cloned()
-        .ok_or(AgentServiceError::ActionPlanUnavailable)?;
-    if current_time_ms > plan.expires_at_ms {
-        return Err(AgentServiceError::ActionPlanExpired);
-    }
-    Ok(plan)
-}
-
-fn take_valid_action_plan(
-    pending: &mut Option<PendingAgentAction>,
-    plan_id: &str,
-    current_time_ms: i64,
-) -> Result<PendingAgentAction, AgentServiceError> {
-    clone_valid_action_plan(pending, plan_id, current_time_ms)?;
-    Ok(pending.take().expect("validated Agent action plan"))
-}
-
-fn action_kind_key(kind: AgentActionKind) -> &'static str {
-    match kind {
-        AgentActionKind::StartOrSwitchModel => "start_or_switch_model",
-        AgentActionKind::InstallLlamaCpp => "install_llama_cpp",
-        AgentActionKind::RemoveLlamaCpp => "remove_llama_cpp",
-        AgentActionKind::RemoveModel => "remove_model",
-        AgentActionKind::ConfigureOpenCode => "configure_opencode",
-    }
-}
-
 struct SidecarRunInput {
     run_id: String,
     prompt: String,
@@ -1280,39 +1011,10 @@ struct SidecarRunInput {
     api_key: String,
     model_id: String,
     provider_protocol: AgentProviderProtocol,
-    model_storage_path: PathBuf,
-    workspace_root: PathBuf,
-    session_base: PathBuf,
-    node_binary: PathBuf,
-    entrypoint: PathBuf,
-    database: Arc<Database>,
-    engine: Arc<LlamaCppManager>,
-    open_code: Arc<OpenCodeManager>,
-    model_removal: Arc<ModelRemovalManager>,
-    diagnostics: Arc<EnvironmentDiagnostics>,
-    gateway: GatewayState,
-    pending_action_plan: Arc<Mutex<Option<PendingAgentAction>>>,
+    kernel: AgentKernelRunner,
+    tools: AgentToolExecutor,
     cancellation: Arc<AtomicBool>,
-}
-
-#[derive(Clone, Copy)]
-struct AgentRunRequirements {
-    system_summary: bool,
-    runtime_catalog: bool,
-    model_start_plan: bool,
-    model_removal_plan: bool,
-    environment_diagnostics: bool,
-    diagnostic_repair_plan: bool,
-    engine_install_plan: bool,
-    engine_remove_plan: bool,
-    opencode_status: bool,
-    opencode_configuration_plan: bool,
-}
-
-struct PendingActionPresentation {
-    tool_name: &'static str,
-    label: &'static str,
-    summary: String,
+    runtime_handle: tokio::runtime::Handle,
 }
 
 struct SidecarRunOutput {
@@ -1322,85 +1024,23 @@ struct SidecarRunOutput {
 }
 
 fn run_sidecar_once(input: SidecarRunInput) -> Result<SidecarRunOutput, AgentServiceError> {
-    if input.cancellation.load(Ordering::Acquire) {
-        return Err(AgentServiceError::Cancelled);
-    }
-    let session_directory = input
-        .session_base
-        .join(format!("session-{}", Uuid::new_v4().simple()));
-    let _session = SessionDirectory::create(session_directory.clone())?;
-    let spec = AgentKernelLaunchSpec {
-        runtime_binary: input.node_binary.clone(),
-        entrypoint: input.entrypoint.clone(),
-        working_directory: input.workspace_root.join("sidecars/agent-kernel"),
-        workspace_root: input.workspace_root.clone(),
-        session_root: session_directory,
-        isolation: SidecarIsolation::ProcessBoundaryOnly,
-        arguments: Vec::new(),
-    };
-    let mut command = prepare_agent_kernel_command(&spec)?;
-    let mut child = command
-        .spawn()
-        .map_err(|_| AgentServiceError::KernelStart)?;
-    let mut stdin = child.stdin.take().ok_or(AgentServiceError::KernelStart)?;
-    let stdout = child.stdout.take().ok_or(AgentServiceError::KernelStart)?;
-    let stderr = child.stderr.take().ok_or(AgentServiceError::KernelStart)?;
-    let (sender, receiver) = mpsc::channel();
-    let reader = thread::spawn(move || {
-        let mut stdout = stdout;
-        loop {
-            match read_envelope(&mut stdout) {
-                Ok(envelope) => {
-                    if sender.send(Ok(envelope)).is_err() {
-                        break;
-                    }
-                }
-                Err(error) if error.kind() == ErrorKind::UnexpectedEof => break,
-                Err(error) => {
-                    let _ = sender.send(Err(error));
-                    break;
-                }
-            }
-        }
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut stderr = stderr;
-        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-    });
-
-    let exchange = exchange_with_sidecar(&input, &mut stdin, &receiver);
-    drop(stdin);
-    if exchange.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = reader.join();
-        let _ = stderr_reader.join();
-        return exchange;
-    }
-    let child_result = wait_for_child(&mut child);
-    let _ = reader.join();
-    let _ = stderr_reader.join();
-    child_result?;
-    exchange
+    input.kernel.run(&input.cancellation, |channel| {
+        exchange_with_sidecar(&input, channel)
+    })
 }
 
 fn exchange_with_sidecar(
     input: &SidecarRunInput,
-    stdin: &mut ChildStdin,
-    receiver: &mpsc::Receiver<Result<AgentRpcEnvelope, std::io::Error>>,
+    channel: &mut AgentKernelChannel,
 ) -> Result<SidecarRunOutput, AgentServiceError> {
     let ping_id = format!("ping-{}", input.run_id);
-    write_envelope(
-        stdin,
-        &AgentRpcEnvelope {
-            protocol_version: AGENT_RPC_VERSION,
-            id: ping_id.clone(),
-            kind: "system.ping".to_owned(),
-            payload: json!({}),
-        },
-    )?;
-    let pong = receive_envelope(receiver, &input.cancellation)?;
-    validate_envelope(&pong)?;
+    channel.send(&AgentRpcEnvelope {
+        protocol_version: AGENT_RPC_VERSION,
+        id: ping_id.clone(),
+        kind: "system.ping".to_owned(),
+        payload: json!({}),
+    })?;
+    let pong = channel.receive(&input.cancellation)?;
     if pong.id != ping_id
         || pong.kind != "system.pong"
         || pong.payload.get("piEnabled").and_then(Value::as_bool) != Some(true)
@@ -1413,43 +1053,29 @@ fn exchange_with_sidecar(
         return Err(AgentServiceError::InvalidProtocol);
     }
 
-    let payload = AgentRunStartPayload {
-        prompt: input.prompt.clone(),
-        requires_system_summary: input.requirements.system_summary,
-        requires_runtime_catalog: input.requirements.runtime_catalog,
-        requires_model_start_plan: input.requirements.model_start_plan,
-        requires_model_removal_plan: input.requirements.model_removal_plan,
-        requires_environment_diagnostics: input.requirements.environment_diagnostics,
-        requires_diagnostic_repair_plan: input.requirements.diagnostic_repair_plan,
-        requires_engine_install_plan: input.requirements.engine_install_plan,
-        requires_engine_remove_plan: input.requirements.engine_remove_plan,
-        requires_opencode_status: input.requirements.opencode_status,
-        requires_opencode_configuration_plan: input.requirements.opencode_configuration_plan,
-        gateway_base_url: input.gateway_base_url.clone(),
-        api_key: input.api_key.clone(),
-        model_id: input.model_id.clone(),
-        provider_protocol: input.provider_protocol,
-    };
-    write_envelope(
-        stdin,
-        &AgentRpcEnvelope {
-            protocol_version: AGENT_RPC_VERSION,
-            id: input.run_id.clone(),
-            kind: "agent.run.start".to_owned(),
-            payload: serde_json::to_value(payload)
-                .map_err(|_| AgentServiceError::InvalidProtocol)?,
-        },
-    )?;
+    let payload = input.requirements.to_rpc_v4(
+        &input.prompt,
+        &input.gateway_base_url,
+        &input.api_key,
+        &input.model_id,
+        input.provider_protocol,
+    );
+    channel.send(&AgentRpcEnvelope {
+        protocol_version: AGENT_RPC_VERSION,
+        id: input.run_id.clone(),
+        kind: "agent.run.start".to_owned(),
+        payload: serde_json::to_value(payload).map_err(|_| AgentServiceError::InvalidProtocol)?,
+    })?;
 
-    let policy = AgentToolPolicy;
-    let mut tool_events = Vec::new();
-    let mut action_plans = Vec::new();
-    let mut diagnostic_report: Option<EnvironmentDiagnosticReport> = None;
+    let mut tool_run = input.tools.start_run(
+        input.run_id.clone(),
+        input.runtime_handle.clone(),
+        input.cancellation.clone(),
+    );
     let mut seen_tool_calls = HashSet::new();
     let mut last_tool_failure_code: Option<String> = None;
     loop {
-        let envelope = receive_envelope(receiver, &input.cancellation)?;
-        validate_envelope(&envelope)?;
+        let envelope = channel.receive(&input.cancellation)?;
         match envelope.kind.as_str() {
             "tool.call.request" => {
                 let request: ToolCallRequestPayload = serde_json::from_value(envelope.payload)
@@ -1460,391 +1086,17 @@ fn exchange_with_sidecar(
                 {
                     return Err(AgentServiceError::InvalidProtocol);
                 }
-                let result = match policy.authorize(&request) {
-                    Ok(AuthorizedAgentTool::InspectSystemSummary) => {
-                        let profile =
-                            MacOsSystemProbe.hardware_profile(&input.model_storage_path)?;
-                        let summary = AgentSystemSummary {
-                            source: "rust_macos_probe".to_owned(),
-                            platform: "macOS".to_owned(),
-                            architecture: "Apple Silicon".to_owned(),
-                            chip: profile.chip,
-                            model_identifier: profile.model_identifier,
-                            total_unified_memory_bytes: profile.total_unified_memory_bytes,
-                            physical_cpu_cores: profile.physical_cpu_cores,
-                            logical_cpu_cores: profile.logical_cpu_cores,
-                            model_storage_available_bytes: profile.model_storage_available_bytes,
-                            recommendation_summary: profile.recommendation.summary,
-                            recommended_parameter_range: profile.recommendation.parameter_range,
-                            recommended_quantization: profile.recommendation.quantization,
-                        };
-                        tool_events.push(AgentToolEvent {
-                            tool_call_id: request.tool_call_id.clone(),
-                            tool_name: SYSTEM_SUMMARY_TOOL.to_owned(),
-                            label: "检测这台 Mac".to_owned(),
-                            status: "completed".to_owned(),
-                            summary: "Rust 已按需读取芯片、统一内存、CPU 与模型目录可用空间。"
-                                .to_owned(),
-                        });
-                        ToolCallResultPayload::success(
-                            &request.tool_call_id,
-                            serde_json::to_value(summary)
-                                .map_err(|_| AgentServiceError::InvalidProtocol)?,
-                        )
-                    }
-                    Ok(AuthorizedAgentTool::InspectRuntimeCatalog) => {
-                        let catalog = build_runtime_catalog(input)?;
-                        tool_events.push(AgentToolEvent {
-                            tool_call_id: request.tool_call_id.clone(),
-                            tool_name: RUNTIME_CATALOG_TOOL.to_owned(),
-                            label: "读取 HAL100 运行环境".to_owned(),
-                            status: "completed".to_owned(),
-                            summary: format!(
-                                "Rust 已读取引擎、活动路由和 {} 个本地模型的脱敏状态。",
-                                catalog.models.len()
-                            ),
-                        });
-                        ToolCallResultPayload::success(
-                            &request.tool_call_id,
-                            serde_json::to_value(catalog)
-                                .map_err(|_| AgentServiceError::InvalidProtocol)?,
-                        )
-                    }
-                    Ok(AuthorizedAgentTool::InspectEnvironmentDiagnostics) => {
-                        match input.diagnostics.run() {
-                            Ok(report) => {
-                                tool_events.push(AgentToolEvent {
-                                    tool_call_id: request.tool_call_id.clone(),
-                                    tool_name: ENVIRONMENT_DIAGNOSTICS_TOOL.to_owned(),
-                                    label: "诊断 HAL100 运行环境".to_owned(),
-                                    status: "completed".to_owned(),
-                                    summary: format!(
-                                        "Rust 已完成一次按需诊断：{} 个错误、{} 个警告；未读取原始日志或执行完整模型哈希。",
-                                        report.error_count, report.warning_count
-                                    ),
-                                });
-                                diagnostic_report = Some(report.clone());
-                                ToolCallResultPayload::success(
-                                    &request.tool_call_id,
-                                    serde_json::to_value(report)
-                                        .map_err(|_| AgentServiceError::InvalidProtocol)?,
-                                )
-                            }
-                            Err(error) => ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                AgentServiceError::from(error).code(),
-                                "Rust could not complete the bounded environment diagnosis",
-                            ),
-                        }
-                    }
-                    Ok(AuthorizedAgentTool::PlanModelStart { model_id }) => {
-                        let catalog_completed = tool_events
-                            .iter()
-                            .any(|event| event.tool_name == RUNTIME_CATALOG_TOOL);
-                        if !catalog_completed {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "runtime_catalog_required",
-                                "inspect_runtime_catalog must complete before planning a model start",
-                            )
-                        } else if !action_plans.is_empty() {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "action_already_planned",
-                                "only one mutating action plan is allowed per Agent run",
-                            )
-                        } else if let Some(pending) = build_model_start_plan(input, &model_id)? {
-                            let target_name = pending.plan.target_name.clone();
-                            register_pending_action(
-                                input,
-                                pending,
-                                &request,
-                                PendingActionPresentation {
-                                    tool_name: PLAN_MODEL_START_TOOL,
-                                    label: "生成模型启动或切换计划",
-                                    summary: format!(
-                                        "已为“{target_name}”生成一次性计划；尚未执行，必须通过 Rust 原生确认。"
-                                    ),
-                                },
-                                &mut tool_events,
-                                &mut action_plans,
-                            )?
-                        } else {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "model_start_unavailable",
-                                "the requested model is not ready or llama.cpp is not installed",
-                            )
-                        }
-                    }
-                    Ok(AuthorizedAgentTool::PlanModelRemoval { model_id }) => {
-                        let catalog_completed = tool_events
-                            .iter()
-                            .any(|event| event.tool_name == RUNTIME_CATALOG_TOOL);
-                        if !catalog_completed {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "runtime_catalog_required",
-                                "inspect_runtime_catalog must complete before planning model removal",
-                            )
-                        } else if !action_plans.is_empty() {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "action_already_planned",
-                                "only one mutating action plan is allowed per Agent run",
-                            )
-                        } else {
-                            match build_model_removal_plan(input, &model_id) {
-                                Ok(pending) => {
-                                    let target_name = pending.plan.target_name.clone();
-                                    register_pending_action(
-                                        input,
-                                        pending,
-                                        &request,
-                                        PendingActionPresentation {
-                                            tool_name: PLAN_MODEL_REMOVAL_TOOL,
-                                            label: "生成模型移除计划",
-                                            summary: format!(
-                                                "已为“{target_name}”生成一次性移除计划；尚未移动文件或删除索引，必须通过 Rust 原生确认。"
-                                            ),
-                                        },
-                                        &mut tool_events,
-                                        &mut action_plans,
-                                    )?
-                                }
-                                Err(error) => ToolCallResultPayload::error(
-                                    &request.tool_call_id,
-                                    error.code(),
-                                    "Rust refused to create an unsafe model removal plan",
-                                ),
-                            }
-                        }
-                    }
-                    Ok(AuthorizedAgentTool::PlanDiagnosticRepair {
-                        report_id,
-                        finding_id,
-                    }) => {
-                        let report_completed = tool_events
-                            .iter()
-                            .any(|event| event.tool_name == ENVIRONMENT_DIAGNOSTICS_TOOL);
-                        if !report_completed {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "environment_diagnostics_required",
-                                "inspect_environment_diagnostics must complete before planning a repair",
-                            )
-                        } else if !action_plans.is_empty() {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "action_already_planned",
-                                "only one mutating action plan is allowed per Agent run",
-                            )
-                        } else if diagnostic_report
-                            .as_ref()
-                            .is_none_or(|report| report.report_id != report_id)
-                        {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "diagnostic_report_mismatch",
-                                "reportId must match the diagnosis completed in this Agent run",
-                            )
-                        } else {
-                            let report = diagnostic_report
-                                .as_ref()
-                                .expect("validated diagnostic report");
-                            match build_diagnostic_repair_plan(input, report, &finding_id) {
-                                Ok(pending) => {
-                                    let target_name = pending.plan.target_name.clone();
-                                    register_pending_action(
-                                        input,
-                                        pending,
-                                        &request,
-                                        PendingActionPresentation {
-                                            tool_name: PLAN_DIAGNOSTIC_REPAIR_TOOL,
-                                            label: "生成单项诊断修复计划",
-                                            summary: format!(
-                                                "已为“{target_name}”生成一次性修复计划；尚未执行，必须通过 Rust 原生确认，执行后会重新诊断。"
-                                            ),
-                                        },
-                                        &mut tool_events,
-                                        &mut action_plans,
-                                    )?
-                                }
-                                Err(error) => ToolCallResultPayload::error(
-                                    &request.tool_call_id,
-                                    error.code(),
-                                    "Rust refused to create a stale or unsafe diagnostic repair plan",
-                                ),
-                            }
-                        }
-                    }
-                    Ok(AuthorizedAgentTool::PlanEngineInstall) => {
-                        let catalog_completed = tool_events
-                            .iter()
-                            .any(|event| event.tool_name == RUNTIME_CATALOG_TOOL);
-                        if !catalog_completed {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "runtime_catalog_required",
-                                "inspect_runtime_catalog must complete before planning an engine install",
-                            )
-                        } else if !action_plans.is_empty() {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "action_already_planned",
-                                "only one mutating action plan is allowed per Agent run",
-                            )
-                        } else {
-                            match build_engine_install_plan(input) {
-                                Ok(Some(pending)) => register_pending_action(
-                                    input,
-                                    pending,
-                                    &request,
-                                    PendingActionPresentation {
-                                        tool_name: PLAN_ENGINE_INSTALL_TOOL,
-                                        label: "生成 llama.cpp 安装计划",
-                                        summary: "llama.cpp 安装计划已生成；尚未下载或安装，必须通过 Rust 原生确认。".to_owned(),
-                                    },
-                                    &mut tool_events,
-                                    &mut action_plans,
-                                )?,
-                                Ok(None) => ToolCallResultPayload::error(
-                                    &request.tool_call_id,
-                                    "engine_already_installed",
-                                    "HAL100 managed llama.cpp is already installed",
-                                ),
-                                Err(error) => ToolCallResultPayload::error(
-                                    &request.tool_call_id,
-                                    error.code(),
-                                    "Rust could not create the engine install plan",
-                                ),
-                            }
-                        }
-                    }
-                    Ok(AuthorizedAgentTool::PlanEngineRemove) => {
-                        let catalog_completed = tool_events
-                            .iter()
-                            .any(|event| event.tool_name == RUNTIME_CATALOG_TOOL);
-                        if !catalog_completed {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "runtime_catalog_required",
-                                "inspect_runtime_catalog must complete before planning an engine removal",
-                            )
-                        } else if !action_plans.is_empty() {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "action_already_planned",
-                                "only one mutating action plan is allowed per Agent run",
-                            )
-                        } else {
-                            match build_engine_remove_plan(input) {
-                                Ok(Some(pending)) => register_pending_action(
-                                    input,
-                                    pending,
-                                    &request,
-                                    PendingActionPresentation {
-                                        tool_name: PLAN_ENGINE_REMOVE_TOOL,
-                                        label: "生成 llama.cpp 卸载计划",
-                                        summary: "llama.cpp 卸载计划已生成；尚未停止或删除引擎，必须通过 Rust 原生确认。".to_owned(),
-                                    },
-                                    &mut tool_events,
-                                    &mut action_plans,
-                                )?,
-                                Ok(None) => ToolCallResultPayload::error(
-                                    &request.tool_call_id,
-                                    "engine_not_installed",
-                                    "HAL100 managed llama.cpp is not installed",
-                                ),
-                                Err(error) => ToolCallResultPayload::error(
-                                    &request.tool_call_id,
-                                    error.code(),
-                                    "Rust could not create the engine removal plan",
-                                ),
-                            }
-                        }
-                    }
-                    Ok(AuthorizedAgentTool::InspectOpenCodeStatus) => {
-                        match input.open_code.detect() {
-                            Ok(detection) => {
-                                tool_events.push(AgentToolEvent {
-                                    tool_call_id: request.tool_call_id.clone(),
-                                    tool_name: OPENCODE_STATUS_TOOL.to_owned(),
-                                    label: "检查 OpenCode 接入状态".to_owned(),
-                                    status: "completed".to_owned(),
-                                    summary: "Rust 已检查 OpenCode 安装、全局配置和 HAL100 Provider 所有权。"
-                                        .to_owned(),
-                                });
-                                ToolCallResultPayload::success(
-                                    &request.tool_call_id,
-                                    serde_json::to_value(detection)
-                                        .map_err(|_| AgentServiceError::InvalidProtocol)?,
-                                )
-                            }
-                            Err(error) => ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                AgentServiceError::from(error).code(),
-                                "Rust could not inspect OpenCode safely",
-                            ),
-                        }
-                    }
-                    Ok(AuthorizedAgentTool::PlanOpenCodeConfiguration) => {
-                        let status_completed = tool_events
-                            .iter()
-                            .any(|event| event.tool_name == OPENCODE_STATUS_TOOL);
-                        if !status_completed {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "opencode_status_required",
-                                "inspect_opencode_status must complete before planning configuration",
-                            )
-                        } else if !action_plans.is_empty() {
-                            ToolCallResultPayload::error(
-                                &request.tool_call_id,
-                                "action_already_planned",
-                                "only one mutating action plan is allowed per Agent run",
-                            )
-                        } else {
-                            match build_opencode_configuration_plan(input) {
-                                Ok(pending) => register_pending_action(
-                                    input,
-                                    pending,
-                                    &request,
-                                    PendingActionPresentation {
-                                        tool_name: PLAN_OPENCODE_CONFIGURATION_TOOL,
-                                        label: "生成 OpenCode 配置计划",
-                                        summary: "OpenCode 配置计划已生成；尚未写入配置，必须通过 Rust 原生确认。".to_owned(),
-                                    },
-                                    &mut tool_events,
-                                    &mut action_plans,
-                                )?,
-                                Err(error) => ToolCallResultPayload::error(
-                                    &request.tool_call_id,
-                                    error.code(),
-                                    "Rust refused to create an unsafe or conflicting OpenCode plan",
-                                ),
-                            }
-                        }
-                    }
-                    Err(error) => ToolCallResultPayload::error(
-                        &request.tool_call_id,
-                        error.code,
-                        error.message,
-                    ),
-                };
+                let result = tool_run.handle(&request)?;
                 if let Some(error) = result.error.as_ref() {
                     last_tool_failure_code = Some(error.code.clone());
                 }
-                write_envelope(
-                    stdin,
-                    &AgentRpcEnvelope {
-                        protocol_version: AGENT_RPC_VERSION,
-                        id: envelope.id,
-                        kind: "tool.call.result".to_owned(),
-                        payload: serde_json::to_value(result)
-                            .map_err(|_| AgentServiceError::InvalidProtocol)?,
-                    },
-                )?;
+                channel.send(&AgentRpcEnvelope {
+                    protocol_version: AGENT_RPC_VERSION,
+                    id: envelope.id,
+                    kind: "tool.call.result".to_owned(),
+                    payload: serde_json::to_value(result)
+                        .map_err(|_| AgentServiceError::InvalidProtocol)?,
+                })?;
             }
             "agent.run.completed" => {
                 if envelope.id != input.run_id {
@@ -1852,24 +1104,17 @@ fn exchange_with_sidecar(
                 }
                 let completed: AgentRunCompletedPayload = serde_json::from_value(envelope.payload)
                     .map_err(|_| AgentServiceError::InvalidProtocol)?;
-                let diagnostic_repair_available =
-                    diagnostic_report.as_ref().is_some_and(|report| {
-                        report
-                            .findings
-                            .iter()
-                            .any(|finding| finding.repair_kind.is_some())
-                    });
                 let completion_validation = validate_completion(
                     &input.run_id,
-                    input.requirements,
-                    diagnostic_repair_available,
+                    &input.requirements,
+                    tool_run.diagnostic_repair_available(),
                     &completed,
-                    &tool_events,
-                    &action_plans,
+                    tool_run.tool_events(),
+                    tool_run.action_plans(),
                 );
                 if matches!(
                     completion_validation,
-                    Err(AgentServiceError::RequiredToolMissing(_))
+                    Err(AgentCoordinationError::RequiredToolMissing(_))
                 ) && let Some(code) = last_tool_failure_code.as_deref()
                 {
                     return Err(AgentServiceError::KernelRejected(format!(
@@ -1877,11 +1122,12 @@ fn exchange_with_sidecar(
                     )));
                 }
                 completion_validation?;
-                request_shutdown(stdin, receiver, &input.run_id, &input.cancellation)?;
+                channel.request_shutdown(&input.run_id, &input.cancellation)?;
+                let tools = tool_run.finish();
                 return Ok(SidecarRunOutput {
                     answer: completed.answer,
-                    tool_events,
-                    action_plans,
+                    tool_events: tools.tool_events,
+                    action_plans: tools.action_plans,
                 });
             }
             "system.error" => return Err(kernel_rejection(&envelope.payload)),
@@ -1889,568 +1135,6 @@ fn exchange_with_sidecar(
         }
     }
 }
-
-fn build_runtime_catalog(
-    input: &SidecarRunInput,
-) -> Result<AgentRuntimeCatalog, AgentServiceError> {
-    input.database.refresh_local_model_states()?;
-    let engine = input.engine.status()?;
-    let routing = input.gateway.routing_snapshot();
-    let mut models = input
-        .database
-        .local_models()?
-        .into_iter()
-        .map(|model| AgentRuntimeModel {
-            active: engine.active_model_id.as_deref() == Some(model.id.as_str()),
-            id: model.id,
-            display_name: model.display_name,
-            quantization: model.quantization,
-            size_bytes: model.size_bytes,
-            ready: model.state == LocalModelState::Ready,
-        })
-        .collect::<Vec<_>>();
-    models.sort_by(|left, right| left.display_name.cmp(&right.display_name));
-    let configured_backend_count = routing
-        .backend_ids
-        .iter()
-        .filter(|backend_id| backend_id.as_str() != "hal100-agent-runtime")
-        .count()
-        .try_into()
-        .unwrap_or(u32::MAX);
-    Ok(AgentRuntimeCatalog {
-        engine_install_state: engine.install_state,
-        engine_runtime_state: engine.runtime_state,
-        active_model_id: engine.active_model_id,
-        active_model_name: engine.active_model_name,
-        active_backend_id: routing.active_backend_id,
-        configured_backend_count,
-        models,
-    })
-}
-
-fn register_pending_action(
-    input: &SidecarRunInput,
-    pending: PendingAgentAction,
-    request: &ToolCallRequestPayload,
-    presentation: PendingActionPresentation,
-    tool_events: &mut Vec<AgentToolEvent>,
-    action_plans: &mut Vec<AgentActionPlan>,
-) -> Result<ToolCallResultPayload, AgentServiceError> {
-    let plan = pending.plan.clone();
-    {
-        let mut slot = input
-            .pending_action_plan
-            .lock()
-            .map_err(|_| AgentServiceError::ActionPlanUnavailable)?;
-        if slot.is_some() {
-            return Err(AgentServiceError::ActionPlanUnavailable);
-        }
-        *slot = Some(pending);
-    }
-    input.database.insert_audit_event(
-        "agent_action_planned",
-        "agent_action_plan",
-        &plan.plan_id,
-        &json!({
-            "action": action_kind_key(plan.action_kind),
-            "targetId": plan.target_id,
-        })
-        .to_string(),
-        now_ms(),
-    )?;
-    tool_events.push(AgentToolEvent {
-        tool_call_id: request.tool_call_id.clone(),
-        tool_name: presentation.tool_name.to_owned(),
-        label: presentation.label.to_owned(),
-        status: "awaiting_confirmation".to_owned(),
-        summary: presentation.summary,
-    });
-    action_plans.push(plan.clone());
-    Ok(ToolCallResultPayload::success(
-        &request.tool_call_id,
-        serde_json::to_value(plan).map_err(|_| AgentServiceError::InvalidProtocol)?,
-    ))
-}
-
-fn build_model_start_plan(
-    input: &SidecarRunInput,
-    model_id: &str,
-) -> Result<Option<PendingAgentAction>, AgentServiceError> {
-    input.database.refresh_local_model_states()?;
-    let engine = input.engine.status()?;
-    if engine.install_state != EngineInstallState::Installed {
-        return Ok(None);
-    }
-    let Some(model) = input
-        .database
-        .local_model(model_id)?
-        .filter(|model| model.state == LocalModelState::Ready)
-    else {
-        return Ok(None);
-    };
-    let plan_id = format!("agent-plan-{}", Uuid::new_v4().simple());
-    let current_state = engine.active_model_name.as_ref().map_or_else(
-        || "当前没有运行中的托管模型".to_owned(),
-        |name| format!("当前模型：{name}"),
-    );
-    let target_id = model.id.clone();
-    Ok(Some(PendingAgentAction {
-        executor: AgentActionExecutor::StartOrSwitchModel {
-            model_id: target_id.clone(),
-        },
-        plan: AgentActionPlan {
-            plan_id,
-            run_id: input.run_id.clone(),
-            action_kind: AgentActionKind::StartOrSwitchModel,
-            target_id,
-            target_name: model.display_name,
-            current_state: Some(current_state),
-            details: vec![
-                "启动前重新校验模型文件完整性".to_owned(),
-                "等待现有请求安全排空，不执行强制切换".to_owned(),
-            ],
-            expires_at_ms: now_ms().saturating_add(ACTION_PLAN_TTL_MS),
-            action_summary:
-                "等待当前推理请求安全排空后，启动所选本地模型并将 hal100-active 切换到该模型"
-                    .to_owned(),
-            requires_native_confirmation: true,
-        },
-    }))
-}
-
-fn build_model_removal_plan(
-    input: &SidecarRunInput,
-    model_id: &str,
-) -> Result<PendingAgentAction, AgentServiceError> {
-    input.database.refresh_local_model_states()?;
-    let engine = input.engine.status()?;
-    let removal_plan = input
-        .model_removal
-        .plan_removal(model_id, engine.active_model_id.as_deref())?;
-    let current_state = match removal_plan.removal_kind {
-        ModelRemovalKind::MoveManagedFileToTrash => {
-            "HAL100 托管模型；文件存在于受控模型目录".to_owned()
-        }
-        ModelRemovalKind::RemoveMissingManagedIndex => {
-            "HAL100 托管模型；源文件已经不存在".to_owned()
-        }
-        ModelRemovalKind::RemoveExternalIndex => "外部模型索引；源文件不归 HAL100 所有".to_owned(),
-    };
-    let details = match removal_plan.removal_kind {
-        ModelRemovalKind::MoveManagedFileToTrash => vec![
-            "执行前再次校验模型所有权、路径边界和文件大小".to_owned(),
-            "模型文件移到系统废纸篓，不做不可恢复删除".to_owned(),
-        ],
-        ModelRemovalKind::RemoveMissingManagedIndex => vec![
-            "执行前确认文件仍然缺失".to_owned(),
-            "只清理 HAL100 数据库中的失效索引".to_owned(),
-        ],
-        ModelRemovalKind::RemoveExternalIndex => vec![
-            "外部模型源文件不会移动、修改或删除".to_owned(),
-            "只移除 HAL100 数据库中的模型索引".to_owned(),
-        ],
-    };
-    Ok(PendingAgentAction {
-        executor: AgentActionExecutor::RemoveModel {
-            removal_plan_id: removal_plan.plan_id.clone(),
-            model_id: removal_plan.model_id.clone(),
-        },
-        plan: AgentActionPlan {
-            plan_id: format!("agent-plan-{}", Uuid::new_v4().simple()),
-            run_id: input.run_id.clone(),
-            action_kind: AgentActionKind::RemoveModel,
-            target_id: removal_plan.model_id,
-            target_name: removal_plan.display_name,
-            current_state: Some(current_state),
-            details,
-            expires_at_ms: removal_plan.expires_at_ms,
-            action_summary: removal_plan.action_summary,
-            requires_native_confirmation: true,
-        },
-    })
-}
-
-fn build_engine_install_plan(
-    input: &SidecarRunInput,
-) -> Result<Option<PendingAgentAction>, AgentServiceError> {
-    let status = input.engine.status()?;
-    if status.install_state == EngineInstallState::Installed {
-        return Ok(None);
-    }
-    let engine_plan = input.engine.plan_install()?;
-    Ok(Some(PendingAgentAction {
-        executor: AgentActionExecutor::InstallLlamaCpp {
-            engine_plan_id: engine_plan.plan_id.clone(),
-        },
-        plan: AgentActionPlan {
-            plan_id: format!("agent-plan-{}", Uuid::new_v4().simple()),
-            run_id: input.run_id.clone(),
-            action_kind: AgentActionKind::InstallLlamaCpp,
-            target_id: "llama.cpp".to_owned(),
-            target_name: format!("llama.cpp {}", engine_plan.version),
-            current_state: Some("当前尚未安装 HAL100 托管的 llama.cpp".to_owned()),
-            details: vec![
-                format!("发布方：{}", engine_plan.publisher),
-                format!("下载大小：{} 字节", engine_plan.archive_size_bytes),
-                "安装前校验固定 SHA-256 与 llama-server 二进制".to_owned(),
-            ],
-            expires_at_ms: engine_plan.expires_at_ms,
-            action_summary: engine_plan.action_summary,
-            requires_native_confirmation: true,
-        },
-    }))
-}
-
-fn build_engine_remove_plan(
-    input: &SidecarRunInput,
-) -> Result<Option<PendingAgentAction>, AgentServiceError> {
-    let status = input.engine.status()?;
-    if status.install_state == EngineInstallState::NotInstalled {
-        return Ok(None);
-    }
-    let engine_plan = input.engine.plan_remove()?;
-    Ok(Some(PendingAgentAction {
-        executor: AgentActionExecutor::RemoveLlamaCpp {
-            engine_plan_id: engine_plan.plan_id.clone(),
-        },
-        plan: AgentActionPlan {
-            plan_id: format!("agent-plan-{}", Uuid::new_v4().simple()),
-            run_id: input.run_id.clone(),
-            action_kind: AgentActionKind::RemoveLlamaCpp,
-            target_id: "llama.cpp".to_owned(),
-            target_name: format!("llama.cpp {}", engine_plan.version),
-            current_state: Some(format!("当前引擎状态：{:?}", status.runtime_state)),
-            details: vec![
-                "执行前停止 HAL100 托管的 llama-server".to_owned(),
-                "只删除 HAL100 托管引擎目录，不删除任何模型".to_owned(),
-            ],
-            expires_at_ms: engine_plan.expires_at_ms,
-            action_summary: engine_plan.action_summary,
-            requires_native_confirmation: true,
-        },
-    }))
-}
-
-fn build_opencode_configuration_plan(
-    input: &SidecarRunInput,
-) -> Result<PendingAgentAction, AgentServiceError> {
-    let configuration_plan = input.open_code.plan_configuration()?;
-    Ok(PendingAgentAction {
-        executor: AgentActionExecutor::ConfigureOpenCode {
-            configuration_plan_id: configuration_plan.plan_id.clone(),
-        },
-        plan: AgentActionPlan {
-            plan_id: format!("agent-plan-{}", Uuid::new_v4().simple()),
-            run_id: input.run_id.clone(),
-            action_kind: AgentActionKind::ConfigureOpenCode,
-            target_id: "opencode".to_owned(),
-            target_name: "OpenCode".to_owned(),
-            current_state: Some("Rust 已检查现有全局配置与 HAL100 Provider 所有权".to_owned()),
-            details: vec![
-                format!("配置文件：{}", configuration_plan.config_path),
-                "保留用户默认模型，不覆盖冲突 Provider".to_owned(),
-                if configuration_plan.creates_backup {
-                    "写入前创建原配置备份".to_owned()
-                } else {
-                    "当前无需创建旧配置备份".to_owned()
-                },
-            ],
-            expires_at_ms: configuration_plan.expires_at_ms,
-            action_summary: "向 OpenCode 写入由 HAL100 管理的 Gateway Provider 和独立凭据引用"
-                .to_owned(),
-            requires_native_confirmation: true,
-        },
-    })
-}
-
-fn build_diagnostic_repair_plan(
-    input: &SidecarRunInput,
-    report: &EnvironmentDiagnosticReport,
-    finding_id: &str,
-) -> Result<PendingAgentAction, AgentServiceError> {
-    let finding = report
-        .findings
-        .iter()
-        .find(|finding| finding.finding_id == finding_id)
-        .ok_or(AgentServiceError::InvalidProtocol)?;
-    let repair_kind = finding
-        .repair_kind
-        .ok_or(AgentServiceError::InvalidProtocol)?;
-    let mut pending = match repair_kind {
-        DiagnosticRepairKind::InstallLlamaCpp => {
-            build_engine_install_plan(input)?.ok_or(AgentServiceError::ActionPlanUnavailable)?
-        }
-        DiagnosticRepairKind::ConfigureOpenCode => {
-            let detection = input.open_code.detect()?;
-            if !detection.installed
-                || detection.integration_state != OpenCodeIntegrationState::NotConfigured
-            {
-                return Err(AgentServiceError::ActionPlanUnavailable);
-            }
-            build_opencode_configuration_plan(input)?
-        }
-        DiagnosticRepairKind::RemoveModelIndex => {
-            let target_id = finding
-                .target_id
-                .as_deref()
-                .ok_or(AgentServiceError::InvalidProtocol)?;
-            input.database.refresh_local_model_states()?;
-            let model = input
-                .database
-                .local_model(target_id)?
-                .ok_or(AgentServiceError::ActionPlanUnavailable)?;
-            if model.state != LocalModelState::Missing {
-                return Err(AgentServiceError::ActionPlanUnavailable);
-            }
-            build_model_removal_plan(input, target_id)?
-        }
-    };
-    pending.plan.current_state = Some(format!(
-        "诊断 {}（{}）：{}",
-        finding.finding_id, finding.code, finding.summary
-    ));
-    pending
-        .plan
-        .details
-        .push("执行前由 Rust 重新校验当前状态；执行完成后返回一份新的环境诊断报告。".to_owned());
-    Ok(pending)
-}
-
-fn validate_completion(
-    run_id: &str,
-    requirements: AgentRunRequirements,
-    diagnostic_repair_available: bool,
-    completed: &AgentRunCompletedPayload,
-    tool_events: &[AgentToolEvent],
-    action_plans: &[AgentActionPlan],
-) -> Result<(), AgentServiceError> {
-    let expected_action_kind = if requirements.model_start_plan {
-        Some(AgentActionKind::StartOrSwitchModel)
-    } else if requirements.model_removal_plan {
-        Some(AgentActionKind::RemoveModel)
-    } else if requirements.engine_install_plan {
-        Some(AgentActionKind::InstallLlamaCpp)
-    } else if requirements.engine_remove_plan {
-        Some(AgentActionKind::RemoveLlamaCpp)
-    } else if requirements.opencode_configuration_plan {
-        Some(AgentActionKind::ConfigureOpenCode)
-    } else {
-        None
-    };
-    let diagnostic_action_kind_is_allowed = |kind: AgentActionKind| {
-        matches!(
-            kind,
-            AgentActionKind::InstallLlamaCpp
-                | AgentActionKind::ConfigureOpenCode
-                | AgentActionKind::RemoveModel
-        )
-    };
-    if completed.run_id != run_id
-        || completed.registered_tool_count != 10
-        || completed.completed_tool_calls as usize != completed.tool_names.len()
-        || completed.completed_tool_calls as usize != tool_events.len()
-        || completed.tool_names.iter().any(|name| {
-            !matches!(
-                name.as_str(),
-                SYSTEM_SUMMARY_TOOL
-                    | RUNTIME_CATALOG_TOOL
-                    | PLAN_MODEL_START_TOOL
-                    | PLAN_MODEL_REMOVAL_TOOL
-                    | ENVIRONMENT_DIAGNOSTICS_TOOL
-                    | PLAN_DIAGNOSTIC_REPAIR_TOOL
-                    | PLAN_ENGINE_INSTALL_TOOL
-                    | PLAN_ENGINE_REMOVE_TOOL
-                    | OPENCODE_STATUS_TOOL
-                    | PLAN_OPENCODE_CONFIGURATION_TOOL
-            )
-        })
-        || completed.answer.trim().is_empty()
-        || action_plans.len() > 1
-        || expected_action_kind
-            .is_some_and(|kind| action_plans.len() != 1 || action_plans[0].action_kind != kind)
-        || (requirements.diagnostic_repair_plan
-            && diagnostic_repair_available
-            && (action_plans.len() != 1
-                || !diagnostic_action_kind_is_allowed(action_plans[0].action_kind)))
-        || (requirements.diagnostic_repair_plan
-            && !diagnostic_repair_available
-            && !action_plans.is_empty())
-    {
-        return Err(AgentServiceError::InvalidProtocol);
-    }
-    if requirements.system_summary
-        && !tool_events
-            .iter()
-            .any(|event| event.tool_name == SYSTEM_SUMMARY_TOOL)
-    {
-        return Err(AgentServiceError::RequiredToolMissing(SYSTEM_SUMMARY_TOOL));
-    }
-    if requirements.runtime_catalog
-        && !tool_events
-            .iter()
-            .any(|event| event.tool_name == RUNTIME_CATALOG_TOOL)
-    {
-        return Err(AgentServiceError::RequiredToolMissing(RUNTIME_CATALOG_TOOL));
-    }
-    if requirements.environment_diagnostics
-        && !tool_events
-            .iter()
-            .any(|event| event.tool_name == ENVIRONMENT_DIAGNOSTICS_TOOL)
-    {
-        return Err(AgentServiceError::RequiredToolMissing(
-            ENVIRONMENT_DIAGNOSTICS_TOOL,
-        ));
-    }
-    if requirements.diagnostic_repair_plan
-        && diagnostic_repair_available
-        && !tool_events
-            .iter()
-            .any(|event| event.tool_name == PLAN_DIAGNOSTIC_REPAIR_TOOL)
-    {
-        return Err(AgentServiceError::RequiredToolMissing(
-            PLAN_DIAGNOSTIC_REPAIR_TOOL,
-        ));
-    }
-    if requirements.model_start_plan
-        && (!tool_events
-            .iter()
-            .any(|event| event.tool_name == PLAN_MODEL_START_TOOL))
-    {
-        return Err(AgentServiceError::RequiredToolMissing(
-            PLAN_MODEL_START_TOOL,
-        ));
-    }
-    if requirements.model_removal_plan
-        && !tool_events
-            .iter()
-            .any(|event| event.tool_name == PLAN_MODEL_REMOVAL_TOOL)
-    {
-        return Err(AgentServiceError::RequiredToolMissing(
-            PLAN_MODEL_REMOVAL_TOOL,
-        ));
-    }
-    for (required, tool_name) in [
-        (requirements.engine_install_plan, PLAN_ENGINE_INSTALL_TOOL),
-        (requirements.engine_remove_plan, PLAN_ENGINE_REMOVE_TOOL),
-        (requirements.opencode_status, OPENCODE_STATUS_TOOL),
-        (
-            requirements.opencode_configuration_plan,
-            PLAN_OPENCODE_CONFIGURATION_TOOL,
-        ),
-    ] {
-        if required && !tool_events.iter().any(|event| event.tool_name == tool_name) {
-            return Err(AgentServiceError::RequiredToolMissing(tool_name));
-        }
-    }
-    if completed.answer.len() > MAX_ANSWER_BYTES {
-        return Err(AgentServiceError::AnswerTooLarge);
-    }
-    Ok(())
-}
-
-fn request_shutdown(
-    stdin: &mut ChildStdin,
-    receiver: &mpsc::Receiver<Result<AgentRpcEnvelope, std::io::Error>>,
-    run_id: &str,
-    cancellation: &AtomicBool,
-) -> Result<(), AgentServiceError> {
-    let shutdown_id = format!("shutdown-{run_id}");
-    write_envelope(
-        stdin,
-        &AgentRpcEnvelope {
-            protocol_version: AGENT_RPC_VERSION,
-            id: shutdown_id.clone(),
-            kind: "system.shutdown".to_owned(),
-            payload: json!({}),
-        },
-    )?;
-    let acknowledgement = receive_envelope(receiver, cancellation)?;
-    validate_envelope(&acknowledgement)?;
-    if acknowledgement.id != shutdown_id || acknowledgement.kind != "system.shutdown.ack" {
-        return Err(AgentServiceError::InvalidProtocol);
-    }
-    Ok(())
-}
-
-fn validate_envelope(envelope: &AgentRpcEnvelope) -> Result<(), AgentServiceError> {
-    if envelope.protocol_version != AGENT_RPC_VERSION
-        || envelope.id.is_empty()
-        || envelope.id.len() > 128
-    {
-        return Err(AgentServiceError::InvalidProtocol);
-    }
-    Ok(())
-}
-
-fn receive_envelope(
-    receiver: &mpsc::Receiver<Result<AgentRpcEnvelope, std::io::Error>>,
-    cancellation: &AtomicBool,
-) -> Result<AgentRpcEnvelope, AgentServiceError> {
-    let started = Instant::now();
-    loop {
-        if cancellation.load(Ordering::Acquire) {
-            return Err(AgentServiceError::Cancelled);
-        }
-        let remaining = SIDECAR_RESPONSE_TIMEOUT.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return Err(AgentServiceError::KernelTimeout);
-        }
-        match receiver.recv_timeout(remaining.min(SIDECAR_CANCELLATION_POLL)) {
-            Ok(result) => return result.map_err(AgentServiceError::Io),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(AgentServiceError::Io(std::io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "HAL100 Agent Kernel closed its RPC stream",
-                )));
-            }
-        }
-    }
-}
-
-fn write_envelope(
-    stdin: &mut ChildStdin,
-    envelope: &AgentRpcEnvelope,
-) -> Result<(), AgentServiceError> {
-    let frame = encode_agent_rpc_frame(envelope)?;
-    stdin.write_all(&frame).map_err(AgentServiceError::Io)?;
-    stdin.flush().map_err(AgentServiceError::Io)
-}
-
-fn read_envelope(reader: &mut impl Read) -> Result<AgentRpcEnvelope, std::io::Error> {
-    let mut prefix = [0_u8; 4];
-    reader.read_exact(&mut prefix)?;
-    let payload_length = u32::from_be_bytes(prefix) as usize;
-    if payload_length > AGENT_RPC_MAX_FRAME_BYTES {
-        return Err(std::io::Error::new(
-            ErrorKind::InvalidData,
-            "Agent RPC frame exceeds limit",
-        ));
-    }
-    let mut payload = vec![0_u8; payload_length];
-    reader.read_exact(&mut payload)?;
-    serde_json::from_slice(&payload)
-        .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))
-}
-
-fn wait_for_child(child: &mut Child) -> Result<(), AgentServiceError> {
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().map_err(AgentServiceError::Io)? {
-            return status
-                .success()
-                .then_some(())
-                .ok_or(AgentServiceError::KernelStart);
-        }
-        if started.elapsed() >= SIDECAR_EXIT_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(AgentServiceError::KernelTimeout);
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
 fn kernel_rejection(payload: &Value) -> AgentServiceError {
     let code = payload
         .get("code")
@@ -2466,197 +1150,6 @@ fn kernel_rejection(payload: &Value) -> AgentServiceError {
     AgentServiceError::KernelRejected(code.to_owned())
 }
 
-fn resolve_node_binary(workspace_root: &Path) -> Result<PathBuf, AgentServiceError> {
-    let candidate = env::var_os("HAL100_AGENT_NODE_BINARY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace_root.join("node_modules/node/bin/node"));
-    let candidate = candidate
-        .canonicalize()
-        .map_err(|_| AgentServiceError::KernelUnavailable)?;
-    let output = Command::new(&candidate)
-        .arg("--version")
-        .env_clear()
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|_| AgentServiceError::KernelUnavailable)?;
-    if !output.status.success()
-        || String::from_utf8_lossy(&output.stdout).trim() != PINNED_NODE_VERSION
-    {
-        return Err(AgentServiceError::KernelRuntimeVersion);
-    }
-    Ok(candidate)
-}
-
-fn validate_prompt(prompt: &str) -> Result<String, AgentServiceError> {
-    let prompt = prompt.trim();
-    if prompt.is_empty()
-        || prompt.len() > MAX_PROMPT_BYTES
-        || prompt
-            .chars()
-            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
-    {
-        return Err(AgentServiceError::InvalidPrompt);
-    }
-    let normalized = prompt.to_lowercase();
-    const DOMAIN_MARKERS: &[&str] = &[
-        "hal100", "本地", "模型", "推理", "引擎", "后端", "配置", "电脑", "mac", "硬件", "内存",
-        "cpu", "芯片", "安装", "卸载", "删除", "下载", "切换", "llama", "vllm", "opencode", "api",
-        "token",
-    ];
-    if !DOMAIN_MARKERS
-        .iter()
-        .any(|marker| normalized.contains(marker))
-    {
-        return Err(AgentServiceError::OutsideDomain);
-    }
-    Ok(prompt.to_owned())
-}
-
-fn prompt_requires_system_summary(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    [
-        "检测",
-        "电脑配置",
-        "硬件",
-        "内存",
-        "cpu",
-        "芯片",
-        "适合运行",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
-}
-
-fn prompt_requires_runtime_catalog(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    [
-        "模型列表",
-        "可用模型",
-        "有哪些模型",
-        "当前模型",
-        "活动模型",
-        "引擎状态",
-        "后端状态",
-        "运行状态",
-        "是否安装",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
-}
-
-fn prompt_requires_environment_diagnostics(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    [
-        "全面诊断",
-        "环境诊断",
-        "健康检查",
-        "环境健康",
-        "排查故障",
-        "检查并修复",
-        "诊断并修复",
-        "修复问题",
-        "修复故障",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
-}
-
-fn prompt_requires_diagnostic_repair_plan(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    [
-        "检查并修复",
-        "诊断并修复",
-        "自动修复",
-        "修复问题",
-        "修复故障",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
-}
-
-fn prompt_requires_model_start_plan(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    let refers_to_model = ["模型", "qwen", "gguf", "llama"]
-        .iter()
-        .any(|marker| normalized.contains(marker));
-    let requests_start_or_switch = ["启动", "切换", "换成", "改用", "设为当前"]
-        .iter()
-        .any(|marker| normalized.contains(marker));
-    refers_to_model && requests_start_or_switch
-}
-
-fn prompt_requires_model_removal_plan(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    let refers_to_model = ["模型", "qwen", "gguf", "llama"]
-        .iter()
-        .any(|marker| normalized.contains(marker));
-    let requests_removal = ["删除", "移除", "卸载", "移出模型库", "清理索引"]
-        .iter()
-        .any(|marker| normalized.contains(marker));
-    refers_to_model && requests_removal && !prompt_refers_to_llama_cpp_engine(prompt)
-}
-
-fn prompt_refers_to_llama_cpp_engine(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    normalized.contains("llama.cpp")
-        || normalized.contains("llama cpp")
-        || normalized.contains("推理引擎")
-        || normalized.contains("本地引擎")
-}
-
-fn prompt_requires_engine_install_plan(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    prompt_refers_to_llama_cpp_engine(prompt)
-        && ["安装", "部署", "装上"]
-            .iter()
-            .any(|marker| normalized.contains(marker))
-        && !["卸载", "移除", "删除"]
-            .iter()
-            .any(|marker| normalized.contains(marker))
-}
-
-fn prompt_requires_engine_remove_plan(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    prompt_refers_to_llama_cpp_engine(prompt)
-        && ["卸载", "移除", "删除引擎"]
-            .iter()
-            .any(|marker| normalized.contains(marker))
-}
-
-fn prompt_requires_opencode_status(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    normalized.contains("opencode")
-        && ["状态", "检测", "检查", "配置", "接入", "连接"]
-            .iter()
-            .any(|marker| normalized.contains(marker))
-}
-
-fn prompt_requires_opencode_configuration_plan(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    if !normalized.contains("opencode") {
-        return false;
-    }
-    let explicit_change = [
-        "帮我配置",
-        "生成配置",
-        "配置计划",
-        "重新配置",
-        "写入配置",
-        "接入 hal100",
-        "接入hal100",
-        "连接到 hal100",
-        "连接到hal100",
-        "设置 opencode",
-        "设置opencode",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker));
-    let inspection_only = ["查看", "解释", "是什么", "检查配置", "检测配置", "配置状态"]
-        .iter()
-        .any(|marker| normalized.contains(marker));
-    explicit_change || (!inspection_only && normalized.trim().starts_with("配置 opencode"))
-}
-
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2664,32 +1157,6 @@ fn now_ms() -> i64 {
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(i64::MAX)
 }
-
-fn inactive_cloud_session_status() -> AgentCloudSessionStatus {
-    AgentCloudSessionStatus {
-        active: false,
-        available: false,
-        backend_id: None,
-        backend_name: None,
-        backend_kind: None,
-        api_root: None,
-        model: None,
-        provider_protocol: None,
-        activated_at_ms: None,
-        last_error_code: None,
-    }
-}
-
-fn set_owner_only_directory(path: &Path) -> Result<(), std::io::Error> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-
-struct SessionDirectory(PathBuf);
 
 struct TransientAgentCredential {
     registry: CredentialRegistry,
@@ -2699,23 +1166,6 @@ struct TransientAgentCredential {
 struct TemporaryAgentRoute {
     gateway: GatewayState,
     alias: String,
-}
-
-struct ActiveRunGuard {
-    active_run: Arc<Mutex<Option<ActiveRun>>>,
-    run_id: String,
-}
-
-impl Drop for ActiveRunGuard {
-    fn drop(&mut self) {
-        if let Ok(mut active_run) = self.active_run.lock()
-            && active_run
-                .as_ref()
-                .is_some_and(|run| run.run_id == self.run_id)
-        {
-            active_run.take();
-        }
-    }
 }
 
 impl Drop for TransientAgentCredential {
@@ -2730,23 +1180,22 @@ impl Drop for TemporaryAgentRoute {
     }
 }
 
-impl SessionDirectory {
-    fn create(path: PathBuf) -> Result<Self, AgentServiceError> {
-        fs::create_dir_all(&path).map_err(AgentServiceError::Io)?;
-        set_owner_only_directory(&path).map_err(AgentServiceError::Io)?;
-        Ok(Self(path))
-    }
-}
-
-impl Drop for SessionDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_action::PendingAgentAction;
+
+    fn model_download_fixture(
+        database: Arc<Database>,
+        model_storage_path: PathBuf,
+    ) -> (Arc<RemoteModelCatalog>, Arc<ModelDownloadManager>) {
+        let catalog = Arc::new(RemoteModelCatalog::new().expect("test remote model catalog"));
+        let downloads = Arc::new(
+            ModelDownloadManager::new(database, catalog.clone(), model_storage_path)
+                .expect("test model download manager"),
+        );
+        (catalog, downloads)
+    }
 
     fn action_plan_fixture(expires_at_ms: i64) -> PendingAgentAction {
         PendingAgentAction {
@@ -2773,7 +1222,7 @@ mod tests {
         assert!(validate_prompt("检测这台 Mac 并给出本地模型建议").is_ok());
         assert!(matches!(
             validate_prompt("给我写一首关于春天的诗"),
-            Err(AgentServiceError::OutsideDomain)
+            Err(AgentCoordinationError::OutsideDomain)
         ));
     }
 
@@ -2846,19 +1295,24 @@ mod tests {
             hal100_infra::OpenCodePaths::for_macos(&data_dir.join("home"), &data_dir),
             "http://127.0.0.1:10100/v1".to_owned(),
         ));
+        let model_storage_path = data_dir.join("models");
+        let (remote_catalog, model_download) =
+            model_download_fixture(database.clone(), model_storage_path.clone());
         let service = AgentService::with_idle_timeout(
             runtime,
             engine,
             open_code,
             Arc::new(ModelRemovalManager::new(
                 database.clone(),
-                data_dir.join("models"),
+                model_storage_path.clone(),
             )),
+            remote_catalog,
+            model_download,
             gateway,
             database,
             credentials,
             "http://127.0.0.1:10100/v1".to_owned(),
-            data_dir.join("models"),
+            model_storage_path,
             &data_dir,
             Duration::from_millis(25),
         )
@@ -3019,16 +1473,20 @@ mod tests {
             active.provider_protocol,
             Some(AgentProviderProtocol::CloudAnthropic)
         );
+        let (remote_catalog, model_download) =
+            model_download_fixture(service.database.clone(), data_dir.join("models"));
         let restarted_service = AgentService::with_idle_timeout(
             service.runtime.clone(),
             service.engine.clone(),
             service.open_code.clone(),
             service.model_removal.clone(),
+            remote_catalog,
+            model_download,
             service.gateway.clone(),
             service.database.clone(),
             service.credentials.clone(),
             service.gateway_base_url.clone(),
-            service.model_storage_path.clone(),
+            data_dir.join("models"),
             &data_dir,
             Duration::from_millis(25),
         )
@@ -3248,6 +1706,9 @@ mod tests {
             hal100_infra::OpenCodePaths::for_macos(&data_dir.join("home"), &data_dir),
             format!("http://{gateway_address}/v1"),
         ));
+        let model_storage_path = data_dir.join("models");
+        let (remote_catalog, model_download) =
+            model_download_fixture(database.clone(), model_storage_path.clone());
         let service = Arc::new(
             AgentService::with_idle_timeout(
                 runtime,
@@ -3255,13 +1716,15 @@ mod tests {
                 open_code,
                 Arc::new(ModelRemovalManager::new(
                     database.clone(),
-                    data_dir.join("models"),
+                    model_storage_path.clone(),
                 )),
+                remote_catalog,
+                model_download,
                 gateway.clone(),
                 database.clone(),
                 credentials.clone(),
                 format!("http://{gateway_address}/v1"),
-                data_dir.join("models"),
+                model_storage_path,
                 &data_dir,
                 Duration::from_millis(25),
             )
@@ -3364,6 +1827,14 @@ mod tests {
         assert!(!prompt_requires_model_removal_plan(
             "卸载 llama.cpp 推理引擎"
         ));
+        assert!(prompt_requires_model_catalog_search("搜索 Qwen GGUF 模型"));
+        assert!(prompt_requires_model_repository_inspection(
+            "查看模型仓库中的 GGUF 文件"
+        ));
+        assert!(prompt_requires_model_download_plan(
+            "下载 Qwen Q4_K_M GGUF 模型"
+        ));
+        assert!(!prompt_requires_model_download_plan("查看模型下载状态"));
     }
 
     #[test]
@@ -3402,55 +1873,69 @@ mod tests {
     }
 
     #[test]
-    fn action_plan_requires_the_exact_latest_unexpired_id_and_is_consumed_once() {
-        let mut pending = Some(action_plan_fixture(200));
-        assert!(matches!(
-            take_valid_action_plan(&mut pending, "forged-plan", 100),
-            Err(AgentServiceError::ActionPlanUnavailable)
-        ));
-        assert!(pending.is_some());
-        let plan =
-            take_valid_action_plan(&mut pending, "agent-plan-1", 100).expect("valid action plan");
-        assert_eq!(plan.plan.target_id, "managed-model-1");
-        assert!(pending.is_none());
-        assert!(matches!(
-            take_valid_action_plan(&mut pending, "agent-plan-1", 100),
-            Err(AgentServiceError::ActionPlanUnavailable)
-        ));
+    fn prompt_requirements_expand_capability_prerequisites_without_unrelated_tools() {
+        let model_start = AgentRunRequirements::for_prompt("启动这个 GGUF 模型");
+        assert!(model_start.requires(AgentCapabilityId::PlanModelStart));
+        assert!(model_start.requires(AgentCapabilityId::InspectRuntimeCatalog));
+        assert_eq!(model_start.len(), 2);
 
-        let mut expired = Some(action_plan_fixture(99));
-        assert!(matches!(
-            take_valid_action_plan(&mut expired, "agent-plan-1", 100),
-            Err(AgentServiceError::ActionPlanExpired)
-        ));
-        assert!(expired.is_some());
+        let opencode = AgentRunRequirements::for_prompt(
+            "检查 OpenCode 状态，并生成接入 HAL100 Gateway 的配置计划",
+        );
+        assert!(opencode.requires(AgentCapabilityId::PlanOpenCodeConfiguration));
+        assert!(opencode.requires(AgentCapabilityId::InspectOpenCodeStatus));
+        assert_eq!(opencode.len(), 2);
 
-        let mut confirmation_bypass = action_plan_fixture(200);
-        confirmation_bypass.plan.requires_native_confirmation = false;
-        let mut confirmation_bypass = Some(confirmation_bypass);
-        assert!(matches!(
-            take_valid_action_plan(&mut confirmation_bypass, "agent-plan-1", 100),
-            Err(AgentServiceError::ActionPlanUnavailable)
-        ));
-        assert!(confirmation_bypass.is_some());
+        let download =
+            AgentRunRequirements::for_prompt("搜索 Qwen GGUF 并为一个 Q4_K_M 文件生成下载计划");
+        assert!(download.requires(AgentCapabilityId::SearchModelCatalog));
+        assert!(download.requires(AgentCapabilityId::InspectModelRepository));
+        assert!(download.requires(AgentCapabilityId::PlanModelDownload));
+        assert!(!download.requires(AgentCapabilityId::PlanModelStart));
+        assert_eq!(download.len(), 3);
 
-        let oversized_id = "x".repeat(MAX_ACTION_PLAN_ID_CHARS + 1);
-        assert!(matches!(
-            take_valid_action_plan(&mut confirmation_bypass, &oversized_id, 100),
-            Err(AgentServiceError::ActionPlanUnavailable)
-        ));
+        let repair_with_explicit_action =
+            AgentRunRequirements::for_prompt("诊断并修复问题，同时卸载本地推理引擎");
+        assert!(repair_with_explicit_action.requires(AgentCapabilityId::PlanEngineRemove));
+        assert!(!repair_with_explicit_action.requires(AgentCapabilityId::PlanDiagnosticRepair));
+
+        let conflicting =
+            AgentRunRequirements::for_prompt("下载 Qwen GGUF 模型，同时安装 llama.cpp 推理引擎");
+        assert_eq!(
+            conflicting.validate(),
+            Err(AgentCoordinationError::MultipleActionPlans)
+        );
     }
 
     #[test]
-    fn rpc_receive_observes_cancellation_without_waiting_for_the_model_timeout() {
-        let (_sender, receiver) = mpsc::channel();
-        let cancellation = AtomicBool::new(true);
-        let started = Instant::now();
-        assert!(matches!(
-            receive_envelope(&receiver, &cancellation),
-            Err(AgentServiceError::Cancelled)
-        ));
-        assert!(started.elapsed() < Duration::from_millis(50));
+    fn capability_requirements_adapt_to_rpc_v4_capability_set() {
+        let payload = AgentRunRequirements::requiring([
+            AgentCapabilityId::PlanModelRemoval,
+            AgentCapabilityId::InspectSystemSummary,
+        ])
+        .to_rpc_v4(
+            "移除模型并报告硬件",
+            "http://127.0.0.1:39000/v1",
+            "temporary-key",
+            "hal100-agent",
+            AgentProviderProtocol::LocalOpenAi,
+        );
+
+        assert_eq!(
+            payload.required_tools,
+            vec![
+                SYSTEM_SUMMARY_TOOL.to_owned(),
+                RUNTIME_CATALOG_TOOL.to_owned(),
+                PLAN_MODEL_REMOVAL_TOOL.to_owned(),
+            ]
+        );
+        assert_eq!(payload.prompt, "移除模型并报告硬件");
+        assert_eq!(payload.gateway_base_url, "http://127.0.0.1:39000/v1");
+        assert_eq!(payload.model_id, "hal100-agent");
+        assert_eq!(
+            payload.provider_protocol,
+            AgentProviderProtocol::LocalOpenAi
+        );
     }
 
     #[test]
@@ -3471,31 +1956,22 @@ mod tests {
         let completed = AgentRunCompletedPayload {
             run_id: "run-1".to_owned(),
             answer: "猜测的回答".to_owned(),
-            registered_tool_count: 10,
+            registered_tool_count: AGENT_CAPABILITY_COUNT,
             completed_tool_calls: 0,
             tool_names: Vec::new(),
         };
         assert!(matches!(
             validate_completion(
                 "run-1",
-                AgentRunRequirements {
-                    system_summary: true,
-                    runtime_catalog: false,
-                    model_start_plan: false,
-                    model_removal_plan: false,
-                    environment_diagnostics: false,
-                    diagnostic_repair_plan: false,
-                    engine_install_plan: false,
-                    engine_remove_plan: false,
-                    opencode_status: false,
-                    opencode_configuration_plan: false,
-                },
+                &AgentRunRequirements::requiring([AgentCapabilityId::InspectSystemSummary]),
                 false,
                 &completed,
                 &[],
                 &[]
             ),
-            Err(AgentServiceError::RequiredToolMissing(SYSTEM_SUMMARY_TOOL))
+            Err(AgentCoordinationError::RequiredToolMissing(
+                SYSTEM_SUMMARY_TOOL
+            ))
         ));
     }
 
@@ -3504,7 +1980,7 @@ mod tests {
         let completed = AgentRunCompletedPayload {
             run_id: "run-diagnostic".to_owned(),
             answer: "已生成一项修复计划，尚未执行。".to_owned(),
-            registered_tool_count: 10,
+            registered_tool_count: AGENT_CAPABILITY_COUNT,
             completed_tool_calls: 2,
             tool_names: vec![
                 ENVIRONMENT_DIAGNOSTICS_TOOL.to_owned(),
@@ -3532,18 +2008,7 @@ mod tests {
         assert!(
             validate_completion(
                 "run-diagnostic",
-                AgentRunRequirements {
-                    system_summary: false,
-                    runtime_catalog: false,
-                    model_start_plan: false,
-                    model_removal_plan: false,
-                    environment_diagnostics: true,
-                    diagnostic_repair_plan: true,
-                    engine_install_plan: false,
-                    engine_remove_plan: false,
-                    opencode_status: false,
-                    opencode_configuration_plan: false,
-                },
+                &AgentRunRequirements::requiring([AgentCapabilityId::PlanDiagnosticRepair]),
                 true,
                 &completed,
                 &events,
@@ -3558,7 +2023,7 @@ mod tests {
         let completed = AgentRunCompletedPayload {
             run_id: "run-clean".to_owned(),
             answer: "当前没有可安全自动修复的问题。".to_owned(),
-            registered_tool_count: 10,
+            registered_tool_count: AGENT_CAPABILITY_COUNT,
             completed_tool_calls: 1,
             tool_names: vec![ENVIRONMENT_DIAGNOSTICS_TOOL.to_owned()],
         };
@@ -3572,18 +2037,7 @@ mod tests {
         assert!(
             validate_completion(
                 "run-clean",
-                AgentRunRequirements {
-                    system_summary: false,
-                    runtime_catalog: false,
-                    model_start_plan: false,
-                    model_removal_plan: false,
-                    environment_diagnostics: true,
-                    diagnostic_repair_plan: true,
-                    engine_install_plan: false,
-                    engine_remove_plan: false,
-                    opencode_status: false,
-                    opencode_configuration_plan: false,
-                },
+                &AgentRunRequirements::requiring([AgentCapabilityId::PlanDiagnosticRepair]),
                 false,
                 &completed,
                 &events,
@@ -3648,6 +2102,9 @@ mod tests {
             hal100_infra::OpenCodePaths::for_macos(&home, &data_dir),
             format!("http://{gateway_address}/v1"),
         ));
+        let model_storage_path = data_dir.join("models");
+        let (remote_catalog, model_download) =
+            model_download_fixture(database.clone(), model_storage_path.clone());
         let service = Arc::new(
             AgentService::with_idle_timeout(
                 runtime,
@@ -3655,13 +2112,15 @@ mod tests {
                 open_code,
                 Arc::new(ModelRemovalManager::new(
                     database.clone(),
-                    data_dir.join("models"),
+                    model_storage_path.clone(),
                 )),
+                remote_catalog,
+                model_download,
                 gateway,
                 database,
                 credentials,
                 format!("http://{gateway_address}/v1"),
-                data_dir.join("models"),
+                model_storage_path,
                 &data_dir,
                 idle_timeout,
             )

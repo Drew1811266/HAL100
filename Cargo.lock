@@ -1611,12 +1611,15 @@ dependencies = [
 name = "hal100-desktop"
 version = "0.0.1"
 dependencies = [
+ "axum",
  "hal100-core",
  "hal100-infra",
  "hal100-platform",
  "hal100-protocol",
  "reqwest",
+ "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

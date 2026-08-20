@@ -1,10 +1,7 @@
-use hal100_protocol::{
-    ENVIRONMENT_DIAGNOSTICS_TOOL, OPENCODE_STATUS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL,
-    PLAN_ENGINE_INSTALL_TOOL, PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL, RUNTIME_CATALOG_TOOL,
-    SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload, ToolCallRequestPayload, ToolCallResultPayload,
-};
+use hal100_protocol::{ToolCallErrorPayload, ToolCallRequestPayload, ToolCallResultPayload};
 use serde_json::{Map, Value, json};
+
+use crate::{AgentCapabilityId, AgentCapabilityRegistry};
 
 const MAX_CORRELATION_ID_BYTES: usize = 128;
 
@@ -32,6 +29,15 @@ pub enum AuthorizedAgentTool {
     PlanEngineRemove,
     InspectOpenCodeStatus,
     PlanOpenCodeConfiguration,
+    SearchModelCatalog {
+        query: String,
+    },
+    InspectModelRepository {
+        repository: String,
+    },
+    PlanModelDownload {
+        remote_path: String,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -50,52 +56,76 @@ impl AgentToolPolicy {
                 message: "runId and toolCallId must be between 1 and 128 bytes".to_owned(),
             });
         }
-        match request.tool_name.as_str() {
-            SYSTEM_SUMMARY_TOOL => {
+        let capability =
+            AgentCapabilityRegistry::by_tool_name(&request.tool_name).ok_or_else(|| {
+                ToolCallErrorPayload {
+                    code: "tool_not_allowed".to_owned(),
+                    message: "tool is not present in the Rust capability registry".to_owned(),
+                }
+            })?;
+        match capability.id {
+            AgentCapabilityId::InspectSystemSummary => {
                 require_exact_summary_arguments(&request.arguments)?;
                 Ok(AuthorizedAgentTool::InspectSystemSummary)
             }
-            RUNTIME_CATALOG_TOOL => {
+            AgentCapabilityId::InspectRuntimeCatalog => {
                 require_exact_summary_arguments(&request.arguments)?;
                 Ok(AuthorizedAgentTool::InspectRuntimeCatalog)
             }
-            PLAN_MODEL_START_TOOL => Ok(AuthorizedAgentTool::PlanModelStart {
+            AgentCapabilityId::PlanModelStart => Ok(AuthorizedAgentTool::PlanModelStart {
                 model_id: exact_model_id(&request.arguments)?,
             }),
-            PLAN_MODEL_REMOVAL_TOOL => Ok(AuthorizedAgentTool::PlanModelRemoval {
+            AgentCapabilityId::PlanModelRemoval => Ok(AuthorizedAgentTool::PlanModelRemoval {
                 model_id: exact_model_id(&request.arguments)?,
             }),
-            ENVIRONMENT_DIAGNOSTICS_TOOL => {
+            AgentCapabilityId::InspectEnvironmentDiagnostics => {
                 require_exact_target_arguments(&request.arguments, "full")?;
                 Ok(AuthorizedAgentTool::InspectEnvironmentDiagnostics)
             }
-            PLAN_DIAGNOSTIC_REPAIR_TOOL => {
+            AgentCapabilityId::PlanDiagnosticRepair => {
                 let (report_id, finding_id) = exact_diagnostic_repair_ids(&request.arguments)?;
                 Ok(AuthorizedAgentTool::PlanDiagnosticRepair {
                     report_id,
                     finding_id,
                 })
             }
-            PLAN_ENGINE_INSTALL_TOOL => {
+            AgentCapabilityId::PlanEngineInstall => {
                 require_exact_target_arguments(&request.arguments, "llama.cpp")?;
                 Ok(AuthorizedAgentTool::PlanEngineInstall)
             }
-            PLAN_ENGINE_REMOVE_TOOL => {
+            AgentCapabilityId::PlanEngineRemove => {
                 require_exact_target_arguments(&request.arguments, "llama.cpp")?;
                 Ok(AuthorizedAgentTool::PlanEngineRemove)
             }
-            OPENCODE_STATUS_TOOL => {
+            AgentCapabilityId::InspectOpenCodeStatus => {
                 require_exact_target_arguments(&request.arguments, "opencode")?;
                 Ok(AuthorizedAgentTool::InspectOpenCodeStatus)
             }
-            PLAN_OPENCODE_CONFIGURATION_TOOL => {
+            AgentCapabilityId::PlanOpenCodeConfiguration => {
                 require_exact_target_arguments(&request.arguments, "opencode")?;
                 Ok(AuthorizedAgentTool::PlanOpenCodeConfiguration)
             }
-            _ => Err(ToolCallErrorPayload {
-                code: "tool_not_allowed".to_owned(),
-                message: "tool is not present in the Rust broker allowlist".to_owned(),
+            AgentCapabilityId::SearchModelCatalog => Ok(AuthorizedAgentTool::SearchModelCatalog {
+                query: exact_bounded_string(&request.arguments, "query", 2, 100)?,
             }),
+            AgentCapabilityId::InspectModelRepository => {
+                let repository = exact_bounded_string(&request.arguments, "repository", 3, 200)?;
+                if !is_safe_repository(&repository) {
+                    return Err(invalid_arguments(
+                        "expected exactly one public owner/name repository string",
+                    ));
+                }
+                Ok(AuthorizedAgentTool::InspectModelRepository { repository })
+            }
+            AgentCapabilityId::PlanModelDownload => {
+                let remote_path = exact_bounded_string(&request.arguments, "remotePath", 1, 512)?;
+                if !is_safe_remote_path(&remote_path) {
+                    return Err(invalid_arguments(
+                        "expected exactly one safe relative remotePath string",
+                    ));
+                }
+                Ok(AuthorizedAgentTool::PlanModelDownload { remote_path })
+            }
         }
     }
 }
@@ -218,9 +248,71 @@ fn invalid_model_id_arguments() -> ToolCallErrorPayload {
     }
 }
 
+fn exact_bounded_string(
+    arguments: &Value,
+    key: &str,
+    minimum_chars: usize,
+    maximum_chars: usize,
+) -> Result<String, ToolCallErrorPayload> {
+    let Some(object) = arguments.as_object() else {
+        return Err(invalid_arguments("expected exactly one bounded string"));
+    };
+    let Some(value) = (object.len() == 1)
+        .then(|| object.get(key))
+        .flatten()
+        .and_then(Value::as_str)
+    else {
+        return Err(invalid_arguments("expected exactly one bounded string"));
+    };
+    let character_count = value.chars().count();
+    if !(minimum_chars..=maximum_chars).contains(&character_count)
+        || value.chars().any(char::is_control)
+        || value.trim() != value
+    {
+        return Err(invalid_arguments("expected exactly one bounded string"));
+    }
+    Ok(value.to_owned())
+}
+
+fn is_safe_repository(repository: &str) -> bool {
+    let mut components = repository.split('/');
+    let valid_component = |component: &str| {
+        !component.is_empty()
+            && component != "."
+            && component != ".."
+            && component
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
+    };
+    components.next().is_some_and(valid_component)
+        && components.next().is_some_and(valid_component)
+        && components.next().is_none()
+}
+
+fn is_safe_remote_path(remote_path: &str) -> bool {
+    !remote_path.starts_with('/')
+        && !remote_path.contains('\\')
+        && remote_path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn invalid_arguments(message: &str) -> ToolCallErrorPayload {
+    ToolCallErrorPayload {
+        code: "invalid_arguments".to_owned(),
+        message: message.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use hal100_protocol::ToolCallResultStatus;
+    use hal100_protocol::{
+        ENVIRONMENT_DIAGNOSTICS_TOOL, MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL,
+        OPENCODE_STATUS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
+        PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
+        PLAN_MODEL_START_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL, RUNTIME_CATALOG_TOOL,
+        SYSTEM_SUMMARY_TOOL, ToolCallResultStatus,
+    };
 
     use super::*;
 
@@ -339,6 +431,53 @@ mod tests {
     }
 
     #[test]
+    fn authorizes_only_exact_bounded_model_discovery_arguments() {
+        let mut request = allowed_request(json!({ "query": "Qwen GGUF" }));
+        request.tool_name = MODEL_CATALOG_SEARCH_TOOL.to_owned();
+        assert_eq!(
+            AgentToolPolicy.authorize(&request).expect("catalog search"),
+            AuthorizedAgentTool::SearchModelCatalog {
+                query: "Qwen GGUF".to_owned()
+            }
+        );
+
+        request.tool_name = MODEL_REPOSITORY_INSPECTION_TOOL.to_owned();
+        request.arguments = json!({ "repository": "Qwen/Qwen3-GGUF" });
+        assert_eq!(
+            AgentToolPolicy
+                .authorize(&request)
+                .expect("repository inspection"),
+            AuthorizedAgentTool::InspectModelRepository {
+                repository: "Qwen/Qwen3-GGUF".to_owned()
+            }
+        );
+
+        request.tool_name = PLAN_MODEL_DOWNLOAD_TOOL.to_owned();
+        request.arguments = json!({ "remotePath": "Qwen3-Q4_K_M.gguf" });
+        assert_eq!(
+            AgentToolPolicy.authorize(&request).expect("download plan"),
+            AuthorizedAgentTool::PlanModelDownload {
+                remote_path: "Qwen3-Q4_K_M.gguf".to_owned()
+            }
+        );
+
+        for arguments in [
+            json!({ "remotePath": "../secret" }),
+            json!({ "remotePath": "/absolute.gguf" }),
+            json!({ "remotePath": "safe.gguf", "extra": true }),
+        ] {
+            request.arguments = arguments;
+            assert_eq!(
+                AgentToolPolicy
+                    .authorize(&request)
+                    .expect_err("unsafe path")
+                    .code,
+                "invalid_arguments"
+            );
+        }
+    }
+
+    #[test]
     fn model_plan_rejects_extra_fields_or_unbounded_identifiers() {
         for arguments in [
             json!({ "modelId": "managed-model-1", "force": true }),
@@ -406,6 +545,41 @@ mod tests {
                     .code,
                 "invalid_arguments"
             );
+        }
+    }
+
+    #[test]
+    fn rust_argument_policy_matches_shared_v4_fixtures() {
+        let manifest: Value =
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v4-tools.json"))
+                .expect("shared Agent RPC v4 tool policy");
+        let tools = manifest["tools"].as_array().expect("tool policy array");
+        assert_eq!(tools.len(), AgentCapabilityRegistry::all().len());
+
+        for tool in tools {
+            let tool_name = tool["name"].as_str().expect("tool name");
+            let request = ToolCallRequestPayload {
+                run_id: "contract-run".to_owned(),
+                tool_call_id: "contract-tool".to_owned(),
+                tool_name: tool_name.to_owned(),
+                arguments: tool["validArguments"].clone(),
+            };
+            AgentToolPolicy
+                .authorize(&request)
+                .unwrap_or_else(|error| panic!("valid {tool_name} fixture failed: {}", error.code));
+
+            for invalid_arguments in tool["invalidArguments"]
+                .as_array()
+                .expect("invalid argument fixtures")
+            {
+                let mut invalid = request.clone();
+                invalid.arguments = invalid_arguments.clone();
+                assert_eq!(
+                    AgentToolPolicy.authorize(&invalid).unwrap_err().code,
+                    "invalid_arguments",
+                    "invalid {tool_name} fixture was accepted"
+                );
+            }
         }
     }
 }

@@ -111,6 +111,8 @@ hal100-core
 
 前端不得直接访问数据库、凭据库、任意文件系统或系统 Shell。前端只能通过小而明确的 Tauri命令调用 Rust应用服务。
 
+迭代12开始按业务上下文渐进组织React：根`App`只负责应用壳、全局设置和路由，首条`features/agent`切片拥有Agent页面与环境诊断展示；`lib/desktop-api`继续作为Tauri和只读浏览器预览的单一适配入口。该组织以职责和变化原因划分，不设置文件行数上限，也不要求一次性迁移其他成熟页面或全局样式。
+
 迭代4模型管理能力已经沿这些边界落地：`hal100-platform`按需读取固定 Apple Silicon系统字段；`hal100-protocol`定义硬件画像、远端目录、下载、引擎、测试与 Usage DTO；`hal100-infra`实现 Hugging Face/ModelScope官方 API适配、可恢复下载、GGUF校验、SQLite schema v5目录以及固定供应链的`LlamaCppManager`。迭代5把Usage来源语义迁移到schema v6，并在同一Gateway数据面加入Responses与Messages协议解析；schema v7增加非敏感后端和模型别名，平台凭据抽象由macOS Keychain实现。路由活动对象持有可旋转的请求代次取消令牌，使强制切换无需轮询即可中断旧代。迭代6在既有通用`settings`和审计表之上增加类型化桌面设置、可恢复向导、登录项状态、保留策略和通用客户端生命周期，不需要增加schema版本。每个通用客户端明文Key只在创建命令的单次响应中出现，运行时注册表与SQLite只保存摘要；撤销时数据库与运行时注册表以补偿事务保持一致。数据保留不会运行后台清理任务，只有用户查看精确数量并通过Rust原生确认后才按固定截止时间删除过期记录。审计DTO只返回固定安全字段白名单。协议、路由与桌面设置扩展没有新增常驻轮询或计时器。目录 API的运营方与模型仓库发布者是两层独立信任边界，确认计划保留实际仓库、修订、许可证和文件哈希。Tauri只暴露窄命令：只读查询、一次性计划、受控生命周期、桌面设置、通用客户端和脱敏审计操作。Dialog插件与登录项插件只从Rust调用，WebView capability不含通用对话框、自动启动或文件权限。硬件、数据库、Keychain、安装和进程操作不会进入每个Gateway请求的热路径；页面隐藏后没有探测、统计或审计定时器。
 
 ## 6. 网关请求生命周期
@@ -257,15 +259,15 @@ Agent由六层组成：
 
 Pi的执行前后钩子只能作为额外防线，不能替代 Rust复验。Sidecar内不存在可绕过 Tool Broker的通用执行工具。
 
-迭代1先用确定性 Faux模型完成模拟边界验证。迭代7已将同一协议升级为真实产品链，迭代10升级为RPC v2，迭代11再升级为RPC v3：桌面`AgentService`按任务启动固定 Node 24.18.0与构建后的 Sidecar，完成ping、运行、工具调用、结果和shutdown确认；Sidecar通过临时客户端Key向 Gateway请求内部保留模型别名`hal100-agent`。独立`AgentModelRuntime`复用已校验的 Qwen3.5-2B Q4_K_M权重，但使用单独的 llama-server、随机回环端口、临时后端Key、内部后端和模型路由，不修改用户活动后端。运行时使用6144上下文、最多768输出Token、parallel 1和reasoning off；空闲2分钟后通过一次性generation timer停止，没有轮询。
+迭代1先用确定性 Faux模型完成模拟边界验证。迭代7已将同一协议升级为真实产品链，迭代10升级为RPC v2，迭代11再升级为RPC v3；迭代12把桌面Agent拆为稳定外观与五个变化边界：`agent_coordinator`负责能力需求、完成校验和任务取消生命周期，`agent_kernel`负责固定Node/Sidecar与RPC传输，`agent_tools`负责工具授权和确定性计划编排，`agent_action`负责一次性待确认计划状态，`agent_provider`负责本地/云端Provider与内存会话。迭代13将私有协议升级为RPC v4，`agent.run.start.requiredTools`直接承载由能力注册表生成的规范有序能力集合，不再为每项工具扩展布尔字段。`AgentService`继续负责运行互斥、临时凭据/路由装配、原生确认后的确定性执行、审计和错误兼容。Sidecar通过临时客户端Key向Gateway请求内部保留模型别名`hal100-agent`。独立`AgentModelRuntime`复用已校验的Qwen3.5-2B Q4_K_M权重，但使用单独的llama-server、随机回环端口、临时后端Key、内部后端和模型路由，不修改用户活动后端。运行时使用6144上下文、最多768输出Token、parallel 1和reasoning off；空闲2分钟后通过一次性generation timer停止，没有轮询。
 
-产品Sidecar当前注册10个HAL100代理工具：硬件摘要、脱敏运行目录、OpenCode状态、按需环境诊断四个只读工具，以及模型启动/切换、模型移除、llama.cpp安装、llama.cpp卸载、OpenCode配置和诊断修复六个计划工具。模型与引擎计划必须先完成运行目录读取；OpenCode配置计划必须先完成OpenCode状态检查；诊断修复必须先在同一任务取得Rust报告并复制精确`reportId/findingId`。每个模型回合只暴露Rust预判的唯一下一工具并使用`required`；如果模型在工具结果后提前给文字答案，Pi会话最多追加两次固定纠偏提示，Provider固定错误则立即失败而不重试。Rust Tool Broker仍复验工具名、精确参数、run ID、tool call ID、唯一性、顺序和每任务最多4次调用；每项任务最多产生一个可写计划。Sidecar筛选只提高2B模型可靠性，不是权限边界。完成结果如果缺少必需工具、工具关联不匹配、回答为空/过长、协议异常或进程超时，整个任务失败关闭。通用聊天由Rust领域门禁在模型启动前拒绝。
+产品Sidecar当前注册13个HAL100代理工具：既有10项工具保持语义，新增公开模型目录搜索、仓库GGUF检查和下载计划。搜索使用数据库中的用户默认来源并只返回最多8个公开仓库；仓库工具只能引用同任务搜索结果并返回最多12个带可信SHA-256的GGUF；下载工具只能引用该快照中的精确相对路径。`ModelDownloadManager`仍是远端复验、空间、重复项、目标路径、底层计划、下载、哈希/GGUF校验和原子安装的唯一事实状态源，Agent不实现第二套下载逻辑。模型与引擎计划必须先完成运行目录读取；OpenCode配置计划必须先完成OpenCode状态检查；诊断修复必须先在同一任务取得Rust报告并复制精确`reportId/findingId`。每个模型回合只暴露`requiredTools`中的唯一下一工具并使用`required`；如果模型提前给文字答案，Pi会话最多追加三次固定纠偏提示，Provider固定错误立即失败。Rust Tool Broker复验工具名、精确参数、run ID、tool call ID、唯一性、规范顺序、前置闭包和RPC v4当前每任务最多4次调用；每项任务最多产生一个可写计划。共享工具策略还固定读/计划效果、前置关系、原生确认、参数正反例和128 KiB结果预算，Rust与TypeScript分别验证。4项是协议版本的单任务预算而非软件规模上限。Sidecar筛选只提高小模型可靠性，不是权限边界。完成结果如果缺少必需工具、工具关联不匹配、回答/结果过长、协议异常或进程超时，整个任务失败关闭。通用聊天由Rust领域门禁在模型启动前拒绝。
 
 `EnvironmentDiagnostics`属于Infra层的同步按需服务：只刷新模型文件存在性/廉价快照，读取引擎状态、Gateway路由与熔断快照、OpenCode检测结果，不读原始日志、不做完整模型哈希、发现数量上限64。直接桌面诊断不启动Pi或Qwen；Agent诊断只把脱敏DTO交给模型。当前只有引擎未安装、OpenCode已安装但未配置、非内置模型文件缺失三类发现带`repairKind`。修复工具不信任旧报告：Rust在计划生成前重新检查引擎安装态、OpenCode所有权或模型仍为`Missing`，再复用既有确定性计划。用户原生确认执行成功后运行一次新的诊断并返回界面；复检失败只写固定错误码，不泄漏底层路径，也不把已成功操作改判为失败。
 
 Agent计划是Rust内存中的一次性能力对象：绑定生成任务、精确目标、当前状态、内部确定性管理器计划、5分钟到期时间和`requires_native_confirmation`，且只保留最新一项；底层管理器计划ID不发送给Pi。新任务、取消、失败或用户取消原生确认会同时废弃外层与底层计划；伪造、超长、过期、已消费或缺少原生确认标记的ID均拒绝。WebView只能请求Rust显示原生确认；确认后Rust再次取走并校验同一计划，再调用确定性管理器。模型移除还在引擎生命周期锁内复核活动模型，托管文件只能进入系统废纸篓，外部文件只能移除索引，内置Agent模型直接拒绝。因此“模型说已执行”、Pi工具成功或聊天中的同意都不是授权。
 
-活动任务在`AgentService`中绑定独立取消原子标记。模型资源SHA-256每读取1 MiB检查，健康等待每50 ms、RPC接收每100 ms检查，不等待90/180秒超时；取消后Rust终止Sidecar、移除临时Gateway凭据和会话目录、停止独立Agent模型并写固定审计。`active_run_id`和`cancellation_requested`只作为状态展示，不授予额外能力。
+活动任务由`agent_coordinator::AgentRunRegistry`绑定独立取消原子标记和精确run租约。模型资源SHA-256每读取1 MiB检查，健康等待每50 ms、RPC接收与远端目录future每100 ms检查，不等待15/90/180秒超时；取消时丢弃HTTP future，随后Rust终止Sidecar、移除临时Gateway凭据和会话目录、停止独立Agent模型并写固定审计。`active_run_id`和`cancellation_requested`只作为状态展示，不授予额外能力。
 
 Gateway会话Key仅存在于运行内存和RPC请求，使用RAII在任务结束后从认证注册表移除；Sidecar的单次HOME/TMP目录也在进程结束后删除。数据库只保存Agent开始、完成、失败、取消、模型运行时和操作计划的固定白名单元数据，不保存提示词、回答、Key或完整路径。用户配置层不能创建、删除或从数据库恢复内部保留别名`hal100-agent`。
 

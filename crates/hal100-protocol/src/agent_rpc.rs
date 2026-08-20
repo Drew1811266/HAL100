@@ -4,8 +4,11 @@ use thiserror::Error;
 
 use crate::AgentProviderProtocol;
 
-pub const AGENT_RPC_VERSION: u16 = 3;
+pub const AGENT_RPC_VERSION: u16 = 4;
 pub const AGENT_RPC_MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const AGENT_RPC_MAX_REQUIRED_TOOLS: usize = 4;
+pub const AGENT_RPC_MAX_ACTION_PLANS: usize = 1;
+pub const AGENT_RPC_MAX_TOOL_RESULT_BYTES: usize = 128 * 1024;
 const LENGTH_PREFIX_BYTES: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -21,18 +24,7 @@ pub struct AgentRpcEnvelope {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRunStartPayload {
     pub prompt: String,
-    pub requires_system_summary: bool,
-    pub requires_runtime_catalog: bool,
-    pub requires_model_start_plan: bool,
-    pub requires_model_removal_plan: bool,
-    pub requires_environment_diagnostics: bool,
-    pub requires_diagnostic_repair_plan: bool,
-    pub requires_engine_install_plan: bool,
-    pub requires_engine_remove_plan: bool,
-    #[serde(rename = "requiresOpenCodeStatus")]
-    pub requires_opencode_status: bool,
-    #[serde(rename = "requiresOpenCodeConfigurationPlan")]
-    pub requires_opencode_configuration_plan: bool,
+    pub required_tools: Vec<String>,
     pub gateway_base_url: String,
     pub api_key: String,
     pub model_id: String,
@@ -179,16 +171,10 @@ mod tests {
     fn run_payload_carries_an_explicit_provider_protocol() {
         let payload = AgentRunStartPayload {
             prompt: "检查 HAL100 后端".to_owned(),
-            requires_system_summary: false,
-            requires_runtime_catalog: true,
-            requires_model_start_plan: false,
-            requires_model_removal_plan: false,
-            requires_environment_diagnostics: true,
-            requires_diagnostic_repair_plan: false,
-            requires_engine_install_plan: false,
-            requires_engine_remove_plan: false,
-            requires_opencode_status: false,
-            requires_opencode_configuration_plan: false,
+            required_tools: vec![
+                crate::RUNTIME_CATALOG_TOOL.to_owned(),
+                crate::ENVIRONMENT_DIAGNOSTICS_TOOL.to_owned(),
+            ],
             gateway_base_url: "http://127.0.0.1:10100/v1".to_owned(),
             api_key: "local-transient-session-key".to_owned(),
             model_id: "hal100-agent-cloud-test".to_owned(),
@@ -197,6 +183,42 @@ mod tests {
         let value = serde_json::to_value(payload).expect("Agent start payload");
         assert_eq!(value["providerProtocol"], "cloudAnthropic");
         assert_eq!(value["modelId"], "hal100-agent-cloud-test");
+        assert_eq!(value["requiredTools"].as_array().map(Vec::len), Some(2));
+        assert!(value.get("requiresRuntimeCatalog").is_none());
         assert!(value.get("backendApiKey").is_none());
+    }
+
+    #[test]
+    fn rpc_version_matches_the_shared_v4_envelope_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v4.schema.json"))
+                .expect("shared Agent RPC v4 schema");
+        assert_eq!(schema["properties"]["protocolVersion"]["const"], 4);
+        assert_eq!(AGENT_RPC_VERSION, 4);
+    }
+
+    #[test]
+    fn rpc_limits_match_the_shared_v4_tool_policy() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v4-tools.json"))
+                .expect("shared Agent RPC v4 tool policy");
+        assert_eq!(
+            manifest["limits"]["maxRequiredTools"],
+            AGENT_RPC_MAX_REQUIRED_TOOLS
+        );
+        assert_eq!(
+            manifest["limits"]["maxActionPlans"],
+            AGENT_RPC_MAX_ACTION_PLANS
+        );
+        assert_eq!(
+            manifest["limits"]["maxToolResultBytes"],
+            AGENT_RPC_MAX_TOOL_RESULT_BYTES
+        );
+        assert!(
+            manifest["limits"]["maxToolResultBytes"]
+                .as_u64()
+                .expect("tool result budget")
+                < AGENT_RPC_MAX_FRAME_BYTES as u64
+        );
     }
 }

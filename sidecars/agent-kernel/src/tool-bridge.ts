@@ -13,7 +13,12 @@ export const PLAN_ENGINE_INSTALL_TOOL = "hal100.plan_engine_install";
 export const PLAN_ENGINE_REMOVE_TOOL = "hal100.plan_engine_remove";
 export const OPENCODE_STATUS_TOOL = "hal100.inspect_opencode_status";
 export const PLAN_OPENCODE_CONFIGURATION_TOOL = "hal100.plan_opencode_configuration";
+export const MODEL_CATALOG_SEARCH_TOOL = "hal100.search_model_catalog";
+export const MODEL_REPOSITORY_INSPECTION_TOOL = "hal100.inspect_model_repository";
+export const PLAN_MODEL_DOWNLOAD_TOOL = "hal100.plan_model_download";
 const TOOL_BROKER_TIMEOUT_MS = 5_000;
+const CATALOG_TOOL_BROKER_TIMEOUT_MS = 20_000;
+export const MAX_TOOL_RESULT_BYTES = 128 * 1024;
 
 const systemSummaryParameters = Type.Object(
   {
@@ -65,6 +70,36 @@ const diagnosticRepairParameters = Type.Object(
   { additionalProperties: false },
 );
 
+const modelCatalogSearchParameters = Type.Object(
+  {
+    query: Type.String({ minLength: 2, maxLength: 100 }),
+  },
+  { additionalProperties: false },
+);
+
+const modelRepositoryParameters = Type.Object(
+  {
+    repository: Type.String({
+      minLength: 3,
+      maxLength: 200,
+      pattern:
+        "^(?!\\./)(?!\\.\\./)(?![A-Za-z0-9._-]+/\\.$)(?![A-Za-z0-9._-]+/\\.\\.$)[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+    }),
+  },
+  { additionalProperties: false },
+);
+
+const modelDownloadParameters = Type.Object(
+  {
+    remotePath: Type.String({
+      minLength: 1,
+      maxLength: 512,
+      pattern: "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//).+$",
+    }),
+  },
+  { additionalProperties: false },
+);
+
 export interface ToolCallRequestPayload {
   runId: string;
   toolCallId: string;
@@ -103,6 +138,24 @@ export class ToolBrokerBridge {
   private nextRequestId = 1;
 
   constructor(private readonly send: SendAgentRpcEnvelope) {}
+
+  createAgentTools(runId: string) {
+    return [
+      this.createSystemSummaryTool(runId),
+      this.createRuntimeCatalogTool(runId),
+      this.createModelStartPlanTool(runId),
+      this.createModelRemovalPlanTool(runId),
+      this.createEnvironmentDiagnosticsTool(runId),
+      this.createDiagnosticRepairPlanTool(runId),
+      this.createEngineInstallPlanTool(runId),
+      this.createEngineRemovePlanTool(runId),
+      this.createOpenCodeStatusTool(runId),
+      this.createOpenCodeConfigurationPlanTool(runId),
+      this.createModelCatalogSearchTool(runId),
+      this.createModelRepositoryInspectionTool(runId),
+      this.createModelDownloadPlanTool(runId),
+    ];
+  }
 
   createSystemSummaryTool(runId: string): AgentTool<typeof systemSummaryParameters, unknown> {
     return {
@@ -299,6 +352,40 @@ export class ToolBrokerBridge {
     );
   }
 
+  createModelCatalogSearchTool(
+    runId: string,
+  ): AgentTool<typeof modelCatalogSearchParameters, unknown> {
+    return this.createCatalogTool(
+      runId,
+      MODEL_CATALOG_SEARCH_TOOL,
+      "搜索公开模型目录",
+      "使用 HAL100 中由用户选择的默认来源搜索公开模型。Rust 只返回最多 8 个无路径、无凭据的仓库摘要。",
+      modelCatalogSearchParameters,
+    );
+  }
+
+  createModelRepositoryInspectionTool(
+    runId: string,
+  ): AgentTool<typeof modelRepositoryParameters, unknown> {
+    return this.createCatalogTool(
+      runId,
+      MODEL_REPOSITORY_INSPECTION_TOOL,
+      "检查模型仓库",
+      "repository 必须精确复制同一任务搜索结果。Rust 只返回最多 12 个带可信 SHA-256 的公开 GGUF 文件。",
+      modelRepositoryParameters,
+    );
+  }
+
+  createModelDownloadPlanTool(runId: string): AgentTool<typeof modelDownloadParameters, unknown> {
+    return this.createCatalogTool(
+      runId,
+      PLAN_MODEL_DOWNLOAD_TOOL,
+      "生成模型下载计划",
+      "remotePath 必须精确复制同一任务仓库检查结果。Rust 会重新拉取元数据并检查 SHA-256、空间和重复项；只生成一次性计划，用户仍需原生确认。",
+      modelDownloadParameters,
+    );
+  }
+
   acceptResult(envelope: AgentRpcEnvelope): boolean {
     if (envelope.kind !== "tool.call.result") {
       return false;
@@ -388,12 +475,67 @@ export class ToolBrokerBridge {
     };
   }
 
+  private createCatalogTool<TParameters extends typeof modelCatalogSearchParameters>(
+    runId: string,
+    toolName: string,
+    label: string,
+    description: string,
+    parameters: TParameters,
+  ): AgentTool<TParameters, unknown>;
+  private createCatalogTool<TParameters extends typeof modelRepositoryParameters>(
+    runId: string,
+    toolName: string,
+    label: string,
+    description: string,
+    parameters: TParameters,
+  ): AgentTool<TParameters, unknown>;
+  private createCatalogTool<TParameters extends typeof modelDownloadParameters>(
+    runId: string,
+    toolName: string,
+    label: string,
+    description: string,
+    parameters: TParameters,
+  ): AgentTool<TParameters, unknown>;
+  private createCatalogTool(
+    runId: string,
+    toolName: string,
+    label: string,
+    description: string,
+    parameters:
+      | typeof modelCatalogSearchParameters
+      | typeof modelRepositoryParameters
+      | typeof modelDownloadParameters,
+  ): AgentTool<typeof parameters, unknown> {
+    return {
+      name: toolName,
+      label,
+      description,
+      parameters,
+      executionMode: "sequential",
+      execute: async (toolCallId, values, signal) => {
+        const output = await this.requestTool(
+          runId,
+          toolCallId,
+          toolName,
+          values,
+          signal,
+          CATALOG_TOOL_BROKER_TIMEOUT_MS,
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(output) }],
+          details: output,
+        };
+      },
+    };
+  }
+
   private requestTool(
     runId: string,
     toolCallId: string,
     toolName: string,
     parameters: unknown,
     signal?: AbortSignal,
+    timeoutMs = TOOL_BROKER_TIMEOUT_MS,
   ): Promise<unknown> {
     if (signal?.aborted) {
       return Promise.reject(new Error("tool request aborted"));
@@ -416,7 +558,7 @@ export class ToolBrokerBridge {
           this.finishPending(requestId, pending);
           reject(new Error("Rust Tool Broker response timed out"));
         }
-      }, TOOL_BROKER_TIMEOUT_MS);
+      }, timeoutMs);
 
       this.pending.set(requestId, {
         toolCallId,
@@ -471,6 +613,9 @@ export function assertToolCallRequestPayload(value: unknown): ToolCallRequestPay
 }
 
 export function assertToolCallResultPayload(value: unknown): ToolCallResultPayload {
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_TOOL_RESULT_BYTES) {
+    throw new TypeError("tool.call.result payload exceeds the bounded result budget");
+  }
   if (!isRecord(value) || !isCorrelationId(value.toolCallId)) {
     throw new TypeError("invalid tool.call.result payload");
   }

@@ -587,6 +587,7 @@ export interface AgentRunResult {
 
 export type AgentActionKind =
   | "startOrSwitchModel"
+  | "downloadModel"
   | "removeModel"
   | "installLlamaCpp"
   | "removeLlamaCpp"
@@ -618,7 +619,7 @@ export interface AgentActionResult {
 const developmentOverview: AppOverview = {
   appName: "HAL100",
   version: "0.0.1",
-  phase: "迭代 11 · 诊断与受控修复",
+  phase: "迭代 13 · Agent 模型发现与受控下载",
   gatewayState: "运行中",
   databaseState: "已就绪",
   platform: {

@@ -16,6 +16,9 @@ use crate::model_import::quantization_from_file_name;
 const MAX_CATALOG_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SEARCH_RESULTS: usize = 20;
 const MAX_REPOSITORY_FILES: usize = 5_000;
+const MAX_DISPLAY_NAME_CHARS: usize = 200;
+const MAX_LICENSE_CHARS: usize = 128;
+const MAX_REVISION_BYTES: usize = 200;
 
 #[derive(Debug, Error)]
 pub enum RemoteModelCatalogError {
@@ -35,6 +38,22 @@ pub enum RemoteModelCatalogError {
     NoGgufFiles,
     #[error("HAL100 远端模型端点配置无效")]
     InvalidEndpoint,
+}
+
+impl RemoteModelCatalogError {
+    /// Stable, non-sensitive category suitable for UI, audit, and Agent tool failures.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidQuery => "invalid_catalog_query",
+            Self::InvalidRepository => "invalid_model_repository",
+            Self::UpstreamStatus { .. } => "catalog_upstream_status",
+            Self::ResponseTooLarge => "catalog_response_too_large",
+            Self::InvalidResponse => "invalid_catalog_response",
+            Self::Network(_) => "catalog_network_error",
+            Self::NoGgufFiles => "no_gguf_files",
+            Self::InvalidEndpoint => "invalid_catalog_endpoint",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -59,7 +78,11 @@ impl RemoteModelCatalog {
         )
     }
 
-    pub(crate) fn with_endpoints(
+    /// Constructs a catalog against explicit endpoints for deterministic adapters and tests.
+    ///
+    /// Product composition continues to use [`Self::new`]; all endpoint URLs are validated and
+    /// the same response, timeout, redirect, and path policies remain active.
+    pub fn with_endpoints(
         hugging_face_api: &str,
         model_scope_openapi: &str,
         model_scope_legacy_api: &str,
@@ -185,6 +208,7 @@ impl RemoteModelCatalog {
         let revision = model
             .sha
             .clone()
+            .filter(|revision| safe_revision(revision))
             .ok_or(RemoteModelCatalogError::InvalidResponse)?;
         let mut files = model
             .siblings
@@ -247,8 +271,9 @@ impl RemoteModelCatalog {
         Ok(RemoteModelRepository {
             source: DownloadSource::ModelScope,
             repository,
-            display_name: nonempty(detail.data.display_name).unwrap_or_else(|| name.to_owned()),
-            license: nonempty(detail.data.license),
+            display_name: bounded_metadata(detail.data.display_name, MAX_DISPLAY_NAME_CHARS)
+                .unwrap_or_else(|| name.to_owned()),
+            license: bounded_metadata(detail.data.license, MAX_LICENSE_CHARS),
             gated: detail.data.gated,
             private: detail.data.private,
             files,
@@ -357,6 +382,12 @@ fn safe_remote_file(path: &str) -> bool {
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
+fn safe_revision(revision: &str) -> bool {
+    !revision.is_empty()
+        && revision.len() <= MAX_REVISION_BYTES
+        && !revision.chars().any(char::is_control)
+}
+
 fn normalize_files(files: &mut Vec<RemoteGgufFile>) -> Result<(), RemoteModelCatalogError> {
     files.sort_by(|left, right| {
         left.size_bytes
@@ -371,8 +402,14 @@ fn normalize_files(files: &mut Vec<RemoteGgufFile>) -> Result<(), RemoteModelCat
     }
 }
 
-fn nonempty(value: Option<String>) -> Option<String> {
-    value.filter(|value| !value.trim().is_empty())
+fn bounded_metadata(value: Option<String>, maximum_chars: usize) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()
+            && trimmed.chars().count() <= maximum_chars
+            && !trimmed.chars().any(char::is_control))
+        .then(|| trimmed.to_owned())
+    })
 }
 
 fn truthy(value: &Value) -> bool {
@@ -403,8 +440,9 @@ fn license_from_hugging_face(
     card_data: Option<&HuggingFaceCardData>,
 ) -> Option<String> {
     card_data
-        .and_then(|card| nonempty(card.license.clone()))
+        .and_then(|card| bounded_metadata(card.license.clone(), MAX_LICENSE_CHARS))
         .or_else(|| license_from_tags(tags))
+        .and_then(|license| bounded_metadata(Some(license), MAX_LICENSE_CHARS))
 }
 
 fn search_item_from_hugging_face(
@@ -435,9 +473,10 @@ fn search_item_from_model_scope(
     validate_repository(&model.id)?;
     Ok(RemoteModelSearchItem {
         source: DownloadSource::ModelScope,
-        display_name: nonempty(model.display_name).unwrap_or_else(|| model.id.clone()),
+        display_name: bounded_metadata(model.display_name, MAX_DISPLAY_NAME_CHARS)
+            .unwrap_or_else(|| model.id.clone()),
         repository: model.id,
-        license: nonempty(model.license),
+        license: bounded_metadata(model.license, MAX_LICENSE_CHARS),
         downloads: model.downloads.unwrap_or(0),
         likes: model.likes.unwrap_or(0),
         parameter_count: model.params,
@@ -470,7 +509,10 @@ fn remote_hugging_face_file(file: HuggingFaceFile, revision: &str) -> Option<Rem
 }
 
 fn remote_model_scope_file(file: ModelScopeFile) -> Option<RemoteGgufFile> {
-    if !file.path.to_ascii_lowercase().ends_with(".gguf") || file.size == 0 {
+    if !file.path.to_ascii_lowercase().ends_with(".gguf")
+        || file.size == 0
+        || !safe_revision(&file.revision)
+    {
         return None;
     }
     Some(RemoteGgufFile {
@@ -670,13 +712,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_repository_and_file_paths() {
+    fn rejects_unsafe_repository_file_and_metadata_boundaries() {
         assert!(validate_repository("owner/model").is_ok());
         assert!(validate_repository("https://example.test/model").is_err());
         assert!(validate_repository("owner/../model").is_err());
         assert!(safe_remote_file("weights/model.gguf"));
         assert!(!safe_remote_file("../model.gguf"));
         assert!(!safe_remote_file("/tmp/model.gguf"));
+        assert!(safe_revision("revision-1"));
+        assert!(!safe_revision(""));
+        assert!(!safe_revision(&"r".repeat(MAX_REVISION_BYTES + 1)));
+        assert_eq!(
+            bounded_metadata(Some(" Model ".to_owned()), MAX_DISPLAY_NAME_CHARS).as_deref(),
+            Some("Model")
+        );
+        assert!(
+            bounded_metadata(
+                Some("x".repeat(MAX_DISPLAY_NAME_CHARS + 1)),
+                MAX_DISPLAY_NAME_CHARS
+            )
+            .is_none()
+        );
     }
 
     #[tokio::test]

@@ -124,6 +124,7 @@ pub struct AgentRunResult {
 #[serde(rename_all = "camelCase")]
 pub enum AgentActionKind {
     StartOrSwitchModel,
+    DownloadModel,
     RemoveModel,
     InstallLlamaCpp,
     RemoveLlamaCpp,
@@ -241,5 +242,13 @@ mod tests {
         assert!(!status.active);
         assert!(status.backend_id.is_none());
         assert!(status.model.is_none());
+    }
+
+    #[test]
+    fn model_download_action_uses_the_stable_desktop_wire_name() {
+        assert_eq!(
+            serde_json::to_string(&AgentActionKind::DownloadModel).expect("action kind"),
+            r#""downloadModel""#
+        );
     }
 }

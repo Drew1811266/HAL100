@@ -1,4 +1,4 @@
-export const AGENT_RPC_VERSION = 3;
+export const AGENT_RPC_VERSION = 4;
 export const AGENT_RPC_MAX_FRAME_BYTES = 1024 * 1024;
 const LENGTH_PREFIX_BYTES = 4;
 
@@ -71,7 +71,7 @@ function assertEnvelope(value: unknown): AgentRpcEnvelope {
     typeof value.kind !== "string" ||
     !("payload" in value)
   ) {
-    throw new TypeError("Agent RPC frame does not match the v2 envelope");
+    throw new TypeError("Agent RPC frame does not match the v4 envelope");
   }
 
   return value as AgentRpcEnvelope;

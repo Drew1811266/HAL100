@@ -1,4 +1,9 @@
+mod agent_action;
+mod agent_coordinator;
+mod agent_kernel;
+mod agent_provider;
 mod agent_service;
+mod agent_tools;
 
 use std::{
     net::{SocketAddr, TcpListener},
@@ -424,6 +429,10 @@ async fn apply_agent_action_plan(
         hal100_protocol::AgentActionKind::StartOrSwitchModel => (
             "确认 Agent 的模型启动或切换计划",
             "确认后 Rust Core 会重新校验模型文件，并等待已有请求安全排空；不会强制切换。",
+        ),
+        hal100_protocol::AgentActionKind::DownloadModel => (
+            "确认 Agent 的模型下载计划",
+            "确认后 Rust Core 会再次检查可用空间，并按固定来源、仓库、修订、文件和 SHA-256 启动下载；完成校验前不会进入模型库。",
         ),
         hal100_protocol::AgentActionKind::InstallLlamaCpp => (
             "确认 Agent 的 llama.cpp 安装计划",
@@ -1724,6 +1733,8 @@ pub fn run() {
                 llama_cpp_manager.clone(),
                 open_code_manager.clone(),
                 removal_manager.clone(),
+                remote_catalog.clone(),
+                download_manager.clone(),
                 gateway_control.clone(),
                 database.clone(),
                 credentials.clone(),

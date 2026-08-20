@@ -22,6 +22,7 @@ hal100-infra = { path = "../../../crates/hal100-infra" }
 hal100-platform = { path = "../../../crates/hal100-platform" }
 hal100-protocol = { path = "../../../crates/hal100-protocol" }
 reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
 tauri-plugin-autostart.workspace = true
@@ -31,3 +32,7 @@ tracing.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+sha2.workspace = true
