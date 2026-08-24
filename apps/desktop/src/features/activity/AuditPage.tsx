@@ -136,7 +136,7 @@ export default function AuditPage() {
   return (
     <ActivityPageShell
       action={actions}
-      description="查看安装、模型、软件接入、Agent 与数据策略的受控操作。"
+      description="查看最近 50 条安装、模型、软件接入、Agent 与数据策略的受控操作。"
       title="操作记录"
     >
       {filtersOpen && (

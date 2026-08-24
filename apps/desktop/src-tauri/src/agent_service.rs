@@ -2091,7 +2091,7 @@ mod tests {
         usage_writer
             .flush(Duration::from_secs(1))
             .expect("flush cloud Agent usage");
-        let dashboard = database.usage_dashboard(10).expect("cloud Agent usage");
+        let dashboard = database.usage_dashboard(10, 0).expect("cloud Agent usage");
         let usage = dashboard
             .recent_requests
             .first()

@@ -20,7 +20,7 @@ HAL100 不是通用聊天客户端。它是运行在用户电脑上的本地 AI 
 内置 HAL100 Agent 使用本地小模型与 [Pi Agent Core](https://github.com/earendil-works/pi) 帮助用户诊断和配置本地推理环境；Pi 负责推理，Rust Core 始终是唯一授权与执行权威。
 
 > [!WARNING]
-> HAL100 当前版本为 `1.0.2` 早期开发版，仅用于 Apple Silicon Mac 内部开发测试。项目暂不提供签名、公证或正式安装包，也不支持 Intel Mac。Windows 10/11 目前只保留架构兼容边界，尚未实现。
+> HAL100 当前版本为 `1.0.3` 早期开发版，仅用于 Apple Silicon Mac 内部开发测试。项目暂不提供签名、公证或正式安装包，也不支持 Intel Mac。Windows 10/11 目前只保留架构兼容边界，尚未实现。
 
 ![HAL100 总览界面](docs/images/hal100-overview.png)
 

@@ -4,7 +4,9 @@ use hal100_protocol::{
     AuditDetail, AuditEventSummary, AuditLog, DataCleanupPreview, DataCleanupResult,
     DownloadSource, GenericClientSummary, LocalModelState, LocalModelSummary, ModelDownloadState,
     ModelLibrary, ModelOwnership, ModelRemovalKind, ModelSource, RetentionSettingsDraft,
-    UsageDashboard, UsageRequestSummary, UsageTotals,
+    UsageDailySummary, UsageDashboard, UsageDimensionSummary, UsageFilterOption,
+    UsageFilterOptions, UsageHourlySummary, UsageRequestSummary, UsageScopeQuery,
+    UsageScopeSummary, UsageTotals,
 };
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{M, Migrations};
@@ -1091,7 +1093,11 @@ impl Database {
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
-    pub fn usage_dashboard(&self, limit: u32) -> Result<UsageDashboard, DatabaseError> {
+    pub fn usage_dashboard(
+        &self,
+        limit: u32,
+        activity_since_ms: i64,
+    ) -> Result<UsageDashboard, DatabaseError> {
         let limit = limit.clamp(1, 100);
         let connection = self
             .connection
@@ -1145,10 +1151,359 @@ impl Database {
                 usage_accuracy: row.get(13)?,
             })
         })?;
+        let recent_requests = requests.collect::<Result<Vec<_>, _>>()?;
+        let mut daily_statement = connection.prepare(
+            "SELECT strftime('%Y-%m-%d', started_at_ms / 1000, 'unixepoch', 'localtime'),
+                    COUNT(*),
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(cached_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(total_tokens), 0)
+             FROM usage_requests
+             WHERE started_at_ms >= ?1
+             GROUP BY 1
+             ORDER BY 1 ASC",
+        )?;
+        let daily_usage = daily_statement
+            .query_map([activity_since_ms.max(0)], |row| {
+                Ok(UsageDailySummary {
+                    date: row.get(0)?,
+                    request_count: nonnegative_i64(row.get(1)?, 1)?,
+                    input_tokens: nonnegative_i64(row.get(2)?, 2)?,
+                    cached_tokens: nonnegative_i64(row.get(3)?, 3)?,
+                    output_tokens: nonnegative_i64(row.get(4)?, 4)?,
+                    total_tokens: nonnegative_i64(row.get(5)?, 5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(UsageDashboard {
             totals,
-            recent_requests: requests.collect::<Result<Vec<_>, _>>()?,
+            recent_requests,
+            daily_usage,
         })
+    }
+
+    pub fn usage_scope(&self, query: &UsageScopeQuery) -> Result<UsageScopeSummary, DatabaseError> {
+        validate_usage_scope_query(query)?;
+        let limit = query.limit.clamp(1, 100);
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let (
+            request_count,
+            input_tokens,
+            cached_tokens,
+            output_tokens,
+            total_tokens,
+            measured_request_count,
+            succeeded_request_count,
+        ) = connection.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(u.input_tokens), 0),
+                    COALESCE(SUM(u.cached_tokens), 0),
+                    COALESCE(SUM(u.output_tokens), 0),
+                    COALESCE(SUM(u.total_tokens), 0),
+                    COUNT(u.total_tokens),
+                    COALESCE(SUM(CASE WHEN u.status = 'succeeded' THEN 1 ELSE 0 END), 0)
+             FROM usage_requests u
+             WHERE u.started_at_ms >= ?1 AND u.started_at_ms < ?2
+               AND (?3 IS NULL OR u.client_app_id = ?3)
+               AND (?4 IS NULL OR u.resolved_model = ?4)
+               AND (?5 IS NULL OR u.backend_id = ?5)
+               AND (?6 IS NULL OR u.status = ?6)",
+            params![
+                query.start_at_ms,
+                query.end_at_ms_exclusive,
+                query.client_app_id.as_deref(),
+                query.resolved_model.as_deref(),
+                query.backend_id.as_deref(),
+                query.status.as_deref(),
+            ],
+            |row| {
+                Ok((
+                    nonnegative_i64(row.get(0)?, 0)?,
+                    nonnegative_i64(row.get(1)?, 1)?,
+                    nonnegative_i64(row.get(2)?, 2)?,
+                    nonnegative_i64(row.get(3)?, 3)?,
+                    nonnegative_i64(row.get(4)?, 4)?,
+                    nonnegative_i64(row.get(5)?, 5)?,
+                    nonnegative_i64(row.get(6)?, 6)?,
+                ))
+            },
+        )?;
+        let totals = UsageTotals {
+            request_count,
+            input_tokens,
+            cached_tokens,
+            output_tokens,
+            total_tokens,
+        };
+
+        let mut client_statement = connection.prepare(
+            "SELECT u.client_app_id, COALESCE(c.display_name, u.client_app_id), COUNT(*),
+                    COALESCE(SUM(u.total_tokens), 0)
+             FROM usage_requests u
+             LEFT JOIN client_apps c ON c.id = u.client_app_id
+             WHERE u.started_at_ms >= ?1 AND u.started_at_ms < ?2
+               AND (?3 IS NULL OR u.client_app_id = ?3)
+               AND (?4 IS NULL OR u.resolved_model = ?4)
+               AND (?5 IS NULL OR u.backend_id = ?5)
+               AND (?6 IS NULL OR u.status = ?6)
+             GROUP BY u.client_app_id, COALESCE(c.display_name, u.client_app_id)
+             ORDER BY 4 DESC, 3 DESC, 2 ASC
+             LIMIT 5",
+        )?;
+        let client_usage = client_statement
+            .query_map(
+                params![
+                    query.start_at_ms,
+                    query.end_at_ms_exclusive,
+                    query.client_app_id.as_deref(),
+                    query.resolved_model.as_deref(),
+                    query.backend_id.as_deref(),
+                    query.status.as_deref(),
+                ],
+                |row| {
+                    Ok(UsageDimensionSummary {
+                        id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        request_count: nonnegative_i64(row.get(2)?, 2)?,
+                        total_tokens: nonnegative_i64(row.get(3)?, 3)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut request_statement = connection.prepare(
+            "SELECT u.request_id, u.client_app_id,
+                    COALESCE(c.display_name, u.client_app_id),
+                    u.requested_model, u.resolved_model, u.backend_id,
+                    u.started_at_ms, u.completed_at_ms,
+                    u.input_tokens, u.cached_tokens, u.output_tokens, u.total_tokens,
+                    u.status, u.usage_accuracy
+             FROM usage_requests u
+             LEFT JOIN client_apps c ON c.id = u.client_app_id
+             WHERE u.started_at_ms >= ?1 AND u.started_at_ms < ?2
+               AND (?3 IS NULL OR u.client_app_id = ?3)
+               AND (?4 IS NULL OR u.resolved_model = ?4)
+               AND (?5 IS NULL OR u.backend_id = ?5)
+               AND (?6 IS NULL OR u.status = ?6)
+             ORDER BY u.started_at_ms DESC, u.request_id
+             LIMIT ?7",
+        )?;
+        let recent_requests = request_statement
+            .query_map(
+                params![
+                    query.start_at_ms,
+                    query.end_at_ms_exclusive,
+                    query.client_app_id.as_deref(),
+                    query.resolved_model.as_deref(),
+                    query.backend_id.as_deref(),
+                    query.status.as_deref(),
+                    limit,
+                ],
+                |row| {
+                    Ok(UsageRequestSummary {
+                        request_id: row.get(0)?,
+                        client_app_id: row.get(1)?,
+                        client_display_name: row.get(2)?,
+                        requested_model: row.get(3)?,
+                        resolved_model: row.get(4)?,
+                        backend_id: row.get(5)?,
+                        started_at_ms: row.get(6)?,
+                        completed_at_ms: row.get(7)?,
+                        input_tokens: optional_nonnegative_i64(row.get(8)?, 8)?,
+                        cached_tokens: optional_nonnegative_i64(row.get(9)?, 9)?,
+                        output_tokens: optional_nonnegative_i64(row.get(10)?, 10)?,
+                        total_tokens: optional_nonnegative_i64(row.get(11)?, 11)?,
+                        status: row.get(12)?,
+                        usage_accuracy: row.get(13)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut daily_statement = connection.prepare(
+            "SELECT strftime('%Y-%m-%d', u.started_at_ms / 1000, 'unixepoch', 'localtime'),
+                    COUNT(*), COALESCE(SUM(u.input_tokens), 0),
+                    COALESCE(SUM(u.cached_tokens), 0), COALESCE(SUM(u.output_tokens), 0),
+                    COALESCE(SUM(u.total_tokens), 0)
+             FROM usage_requests u
+             WHERE u.started_at_ms >= ?1 AND u.started_at_ms < ?2
+               AND (?3 IS NULL OR u.client_app_id = ?3)
+               AND (?4 IS NULL OR u.resolved_model = ?4)
+               AND (?5 IS NULL OR u.backend_id = ?5)
+               AND (?6 IS NULL OR u.status = ?6)
+             GROUP BY 1 ORDER BY 1 ASC",
+        )?;
+        let daily_usage = daily_statement
+            .query_map(
+                params![
+                    query.series_start_at_ms,
+                    query.series_end_at_ms_exclusive,
+                    query.client_app_id.as_deref(),
+                    query.resolved_model.as_deref(),
+                    query.backend_id.as_deref(),
+                    query.status.as_deref(),
+                ],
+                |row| {
+                    Ok(UsageDailySummary {
+                        date: row.get(0)?,
+                        request_count: nonnegative_i64(row.get(1)?, 1)?,
+                        input_tokens: nonnegative_i64(row.get(2)?, 2)?,
+                        cached_tokens: nonnegative_i64(row.get(3)?, 3)?,
+                        output_tokens: nonnegative_i64(row.get(4)?, 4)?,
+                        total_tokens: nonnegative_i64(row.get(5)?, 5)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut hourly_statement = connection.prepare(
+            "SELECT CAST(strftime('%H', u.started_at_ms / 1000, 'unixepoch', 'localtime') AS INTEGER),
+                    COUNT(*), COALESCE(SUM(u.input_tokens), 0),
+                    COALESCE(SUM(u.cached_tokens), 0), COALESCE(SUM(u.output_tokens), 0),
+                    COALESCE(SUM(u.total_tokens), 0)
+             FROM usage_requests u
+             WHERE u.started_at_ms >= ?1 AND u.started_at_ms < ?2
+               AND (?3 IS NULL OR u.client_app_id = ?3)
+               AND (?4 IS NULL OR u.resolved_model = ?4)
+               AND (?5 IS NULL OR u.backend_id = ?5)
+               AND (?6 IS NULL OR u.status = ?6)
+             GROUP BY 1 ORDER BY 1 ASC",
+        )?;
+        let hourly_usage = hourly_statement
+            .query_map(
+                params![
+                    query.start_at_ms,
+                    query.end_at_ms_exclusive,
+                    query.client_app_id.as_deref(),
+                    query.resolved_model.as_deref(),
+                    query.backend_id.as_deref(),
+                    query.status.as_deref(),
+                ],
+                |row| {
+                    let hour = u8::try_from(row.get::<_, i64>(0)?)
+                        .ok()
+                        .filter(|hour| *hour < 24)
+                        .ok_or_else(|| invalid_column("usage hour"))?;
+                    Ok(UsageHourlySummary {
+                        hour,
+                        request_count: nonnegative_i64(row.get(1)?, 1)?,
+                        input_tokens: nonnegative_i64(row.get(2)?, 2)?,
+                        cached_tokens: nonnegative_i64(row.get(3)?, 3)?,
+                        output_tokens: nonnegative_i64(row.get(4)?, 4)?,
+                        total_tokens: nonnegative_i64(row.get(5)?, 5)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(UsageScopeSummary {
+            totals,
+            measured_request_count,
+            succeeded_request_count,
+            client_usage,
+            recent_requests,
+            daily_usage,
+            hourly_usage,
+        })
+    }
+
+    pub fn usage_filter_options(&self) -> Result<UsageFilterOptions, DatabaseError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let (earliest_usage_at_ms, latest_usage_at_ms) = connection.query_row(
+            "SELECT MIN(started_at_ms), MAX(started_at_ms) FROM usage_requests",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut client_statement = connection.prepare(
+            "SELECT DISTINCT u.client_app_id, COALESCE(c.display_name, u.client_app_id)
+             FROM usage_requests u LEFT JOIN client_apps c ON c.id = u.client_app_id
+             ORDER BY 2 ASC",
+        )?;
+        let clients = client_statement
+            .query_map([], |row| {
+                Ok(UsageFilterOption {
+                    value: row.get(0)?,
+                    label: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let distinct_options = |column: &str| -> Result<Vec<UsageFilterOption>, DatabaseError> {
+            let mut statement = connection.prepare(&format!(
+                "SELECT DISTINCT {column} FROM usage_requests ORDER BY {column} ASC"
+            ))?;
+            Ok(statement
+                .query_map([], |row| {
+                    let value = row.get::<_, String>(0)?;
+                    Ok(UsageFilterOption {
+                        label: value.clone(),
+                        value,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?)
+        };
+        Ok(UsageFilterOptions {
+            earliest_usage_at_ms,
+            latest_usage_at_ms,
+            clients,
+            models: distinct_options("resolved_model")?,
+            backends: distinct_options("backend_id")?,
+        })
+    }
+
+    pub fn usage_hourly(&self, date: &str) -> Result<Vec<UsageHourlySummary>, DatabaseError> {
+        if !is_valid_date_key(date) {
+            return Err(DatabaseError::InvalidData(
+                "usage date must be a valid YYYY-MM-DD calendar date".to_owned(),
+            ));
+        }
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let mut statement = connection.prepare(
+            "WITH bounds AS (
+                SELECT
+                    CAST(strftime('%s', ?1 || ' 00:00:00', 'utc') AS INTEGER) * 1000 AS start_ms,
+                    CAST(strftime('%s', date(?1, '+1 day') || ' 00:00:00', 'utc') AS INTEGER) * 1000 AS end_ms
+             )
+             SELECT CAST(strftime('%H', u.started_at_ms / 1000, 'unixepoch', 'localtime') AS INTEGER),
+                    COUNT(*),
+                    COALESCE(SUM(u.input_tokens), 0),
+                    COALESCE(SUM(u.cached_tokens), 0),
+                    COALESCE(SUM(u.output_tokens), 0),
+                    COALESCE(SUM(u.total_tokens), 0)
+             FROM usage_requests u
+             CROSS JOIN bounds
+             WHERE u.started_at_ms >= bounds.start_ms
+               AND u.started_at_ms < bounds.end_ms
+             GROUP BY 1
+             ORDER BY 1 ASC",
+        )?;
+        statement
+            .query_map([date], |row| {
+                let raw_hour = row.get::<_, i64>(0)?;
+                let hour = u8::try_from(raw_hour)
+                    .ok()
+                    .filter(|hour| *hour < 24)
+                    .ok_or_else(|| invalid_column("usage hour"))?;
+                Ok(UsageHourlySummary {
+                    hour,
+                    request_count: nonnegative_i64(row.get(1)?, 1)?,
+                    input_tokens: nonnegative_i64(row.get(2)?, 2)?,
+                    cached_tokens: nonnegative_i64(row.get(3)?, 3)?,
+                    output_tokens: nonnegative_i64(row.get(4)?, 4)?,
+                    total_tokens: nonnegative_i64(row.get(5)?, 5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn usage_request(&self, request_id: &str) -> Result<UsageRequestRecord, DatabaseError> {
@@ -1885,6 +2240,83 @@ fn optional_nonnegative_i64(value: Option<i64>, column: usize) -> rusqlite::Resu
         .transpose()
 }
 
+fn validate_usage_scope_query(query: &UsageScopeQuery) -> Result<(), DatabaseError> {
+    const MAX_RANGE_MS: i64 = 5 * 366 * 24 * 60 * 60 * 1_000;
+    if query.start_at_ms < 0
+        || query.end_at_ms_exclusive <= query.start_at_ms
+        || query.end_at_ms_exclusive - query.start_at_ms > MAX_RANGE_MS
+    {
+        return Err(DatabaseError::InvalidData(
+            "usage scope must be a positive range no longer than five years".to_owned(),
+        ));
+    }
+    if query.series_start_at_ms < 0
+        || query.series_end_at_ms_exclusive <= query.series_start_at_ms
+        || query.series_end_at_ms_exclusive - query.series_start_at_ms > MAX_RANGE_MS
+    {
+        return Err(DatabaseError::InvalidData(
+            "usage series scope must be a positive range no longer than five years".to_owned(),
+        ));
+    }
+    for (name, value) in [
+        ("client", query.client_app_id.as_deref()),
+        ("model", query.resolved_model.as_deref()),
+        ("backend", query.backend_id.as_deref()),
+    ] {
+        if value.is_some_and(|value| {
+            value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        }) {
+            return Err(DatabaseError::InvalidData(format!(
+                "usage {name} filter is invalid"
+            )));
+        }
+    }
+    if query
+        .status
+        .as_deref()
+        .is_some_and(|status| !matches!(status, "succeeded" | "failed" | "cancelled"))
+    {
+        return Err(DatabaseError::InvalidData(
+            "usage status filter is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_valid_date_key(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| index != 4 && index != 7 && !byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let Some(year) = value[0..4].parse::<u16>().ok() else {
+        return false;
+    };
+    let Some(month) = value[5..7].parse::<u8>().ok() else {
+        return false;
+    };
+    let Some(day) = value[8..10].parse::<u8>().ok() else {
+        return false;
+    };
+    if year < 1970 || !(1..=12).contains(&month) {
+        return false;
+    }
+    let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        2 if leap_year => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=days_in_month).contains(&day)
+}
+
 fn write_local_model_snapshot(
     transaction: &Transaction<'_>,
     model: &LocalModelSummary,
@@ -2259,6 +2691,10 @@ fn migrations<'a>() -> Migrations<'a> {
                 WHERE api_key_hashes.client_app_id = integrations.id
             );",
         ),
+        M::up(
+            "CREATE INDEX usage_requests_started
+                ON usage_requests(started_at_ms DESC);",
+        ),
     ])
 }
 
@@ -2419,7 +2855,7 @@ mod tests {
     fn applies_initial_migration() {
         let database = Database::open_in_memory().expect("in-memory database");
 
-        assert_eq!(database.schema_version().expect("schema version"), 8);
+        assert_eq!(database.schema_version().expect("schema version"), 9);
     }
 
     #[test]
@@ -2636,7 +3072,7 @@ mod tests {
         assert_eq!(result.audit_events_deleted, 0);
         assert_eq!(
             database
-                .usage_dashboard(50)
+                .usage_dashboard(50, 0)
                 .expect("dashboard")
                 .totals
                 .request_count,
@@ -3035,13 +3471,79 @@ mod tests {
             })
             .expect("store failed usage");
 
-        let dashboard = database.usage_dashboard(50).expect("usage dashboard");
+        let dashboard = database.usage_dashboard(50, 0).expect("usage dashboard");
         assert_eq!(dashboard.totals.request_count, 2);
         assert_eq!(dashboard.totals.input_tokens, 14);
         assert_eq!(dashboard.totals.cached_tokens, 3);
         assert_eq!(dashboard.totals.output_tokens, 9);
         assert_eq!(dashboard.totals.total_tokens, 23);
         assert_eq!(dashboard.recent_requests.len(), 2);
+        assert_eq!(dashboard.daily_usage.len(), 1);
+        assert_eq!(dashboard.daily_usage[0].request_count, 2);
+        assert_eq!(dashboard.daily_usage[0].input_tokens, 14);
+        assert_eq!(dashboard.daily_usage[0].cached_tokens, 3);
+        assert_eq!(dashboard.daily_usage[0].output_tokens, 9);
+        assert_eq!(dashboard.daily_usage[0].total_tokens, 23);
+        let scoped = database
+            .usage_scope(&UsageScopeQuery {
+                start_at_ms: 0,
+                end_at_ms_exclusive: 150,
+                series_start_at_ms: 0,
+                series_end_at_ms_exclusive: 300,
+                client_app_id: Some("model-test".to_owned()),
+                resolved_model: Some("qwen-test".to_owned()),
+                backend_id: Some("llama.cpp".to_owned()),
+                status: None,
+                limit: 50,
+            })
+            .expect("scoped usage");
+        assert_eq!(scoped.totals.request_count, 1);
+        assert_eq!(scoped.totals.total_tokens, 23);
+        assert_eq!(scoped.measured_request_count, 1);
+        assert_eq!(scoped.succeeded_request_count, 1);
+        assert_eq!(scoped.client_usage[0].total_tokens, 23);
+        assert_eq!(scoped.recent_requests.len(), 1);
+        assert_eq!(scoped.daily_usage[0].request_count, 2);
+        assert_eq!(scoped.hourly_usage[0].request_count, 1);
+
+        let failed_scope = database
+            .usage_scope(&UsageScopeQuery {
+                start_at_ms: 0,
+                end_at_ms_exclusive: 300,
+                series_start_at_ms: 0,
+                series_end_at_ms_exclusive: 300,
+                client_app_id: None,
+                resolved_model: None,
+                backend_id: None,
+                status: Some("failed".to_owned()),
+                limit: 50,
+            })
+            .expect("failed usage scope");
+        assert_eq!(failed_scope.totals.request_count, 1);
+        assert_eq!(failed_scope.measured_request_count, 0);
+        assert_eq!(failed_scope.succeeded_request_count, 0);
+        assert_eq!(failed_scope.daily_usage[0].request_count, 1);
+        let options = database.usage_filter_options().expect("usage filters");
+        assert_eq!(options.earliest_usage_at_ms, Some(100));
+        assert_eq!(options.latest_usage_at_ms, Some(200));
+        assert_eq!(options.clients[0].value, "model-test");
+        assert_eq!(options.models[0].value, "qwen-test");
+        assert_eq!(options.backends[0].value, "llama.cpp");
+        let recent_activity = database
+            .usage_dashboard(50, 150)
+            .expect("filtered usage dashboard");
+        assert_eq!(recent_activity.recent_requests.len(), 2);
+        assert_eq!(recent_activity.daily_usage.len(), 1);
+        assert_eq!(recent_activity.daily_usage[0].request_count, 1);
+        assert_eq!(recent_activity.daily_usage[0].total_tokens, 0);
+        let hourly = database.usage_hourly("1970-01-01").expect("hourly usage");
+        assert_eq!(hourly.len(), 1);
+        assert_eq!(hourly[0].request_count, 2);
+        assert_eq!(hourly[0].input_tokens, 14);
+        assert_eq!(hourly[0].cached_tokens, 3);
+        assert_eq!(hourly[0].output_tokens, 9);
+        assert_eq!(hourly[0].total_tokens, 23);
+        assert!(database.usage_hourly("2026-02-30").is_err());
         assert_eq!(dashboard.recent_requests[0].request_id, "request-failed");
         assert_eq!(
             dashboard.recent_requests[1].client_display_name,
@@ -3104,7 +3606,7 @@ mod tests {
         );
 
         let dashboard_started = std::time::Instant::now();
-        let dashboard = database.usage_dashboard(50).expect("scale dashboard");
+        let dashboard = database.usage_dashboard(50, 0).expect("scale dashboard");
         let dashboard_elapsed = dashboard_started.elapsed();
         assert_eq!(dashboard.totals.request_count, ROW_COUNT);
         assert_eq!(dashboard.totals.input_tokens, ROW_COUNT * 10);

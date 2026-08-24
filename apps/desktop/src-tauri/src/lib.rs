@@ -41,7 +41,7 @@ use hal100_protocol::{
     ModelRemovalKind, ModelRemovalPlan, ModelRemovalResult, ModelTestResult, OnboardingCompletion,
     OpenCodeApplyResult, OpenCodeConfigPlan, OpenCodeDetection, OpenCodeProjectDiagnosis,
     RemoteModelRepository, RemoteModelSearchResults, RetentionSettingsDraft, ServiceState,
-    UsageDashboard,
+    UsageDashboard, UsageFilterOptions, UsageHourlySummary, UsageScopeQuery, UsageScopeSummary,
 };
 use tauri::{
     Manager, State,
@@ -56,6 +56,7 @@ use crate::agent_service::AgentService;
 const TRAY_OPEN_MENU_ID: &str = "open";
 const TRAY_QUIT_MENU_ID: &str = "quit";
 const DEV_HIDE_WINDOW_ARGUMENT: &str = "--hal100-dev-hide-window";
+const AUDIT_LOG_DISPLAY_LIMIT: u32 = 50;
 #[cfg(dev)]
 const DEV_FRONTEND_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 #[cfg(dev)]
@@ -788,7 +789,7 @@ async fn apply_data_retention(
 #[tauri::command]
 async fn get_audit_log(state: State<'_, DatabaseState>) -> Result<AuditLog, String> {
     let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.audit_log(200))
+    tauri::async_runtime::spawn_blocking(move || database.audit_log(AUDIT_LOG_DISPLAY_LIMIT))
         .await
         .map_err(|error| format!("读取审计记录任务异常结束：{error}"))?
         .map_err(|error| error.to_string())
@@ -1433,9 +1434,46 @@ async fn test_active_model(
 #[tauri::command]
 async fn get_usage_dashboard(state: State<'_, DatabaseState>) -> Result<UsageDashboard, String> {
     let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.usage_dashboard(50))
+    const ACTIVITY_WINDOW_MS: i64 = 732 * 24 * 60 * 60 * 1_000;
+    let activity_since_ms = unix_time_ms().saturating_sub(ACTIVITY_WINDOW_MS);
+    tauri::async_runtime::spawn_blocking(move || database.usage_dashboard(50, activity_since_ms))
         .await
         .map_err(|error| format!("读取 Token 统计任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_usage_hourly(
+    state: State<'_, DatabaseState>,
+    date: String,
+) -> Result<Vec<UsageHourlySummary>, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.usage_hourly(&date))
+        .await
+        .map_err(|error| format!("读取分时 Token 统计任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_usage_scope(
+    state: State<'_, DatabaseState>,
+    query: UsageScopeQuery,
+) -> Result<UsageScopeSummary, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.usage_scope(&query))
+        .await
+        .map_err(|error| format!("读取筛选用量任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_usage_filter_options(
+    state: State<'_, DatabaseState>,
+) -> Result<UsageFilterOptions, String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.usage_filter_options())
+        .await
+        .map_err(|error| format!("读取用量筛选项任务异常结束：{error}"))?
         .map_err(|error| error.to_string())
 }
 
@@ -2074,6 +2112,9 @@ pub fn run() {
             force_stop_llama_cpp,
             test_active_model,
             get_usage_dashboard,
+            get_usage_hourly,
+            get_usage_scope,
+            get_usage_filter_options,
             get_agent_ecosystem_catalog,
             select_and_plan_gguf_import,
             apply_gguf_import,

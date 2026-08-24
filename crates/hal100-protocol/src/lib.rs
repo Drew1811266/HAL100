@@ -84,7 +84,11 @@ pub use tool_broker::{
     SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload, ToolCallRequestPayload, ToolCallResultPayload,
     ToolCallResultStatus,
 };
-pub use usage::{ModelTestResult, UsageDashboard, UsageRequestSummary, UsageTotals};
+pub use usage::{
+    ModelTestResult, UsageDailySummary, UsageDashboard, UsageDimensionSummary, UsageFilterOption,
+    UsageFilterOptions, UsageHourlySummary, UsageRequestSummary, UsageScopeQuery,
+    UsageScopeSummary, UsageTotals,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

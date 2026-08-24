@@ -490,9 +490,70 @@ export interface UsageRequestSummary {
   usageAccuracy: string;
 }
 
+export interface UsageDailySummary {
+  date: string;
+  requestCount: number;
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export interface UsageHourlySummary {
+  hour: number;
+  requestCount: number;
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
 export interface UsageDashboard {
   totals: UsageTotals;
   recentRequests: UsageRequestSummary[];
+  dailyUsage: UsageDailySummary[];
+}
+
+export interface UsageScopeQuery {
+  startAtMs: number;
+  endAtMsExclusive: number;
+  seriesStartAtMs: number;
+  seriesEndAtMsExclusive: number;
+  clientAppId: string | null;
+  resolvedModel: string | null;
+  backendId: string | null;
+  status: "succeeded" | "failed" | "cancelled" | null;
+  limit: number;
+}
+
+export interface UsageDimensionSummary {
+  id: string;
+  displayName: string;
+  requestCount: number;
+  totalTokens: number;
+}
+
+export interface UsageScopeSummary {
+  totals: UsageTotals;
+  measuredRequestCount: number;
+  succeededRequestCount: number;
+  clientUsage: UsageDimensionSummary[];
+  recentRequests: UsageRequestSummary[];
+  dailyUsage: UsageDailySummary[];
+  hourlyUsage: UsageHourlySummary[];
+}
+
+export interface UsageFilterOption {
+  value: string;
+  label: string;
+}
+
+export interface UsageFilterOptions {
+  earliestUsageAtMs: number | null;
+  latestUsageAtMs: number | null;
+  clients: UsageFilterOption[];
+  models: UsageFilterOption[];
+  backends: UsageFilterOption[];
 }
 
 export interface DesktopSettings {
@@ -744,7 +805,7 @@ export interface AgentActionResult {
 
 const developmentOverview: AppOverview = {
   appName: "HAL100",
-  version: "1.0.2",
+  version: "1.0.3",
   phase: "迭代 22 · 版本化受管部署配方",
   gatewayState: "运行中",
   databaseState: "已就绪",
@@ -895,6 +956,7 @@ const browserUsageDashboard: UsageDashboard = {
     totalTokens: 0,
   },
   recentRequests: [],
+  dailyUsage: [],
 };
 
 const browserUsagePreviewRequests: UsageRequestSummary[] = [
@@ -932,18 +994,53 @@ const browserUsagePreviewRequests: UsageRequestSummary[] = [
   };
 });
 
+const browserUsagePreviewDailyUsage: UsageDailySummary[] = Array.from(
+  { length: 732 },
+  (_, index) => {
+    const date = new Date();
+    date.setHours(12, 0, 0, 0);
+    date.setDate(date.getDate() - (731 - index));
+    const weekday = date.getDay();
+    const cycle = index % 19;
+    const requestCount =
+      weekday === 0 || (cycle > 1 && cycle < 6)
+        ? 0
+        : 1 + ((index * 7 + (weekday === 2 ? 3 : 0)) % 8);
+    const totalTokens = requestCount * (680 + ((index * 173) % 920));
+    const outputTokens = Math.round(totalTokens * 0.21);
+    const cachedTokens = Math.round(totalTokens * 0.18);
+    return {
+      date: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
+      requestCount,
+      inputTokens: totalTokens - outputTokens,
+      cachedTokens,
+      outputTokens,
+      totalTokens,
+    };
+  },
+).filter((day) => day.requestCount > 0);
+
+const browserUsagePreviewActivityTotals = browserUsagePreviewDailyUsage.reduce(
+  (totals, day) => ({
+    requestCount: totals.requestCount + day.requestCount,
+    inputTokens: totals.inputTokens + day.inputTokens,
+    cachedTokens: totals.cachedTokens + day.cachedTokens,
+    outputTokens: totals.outputTokens + day.outputTokens,
+    totalTokens: totals.totalTokens + day.totalTokens,
+  }),
+  { requestCount: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, totalTokens: 0 },
+);
+
 const browserUsagePreviewDashboard: UsageDashboard = {
-  totals: browserUsagePreviewRequests.reduce<UsageTotals>(
-    (totals, request) => ({
-      requestCount: totals.requestCount + 1,
-      inputTokens: totals.inputTokens + (request.inputTokens ?? 0),
-      cachedTokens: totals.cachedTokens + (request.cachedTokens ?? 0),
-      outputTokens: totals.outputTokens + (request.outputTokens ?? 0),
-      totalTokens: totals.totalTokens + (request.totalTokens ?? 0),
-    }),
-    { requestCount: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, totalTokens: 0 },
-  ),
+  totals: {
+    requestCount: browserUsagePreviewActivityTotals.requestCount,
+    inputTokens: browserUsagePreviewActivityTotals.inputTokens,
+    cachedTokens: browserUsagePreviewActivityTotals.cachedTokens,
+    outputTokens: browserUsagePreviewActivityTotals.outputTokens,
+    totalTokens: browserUsagePreviewActivityTotals.totalTokens,
+  },
   recentRequests: [...browserUsagePreviewRequests].reverse(),
+  dailyUsage: browserUsagePreviewDailyUsage,
 };
 
 const browserDesktopSettings: DesktopSettings = {
@@ -1515,6 +1612,148 @@ export async function getUsageDashboard(): Promise<UsageDashboard> {
     return preview === "usage" ? browserUsagePreviewDashboard : browserUsageDashboard;
   }
   return invoke<UsageDashboard>("get_usage_dashboard");
+}
+
+export async function getUsageHourly(date: string): Promise<UsageHourlySummary[]> {
+  if (!isTauriRuntime()) {
+    const day = browserUsagePreviewDailyUsage.find((entry) => entry.date === date);
+    if (!day) return [];
+    const hours = [8, 10, 13, 16, 20];
+    let remainingRequests = day.requestCount;
+    let remainingInputTokens = day.inputTokens;
+    let remainingCachedTokens = day.cachedTokens;
+    let remainingOutputTokens = day.outputTokens;
+    let remainingTokens = day.totalTokens;
+    return hours
+      .map((hour, index) => {
+        const slotsLeft = hours.length - index;
+        const requestCount =
+          index === hours.length - 1
+            ? remainingRequests
+            : Math.floor(remainingRequests / slotsLeft);
+        const totalTokens =
+          index === hours.length - 1 ? remainingTokens : Math.floor(remainingTokens / slotsLeft);
+        const inputTokens =
+          index === hours.length - 1
+            ? remainingInputTokens
+            : Math.floor(remainingInputTokens / slotsLeft);
+        const cachedTokens =
+          index === hours.length - 1
+            ? remainingCachedTokens
+            : Math.floor(remainingCachedTokens / slotsLeft);
+        const outputTokens =
+          index === hours.length - 1
+            ? remainingOutputTokens
+            : Math.floor(remainingOutputTokens / slotsLeft);
+        remainingRequests -= requestCount;
+        remainingInputTokens -= inputTokens;
+        remainingCachedTokens -= cachedTokens;
+        remainingOutputTokens -= outputTokens;
+        remainingTokens -= totalTokens;
+        return {
+          hour,
+          requestCount,
+          inputTokens,
+          cachedTokens,
+          outputTokens,
+          totalTokens,
+        };
+      })
+      .filter((entry) => entry.requestCount > 0);
+  }
+  return invoke<UsageHourlySummary[]>("get_usage_hourly", { date });
+}
+
+export async function getUsageScope(query: UsageScopeQuery): Promise<UsageScopeSummary> {
+  if (!isTauriRuntime()) {
+    const dailyUsage = browserUsagePreviewDailyUsage.filter((entry) => {
+      const timestamp = new Date(`${entry.date}T12:00:00`).getTime();
+      return timestamp >= query.seriesStartAtMs && timestamp < query.seriesEndAtMsExclusive;
+    });
+    const scopedDailyUsage = dailyUsage.filter((entry) => {
+      const timestamp = new Date(`${entry.date}T12:00:00`).getTime();
+      return timestamp >= query.startAtMs && timestamp < query.endAtMsExclusive;
+    });
+    const dimensionMatches =
+      (!query.resolvedModel || query.resolvedModel === "Qwen3.5-2B-GGUF") &&
+      (!query.backendId || query.backendId === "llama-cpp-managed") &&
+      (!query.status || query.status === "succeeded");
+    const totals = dimensionMatches
+      ? scopedDailyUsage.reduce<UsageTotals>(
+          (sum, entry) => ({
+            requestCount: sum.requestCount + entry.requestCount,
+            inputTokens: sum.inputTokens + entry.inputTokens,
+            cachedTokens: sum.cachedTokens + entry.cachedTokens,
+            outputTokens: sum.outputTokens + entry.outputTokens,
+            totalTokens: sum.totalTokens + entry.totalTokens,
+          }),
+          { requestCount: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, totalTokens: 0 },
+        )
+      : { requestCount: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, totalTokens: 0 };
+    const recentRequests = dimensionMatches
+      ? browserUsagePreviewRequests
+          .filter(
+            (request) =>
+              request.startedAtMs >= query.startAtMs &&
+              request.startedAtMs < query.endAtMsExclusive &&
+              (!query.clientAppId || request.clientAppId === query.clientAppId),
+          )
+          .sort((a, b) => b.startedAtMs - a.startedAtMs)
+          .slice(0, query.limit)
+      : [];
+    const clientTotals = new Map<string, UsageDimensionSummary>();
+    for (const request of recentRequests) {
+      const current = clientTotals.get(request.clientAppId);
+      clientTotals.set(request.clientAppId, {
+        id: request.clientAppId,
+        displayName: request.clientDisplayName,
+        requestCount: (current?.requestCount ?? 0) + 1,
+        totalTokens: (current?.totalTokens ?? 0) + (request.totalTokens ?? 0),
+      });
+    }
+    if (dimensionMatches && totals.requestCount > 0 && clientTotals.size === 0) {
+      clientTotals.set("hal100-agent", {
+        id: "hal100-agent",
+        displayName: "HAL100 Agent",
+        requestCount: totals.requestCount,
+        totalTokens: totals.totalTokens,
+      });
+    }
+    const dayKey = new Date(query.startAtMs).toLocaleDateString("en-CA");
+    const hourlyUsage =
+      query.endAtMsExclusive - query.startAtMs <= 25 * 60 * 60 * 1_000
+        ? await getUsageHourly(dayKey)
+        : [];
+    return {
+      totals,
+      measuredRequestCount: totals.requestCount,
+      succeededRequestCount: totals.requestCount,
+      clientUsage: [...clientTotals.values()].sort((a, b) => b.totalTokens - a.totalTokens),
+      recentRequests,
+      dailyUsage: dimensionMatches ? dailyUsage : [],
+      hourlyUsage: dimensionMatches ? hourlyUsage : [],
+    };
+  }
+  return invoke<UsageScopeSummary>("get_usage_scope", { query });
+}
+
+export async function getUsageFilterOptions(): Promise<UsageFilterOptions> {
+  if (!isTauriRuntime()) {
+    const earliest = browserUsagePreviewDailyUsage.at(0)?.date;
+    const latest = browserUsagePreviewDailyUsage.at(-1)?.date;
+    return {
+      earliestUsageAtMs: earliest ? new Date(`${earliest}T12:00:00`).getTime() : null,
+      latestUsageAtMs: latest ? new Date(`${latest}T12:00:00`).getTime() : null,
+      clients: [
+        { value: "hal100-agent", label: "HAL100 Agent" },
+        { value: "hal100-model-test", label: "模型测试" },
+        { value: "opencode", label: "OpenCode" },
+      ],
+      models: [{ value: "Qwen3.5-2B-GGUF", label: "Qwen3.5-2B-GGUF" }],
+      backends: [{ value: "llama-cpp-managed", label: "llama-cpp-managed" }],
+    };
+  }
+  return invoke<UsageFilterOptions>("get_usage_filter_options");
 }
 
 export async function selectAndPlanGgufImport(): Promise<GgufImportPlan | null> {

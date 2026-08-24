@@ -159,6 +159,7 @@ describe("HAL100 application shell", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "操作记录" })).toBeInTheDocument();
+    expect(screen.getByText(/查看最近 50 条/)).toBeInTheDocument();
     expect(screen.getByText("尚无受控操作记录")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "操作记录筛选" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "筛选" })).toBeDisabled();
@@ -179,7 +180,7 @@ describe("HAL100 application shell", () => {
     expect(screen.queryByRole("heading", { name: "初始化配置中心" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "下载与启动" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "HAL100" })).toBeInTheDocument();
-    expect(await screen.findByText("v1.0.2")).toBeInTheDocument();
+    expect(await screen.findByText("v1.0.3")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "打开 Agent 诊断" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "已关闭" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存保留策略" })).toBeDisabled();
@@ -371,15 +372,68 @@ describe("HAL100 application shell", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "用量" })).toBeInTheDocument();
-    const summary = screen.getByRole("region", { name: "用量摘要" });
+    const summary = screen.getByRole("region", { name: "当前范围用量摘要" });
     expect(within(summary).getByText("请求数")).toBeInTheDocument();
-    expect(within(summary).getByRole("region", { name: "最近客户端" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "最近请求趋势" })).toBeInTheDocument();
+    expect(within(summary).getByRole("region", { name: "当前范围主要客户端" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Token 变化" })).toBeInTheDocument();
+    const tokenLegend = screen.getByRole("group", {
+      name: "点击可显示或隐藏 Token 类型",
+    });
+    expect(within(tokenLegend).getByText("输入（缓存命中）")).toBeInTheDocument();
+    expect(within(tokenLegend).getByText("输入（缓存未命中）")).toBeInTheDocument();
+    expect(within(tokenLegend).getByText("输出")).toBeInTheDocument();
+    const rangeSwitch = screen.getByRole("group", { name: "用量时间粒度" });
+    for (const range of ["年", "月", "周", "天"]) {
+      expect(within(rangeSwitch).getByRole("button", { name: range })).toBeInTheDocument();
+    }
+    expect(within(rangeSwitch).getByRole("button", { name: "月" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(within(rangeSwitch).getByRole("button", { name: "年" }));
+    expect((await screen.findAllByText(/按月汇总/)).length).toBeGreaterThan(0);
+
+    expect(screen.getByRole("heading", { name: "每日请求活动" })).toBeInTheDocument();
+    const heatmap = screen.getByRole("region", { name: "过去 365 天每日请求活动" });
+    expect(
+      within(heatmap).getByRole("table", { name: "过去 365 天每日请求格子" }),
+    ).toBeInTheDocument();
+    expect(within(heatmap).getAllByRole("button")).toHaveLength(365);
+    const activeDate = within(heatmap)
+      .getAllByRole("button")
+      .find((button) => /· [1-9]\d* 次请求/.test(button.getAttribute("aria-label") ?? ""));
+    expect(activeDate).toBeDefined();
+    const activeDateLabel = (activeDate as HTMLButtonElement).getAttribute("aria-label") ?? "";
+    fireEvent.click(activeDate as HTMLButtonElement);
+    expect(screen.queryByText("正在读取本机 Token 统计…")).not.toBeInTheDocument();
+    const dayRangeSwitch = await screen.findByRole("group", { name: "用量时间粒度" });
+    expect(within(dayRangeSwitch).getByRole("button", { name: "天" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect((await screen.findAllByText(/按小时汇总/)).length).toBeGreaterThan(0);
+    const selectedDate = within(
+      screen.getByRole("region", { name: "过去 365 天每日请求活动" }),
+    ).getByRole("button", { name: activeDateLabel });
+    expect(selectedDate).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(selectedDate);
+    expect(screen.queryByText("正在读取本机 Token 统计…")).not.toBeInTheDocument();
+    const restoredRangeSwitch = await screen.findByRole("group", { name: "用量时间粒度" });
+    expect(within(restoredRangeSwitch).getByRole("button", { name: "年" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      within(screen.getByRole("region", { name: "过去 365 天每日请求活动" })).getByRole("button", {
+        name: activeDateLabel,
+      }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(/三类数据都来自后端 usage 精确值/)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Token 构成" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("用量构成与请求明细"));
+    fireEvent.click(screen.getByText("Token 构成与请求明细"));
     expect(await screen.findByRole("heading", { name: "Token 构成" })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "累计 Token 构成环形图" })).toBeInTheDocument();
-    expect(screen.getByText(/不按字符数估算/)).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Token 构成比例" })).toBeInTheDocument();
+    expect(screen.getByText(/未返回 usage 的请求仍计入请求数/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled();
   });
 
