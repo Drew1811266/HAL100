@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 4,
+  "protocolVersion": 9,
   "id": "broker-call-1",
   "kind": "tool.call.request",
   "payload": {

@@ -16,6 +16,8 @@ mod usage;
 pub use agent::{
     AgentActionKind, AgentActionPlan, AgentActionResult, AgentCloudRunPreview,
     AgentCloudSessionPreview, AgentCloudSessionStatus, AgentCloudTarget, AgentComponentState,
+    AgentExternalIntegrationStatus, AgentOperationalEvent, AgentOperationalHealthObservation,
+    AgentOperationalHealthSample, AgentOperationalHealthStatus, AgentOperationalHistory,
     AgentPromptRequest, AgentProviderProtocol, AgentRunResult, AgentRuntimeCatalog,
     AgentRuntimeModel, AgentStatus, AgentSystemSummary, AgentToolEvent,
 };
@@ -72,12 +74,15 @@ pub use remote_models::{
 };
 use serde::{Deserialize, Serialize};
 pub use tool_broker::{
-    ENVIRONMENT_DIAGNOSTICS_TOOL, MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL,
-    OPENCODE_STATUS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
-    PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL, RUNTIME_CATALOG_TOOL,
-    SIMULATED_SYSTEM_SUMMARY_TOOL, SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload,
-    ToolCallRequestPayload, ToolCallResultPayload, ToolCallResultStatus,
+    ENVIRONMENT_DIAGNOSTICS_TOOL, EXTERNAL_AGENT_STATUS_TOOL, MODEL_CATALOG_SEARCH_TOOL,
+    MODEL_REPOSITORY_INSPECTION_TOOL, OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+    OPERATIONAL_HISTORY_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
+    PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+    PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+    PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
+    PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, SIMULATED_SYSTEM_SUMMARY_TOOL,
+    SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload, ToolCallRequestPayload, ToolCallResultPayload,
+    ToolCallResultStatus,
 };
 pub use usage::{ModelTestResult, UsageDashboard, UsageRequestSummary, UsageTotals};
 

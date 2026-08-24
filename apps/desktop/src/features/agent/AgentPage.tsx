@@ -1,11 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
-  Bot,
   Check,
   ChevronRight,
-  Cpu,
-  Moon,
   Play,
   RefreshCw,
   ShieldCheck,
@@ -50,6 +47,137 @@ const agentStateCopy: Record<AgentComponentState, { label: string; tone: string 
 
 const defaultAgentPrompt = "检测这台 Mac，并根据真实硬件给出适合的本地模型参数范围和量化建议。";
 
+type AgentTaskCategory = "diagnostics" | "models" | "integrations";
+
+interface AgentTaskTemplate {
+  category: AgentTaskCategory;
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+const agentTaskCategories: Record<AgentTaskCategory, string> = {
+  diagnostics: "诊断与修复",
+  models: "模型与运行",
+  integrations: "软件接入",
+};
+
+const agentTaskLibrary: AgentTaskTemplate[] = [
+  {
+    id: "diagnose-environment",
+    category: "diagnostics",
+    label: "全面诊断环境",
+    prompt: "全面诊断 HAL100 当前运行环境，只依据 Rust 诊断结果说明问题，不要执行修复。",
+  },
+  {
+    id: "plan-single-fix",
+    category: "diagnostics",
+    label: "生成单项修复计划",
+    prompt: "诊断并为 HAL100 当前最高优先级且可自动修复的问题生成修复计划；每次只处理一项。",
+  },
+  {
+    id: "analyze-failures",
+    category: "diagnostics",
+    label: "分析近期失败",
+    prompt:
+      "调试 HAL100 最近失败原因，读取近期脱敏运维记录并结合当前环境诊断说明最可能的问题；不要执行修复。",
+  },
+  {
+    id: "deployment-check",
+    category: "diagnostics",
+    label: "部署与运行检查",
+    prompt:
+      "执行 HAL100 部署前检查并观察运行稳定性；使用固定短时采样说明引擎、路由、后端和外部 Agent 的就绪状态，不要执行修复。",
+  },
+  {
+    id: "hardware-guidance",
+    category: "models",
+    label: "硬件与模型建议",
+    prompt: defaultAgentPrompt,
+  },
+  {
+    id: "search-model",
+    category: "models",
+    label: "搜索并规划模型下载",
+    prompt:
+      "在 HAL100 当前默认模型来源搜索 Qwen GGUF，检查合适的公开仓库，并为一个带可信 SHA-256 的 Q4_K_M 文件生成下载计划；不要直接下载。",
+  },
+  {
+    id: "model-status",
+    category: "models",
+    label: "模型与引擎状态",
+    prompt: "列出 HAL100 当前可用模型和引擎状态，并说明当前活动模型。",
+  },
+  {
+    id: "gateway-guidance",
+    category: "models",
+    label: "Gateway 配置说明",
+    prompt: "说明 HAL100 的本地 Gateway 和推理后端应该怎样配置。",
+  },
+  {
+    id: "switch-model",
+    category: "models",
+    label: "生成模型切换计划",
+    prompt: "读取可用模型，并为 Qwen3.5-2B Q4_K_M 生成启动或安全切换计划；不要直接执行。",
+  },
+  {
+    id: "install-engine",
+    category: "models",
+    label: "生成引擎安装计划",
+    prompt: "检查当前引擎状态，并生成安装 llama.cpp 的计划。",
+  },
+  {
+    id: "remove-model",
+    category: "models",
+    label: "生成模型移除计划",
+    prompt: "检查本地模型所有权，并为指定模型生成安全移除计划；不要直接删除任何文件。",
+  },
+  {
+    id: "remove-engine",
+    category: "models",
+    label: "生成引擎卸载计划",
+    prompt: "检查当前引擎和活动请求，并生成安全卸载 llama.cpp 的计划；不要直接执行。",
+  },
+  {
+    id: "install-pi",
+    category: "integrations",
+    label: "生成 Pi 私有安装计划",
+    prompt:
+      "检查官方 Pi Coding Agent 是否已安装；如果没有，为固定版本生成 HAL100 私有安装计划，不要修改 PATH、HOME 或用户配置。",
+  },
+  {
+    id: "remove-pi",
+    category: "integrations",
+    label: "生成 Pi 私有卸载计划",
+    prompt:
+      "检查 HAL100 私有 Pi Coding Agent 是否存在；如存在，仅为私有运行时生成移入系统废纸篓的卸载计划，保留用户安装、配置和会话。",
+  },
+  {
+    id: "configure-opencode",
+    category: "integrations",
+    label: "生成 OpenCode 配置计划",
+    prompt: "检查 OpenCode 状态，并生成接入 HAL100 Gateway 的配置计划。",
+  },
+  {
+    id: "configure-openclaw",
+    category: "integrations",
+    label: "生成 OpenClaw 配置计划",
+    prompt: "检查 OpenClaw 状态和可用协议，并生成接入 HAL100 Gateway 的配置计划。",
+  },
+  {
+    id: "configure-hermes",
+    category: "integrations",
+    label: "生成 Hermes 配置计划",
+    prompt: "检查 Hermes Agent 状态和运行前置条件，并生成接入 HAL100 Gateway 的配置计划。",
+  },
+  {
+    id: "disconnect-agent",
+    category: "integrations",
+    label: "生成外部 Agent 断开计划",
+    prompt: "检查已接入的外部 Agent，并为指定软件生成只移除 HAL100 受管配置的断开计划。",
+  },
+];
+
 const agentActionCopy: Record<
   AgentActionPlan["actionKind"],
   { title: string; targetLabel: string; pendingSummary: string }
@@ -79,10 +207,25 @@ const agentActionCopy: Record<
     targetLabel: "目标引擎",
     pendingSummary: "Agent 尚未停止或删除引擎",
   },
-  configureOpenCode: {
-    title: "配置 OpenCode",
+  installExternalAgent: {
+    title: "私有安装外部 Agent",
+    targetLabel: "目标软件",
+    pendingSummary: "Agent 尚未下载或安装任何软件",
+  },
+  removeExternalAgent: {
+    title: "卸载 HAL100 私有外部 Agent",
+    targetLabel: "目标软件",
+    pendingSummary: "Agent 尚未移动私有运行时或修改任何用户文件",
+  },
+  configureExternalAgent: {
+    title: "配置外部 Agent",
     targetLabel: "目标软件",
     pendingSummary: "Agent 尚未写入任何配置",
+  },
+  disconnectExternalAgent: {
+    title: "断开外部 Agent",
+    targetLabel: "目标软件",
+    pendingSummary: "Agent 尚未修改配置或撤销专属凭据",
   },
 };
 
@@ -92,6 +235,7 @@ export function AgentPage() {
   const [prompt, setPrompt] = useState(defaultAgentPrompt);
   const [result, setResult] = useState<AgentRunResult | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [taskCategory, setTaskCategory] = useState<AgentTaskCategory>("diagnostics");
   const [providerMode, setProviderMode] = useState<"local" | "cloud-single" | "cloud-session">(
     "local",
   );
@@ -203,6 +347,9 @@ export function AgentPage() {
       queryClient.invalidateQueries({ queryKey: ["llama-cpp-status"] });
       queryClient.invalidateQueries({ queryKey: ["gateway-routing"] });
       queryClient.invalidateQueries({ queryKey: ["opencode-detection"] });
+      queryClient.invalidateQueries({ queryKey: ["pi-coding-agent-detection"] });
+      queryClient.invalidateQueries({ queryKey: ["openclaw-detection"] });
+      queryClient.invalidateQueries({ queryKey: ["hermes-agent-detection"] });
       queryClient.invalidateQueries({ queryKey: ["model-downloads"] });
       queryClient.invalidateQueries({ queryKey: ["model-library"] });
       queryClient.invalidateQueries({ queryKey: ["audit-log"] });
@@ -282,6 +429,22 @@ export function AgentPage() {
   const elapsedSeconds = result
     ? Math.max(0, (result.completedAtMs - result.startedAtMs) / 1000).toFixed(1)
     : null;
+  const recommendedTaskIds = data.lastErrorCode
+    ? ["diagnose-environment", "analyze-failures", "plan-single-fix"]
+    : !data.modelPrepared
+      ? ["hardware-guidance", "search-model", "install-engine"]
+      : ["deployment-check", "configure-opencode", "model-status"];
+  const recommendedTasks = recommendedTaskIds.flatMap((taskId) => {
+    const task = agentTaskLibrary.find((candidate) => candidate.id === taskId);
+    return task ? [task] : [];
+  });
+  const libraryTasks = agentTaskLibrary.filter((task) => task.category === taskCategory);
+  const agentReady = data.modelPrepared && kernelState !== "error" && !data.lastErrorCode;
+  const agentStatusLabel = runMutation.isPending
+    ? "正在运行"
+    : agentReady
+      ? "可以开始任务"
+      : "需要准备";
 
   const updatePrompt = (nextPrompt: string) => {
     setPrompt(nextPrompt);
@@ -353,8 +516,8 @@ export function AgentPage() {
           </span>
         </summary>
         <p>
-          Agent
-          只能使用固定工具并为明确操作生成计划；模型搜索只返回有界公开元数据，下载计划会绑定精确仓库、修订、文件与
+          Agent 只能使用固定工具并为明确操作生成计划；全面诊断覆盖四个外部
+          Agent，近期运维历史只返回脱敏事件标识。模型搜索只返回有界公开元数据，下载计划会绑定精确仓库、修订、文件与
           SHA-256。计划不会自动执行，下载、安装、卸载、删除和配置写入仍需原生确认。
         </p>
       </details>
@@ -390,40 +553,27 @@ export function AgentPage() {
         </section>
       )}
 
-      <section className="agent-status-strip" aria-label="Agent 运行状态">
-        <article>
-          <span className="agent-status-icon">
-            <Bot size={18} />
+      <section className={`agent-status-summary ${agentReady ? "ready" : "attention"}`}>
+        <span className="agent-status-icon">
+          {agentReady ? <ShieldCheck size={19} /> : <AlertTriangle size={19} />}
+        </span>
+        <div>
+          <span
+            className={`status-pill ${runMutation.isPending ? "warning" : agentReady ? "ok" : "neutral"}`}
+          >
+            {agentStatusLabel}
           </span>
-          <div>
-            <small>Pi Core</small>
-            <strong>v{data.piVersion}</strong>
-          </div>
-          <span className={`status-pill ${agentStateCopy[kernelState].tone}`}>
-            {agentStateCopy[kernelState].label}
-          </span>
-        </article>
-        <article>
-          <span className="agent-status-icon">
-            <Cpu size={18} />
-          </span>
-          <div>
-            <small>本地模型</small>
-            <strong>{data.modelName}</strong>
-          </div>
-          <span className={`status-pill ${agentStateCopy[modelState].tone}`}>
-            {data.modelPrepared ? agentStateCopy[modelState].label : "尚未准备"}
-          </span>
-        </article>
-        <article>
-          <span className="agent-status-icon">
-            <Moon size={18} />
-          </span>
-          <div>
-            <small>后台策略</small>
-            <strong>{data.idleTimeoutSeconds / 60} 分钟空闲退出</strong>
-          </div>
-        </article>
+          <strong>
+            {agentReady
+              ? "本地 Agent 已准备好"
+              : data.modelPrepared
+                ? "Agent 正在等待运行时"
+                : "需要先准备本地模型"}
+          </strong>
+          <p>
+            {agentReady ? "可直接描述任务；系统变更仍需单独确认。" : "HAL100 会引导你完成缺失项。"}
+          </p>
+        </div>
         <button
           className="secondary-button"
           disabled={diagnostics.isFetching || runMutation.isPending || actionMutation.isPending}
@@ -435,13 +585,40 @@ export function AgentPage() {
         </button>
       </section>
 
-      <EnvironmentDiagnosticsPanel
-        report={diagnostics.data}
-        error={diagnostics.isError ? diagnostics.error : null}
-        isFetching={diagnostics.isFetching}
-        disabled={runMutation.isPending || actionMutation.isPending}
-        onRefresh={() => void diagnostics.refetch()}
-      />
+      <details className="agent-technical-details inline-disclosure">
+        <summary>
+          <span>Agent 技术详情</span>
+          <ChevronRight size={14} />
+        </summary>
+        <dl>
+          <div>
+            <dt>Pi Core</dt>
+            <dd>
+              v{data.piVersion} · {agentStateCopy[kernelState].label}
+            </dd>
+          </div>
+          <div>
+            <dt>固定模型</dt>
+            <dd>
+              {data.modelName} · {agentStateCopy[modelState].label}
+            </dd>
+          </div>
+          <div>
+            <dt>运行策略</dt>
+            <dd>{data.idleTimeoutSeconds / 60} 分钟空闲退出 · Rust 授权</dd>
+          </div>
+        </dl>
+      </details>
+
+      {(diagnostics.data || diagnostics.isFetching || diagnostics.isError) && (
+        <EnvironmentDiagnosticsPanel
+          report={diagnostics.data}
+          error={diagnostics.isError ? diagnostics.error : null}
+          isFetching={diagnostics.isFetching}
+          disabled={runMutation.isPending || actionMutation.isPending}
+          onRefresh={() => void diagnostics.refetch()}
+        />
+      )}
       {providerMode === "local" && !data.modelPrepared && (
         <section className="agent-missing-model">
           <AlertTriangle size={17} />
@@ -449,7 +626,7 @@ export function AgentPage() {
             <strong>Agent 模型尚未准备好</strong>
             <span>需要已校验的 Qwen3.5-2B Q4_K_M 与 HAL100 托管 llama.cpp。</span>
           </div>
-          <NavLink className="secondary-button" to="/models">
+          <NavLink className="secondary-button" to="/workspace/models">
             前往模型库
           </NavLink>
         </section>
@@ -460,7 +637,7 @@ export function AgentPage() {
           <div className="agent-section-heading">
             <div>
               <p className="eyebrow">单任务会话</p>
-              <h2>诊断环境或生成受控计划</h2>
+              <h2>诊断、部署检查或生成受控计划</h2>
             </div>
             <span className="agent-composer-context">
               <ShieldCheck size={12} />
@@ -468,7 +645,7 @@ export function AgentPage() {
             </span>
           </div>
           <fieldset className="agent-provider-picker">
-            <legend>推理范围</legend>
+            <legend>任务处理位置</legend>
             <div className="agent-provider-options">
               <label className={providerMode === "local" ? "selected" : ""}>
                 <input
@@ -482,11 +659,11 @@ export function AgentPage() {
                   }}
                   type="radio"
                 />
-                <strong>本地 Qwen</strong>
+                <strong>本地</strong>
               </label>
-              <label className={providerMode === "cloud-single" ? "selected" : ""}>
+              <label className={providerMode !== "local" ? "selected" : ""}>
                 <input
-                  checked={providerMode === "cloud-single"}
+                  checked={providerMode !== "local"}
                   disabled={agentTransitionPending || sessionActive}
                   name="agent-provider"
                   onChange={() => {
@@ -496,23 +673,42 @@ export function AgentPage() {
                   }}
                   type="radio"
                 />
-                <strong>云端单次增强</strong>
-              </label>
-              <label className={providerMode === "cloud-session" ? "selected" : ""}>
-                <input
-                  checked={providerMode === "cloud-session"}
-                  disabled={agentTransitionPending || sessionActive}
-                  name="agent-provider"
-                  onChange={() => {
-                    setProviderMode("cloud-session");
-                    setCloudRunPreview(null);
-                    setCloudSessionPreview(null);
-                  }}
-                  type="radio"
-                />
-                <strong>当前会话使用云端</strong>
+                <strong>云端</strong>
               </label>
             </div>
+            {providerMode !== "local" && (
+              <fieldset className="agent-cloud-scope-picker">
+                <legend>云端使用范围</legend>
+                <label className={providerMode === "cloud-single" ? "selected" : ""}>
+                  <input
+                    checked={providerMode === "cloud-single"}
+                    disabled={agentTransitionPending || sessionActive}
+                    name="agent-cloud-scope"
+                    onChange={() => {
+                      setProviderMode("cloud-single");
+                      setCloudRunPreview(null);
+                      setCloudSessionPreview(null);
+                    }}
+                    type="radio"
+                  />
+                  <strong>仅本次任务</strong>
+                </label>
+                <label className={providerMode === "cloud-session" ? "selected" : ""}>
+                  <input
+                    checked={providerMode === "cloud-session"}
+                    disabled={agentTransitionPending || sessionActive}
+                    name="agent-cloud-scope"
+                    onChange={() => {
+                      setProviderMode("cloud-session");
+                      setCloudRunPreview(null);
+                      setCloudSessionPreview(null);
+                    }}
+                    type="radio"
+                  />
+                  <strong>当前会话</strong>
+                </label>
+              </fieldset>
+            )}
             <p className="agent-provider-note">
               <ShieldCheck size={13} />
               {providerMode === "local"
@@ -569,7 +765,7 @@ export function AgentPage() {
               ) : (
                 <div className="agent-cloud-empty">
                   <span>暂无可用且已配置凭据的 OpenAI/Anthropic 兼容后端。</span>
-                  <NavLink to="/backends">前往推理后端配置</NavLink>
+                  <NavLink to="/workspace/services">前往推理服务配置</NavLink>
                 </div>
               )}
             </section>
@@ -593,120 +789,56 @@ export function AgentPage() {
           </div>
           <section className="agent-templates" aria-label="快捷任务模板">
             <div className="agent-templates-heading">
-              <strong>快捷任务</strong>
-              <span>选择后仍可编辑</span>
+              <strong>推荐任务</strong>
+              <span>根据当前状态推荐，选择后仍可编辑</span>
             </div>
-            <div className="agent-prompt-shortcuts">
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() =>
-                  updatePrompt(
-                    "全面诊断 HAL100 当前运行环境，只依据 Rust 诊断结果说明问题，不要执行修复。",
-                  )
-                }
-                type="button"
-              >
-                <span>全面诊断环境</span>
-                <ChevronRight size={12} />
-              </button>
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() =>
-                  updatePrompt(
-                    "诊断并为 HAL100 当前最高优先级且可自动修复的问题生成修复计划；每次只处理一项。",
-                  )
-                }
-                type="button"
-              >
-                <span>生成单项修复计划</span>
-                <ChevronRight size={12} />
-              </button>
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() =>
-                  updatePrompt(
-                    "在 HAL100 当前默认模型来源搜索 Qwen GGUF，检查合适的公开仓库，并为一个带可信 SHA-256 的 Q4_K_M 文件生成下载计划；不要直接下载。",
-                  )
-                }
-                type="button"
-              >
-                <span>搜索并规划模型下载</span>
-                <ChevronRight size={12} />
-              </button>
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() => updatePrompt(defaultAgentPrompt)}
-                type="button"
-              >
-                <span>硬件与模型建议</span>
-                <ChevronRight size={12} />
-              </button>
-              <button
-                className="agent-prompt-chip"
-                disabled={agentTransitionPending}
-                onClick={() =>
-                  updatePrompt("列出 HAL100 当前可用模型和引擎状态，并说明当前活动模型。")
-                }
-                type="button"
-              >
-                <span>模型与引擎状态</span>
-                <ChevronRight size={12} />
-              </button>
+            <div className="agent-prompt-shortcuts agent-context-recommendations">
+              {recommendedTasks.map((task) => (
+                <button
+                  className="agent-prompt-chip"
+                  disabled={agentTransitionPending}
+                  key={task.id}
+                  onClick={() => updatePrompt(task.prompt)}
+                  type="button"
+                >
+                  <span>{task.label}</span>
+                  <ChevronRight size={12} />
+                </button>
+              ))}
             </div>
-            <details className="agent-template-more">
+            <details className="agent-task-library">
               <summary>
-                更多计划模板
+                打开任务库
+                <span>{agentTaskLibrary.length} 项能力</span>
                 <ChevronRight size={12} />
               </summary>
+              <label>
+                <span>任务分类</span>
+                <select
+                  aria-label="任务分类"
+                  onChange={(event) => setTaskCategory(event.target.value as AgentTaskCategory)}
+                  value={taskCategory}
+                >
+                  {(Object.keys(agentTaskCategories) as AgentTaskCategory[]).map((category) => (
+                    <option key={category} value={category}>
+                      {agentTaskCategories[category]}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="agent-prompt-shortcuts">
-                <button
-                  className="agent-prompt-chip"
-                  disabled={agentTransitionPending}
-                  onClick={() =>
-                    updatePrompt("说明 HAL100 的本地 Gateway 和推理后端应该怎样配置。")
-                  }
-                  type="button"
-                >
-                  <span>Gateway 配置说明</span>
-                  <ChevronRight size={12} />
-                </button>
-                <button
-                  className="agent-prompt-chip"
-                  disabled={agentTransitionPending}
-                  onClick={() =>
-                    updatePrompt(
-                      "读取可用模型，并为 Qwen3.5-2B Q4_K_M 生成启动或安全切换计划；不要直接执行。",
-                    )
-                  }
-                  type="button"
-                >
-                  <span>生成模型切换计划</span>
-                  <ChevronRight size={12} />
-                </button>
-                <button
-                  className="agent-prompt-chip"
-                  disabled={agentTransitionPending}
-                  onClick={() => updatePrompt("检查当前引擎状态，并生成安装 llama.cpp 的计划。")}
-                  type="button"
-                >
-                  <span>生成引擎安装计划</span>
-                  <ChevronRight size={12} />
-                </button>
-                <button
-                  className="agent-prompt-chip"
-                  disabled={agentTransitionPending}
-                  onClick={() =>
-                    updatePrompt("检查 OpenCode 状态，并生成接入 HAL100 Gateway 的配置计划。")
-                  }
-                  type="button"
-                >
-                  <span>生成 OpenCode 配置计划</span>
-                  <ChevronRight size={12} />
-                </button>
+                {libraryTasks.map((task) => (
+                  <button
+                    className="agent-prompt-chip"
+                    disabled={agentTransitionPending}
+                    key={task.id}
+                    onClick={() => updatePrompt(task.prompt)}
+                    type="button"
+                  >
+                    <span>{task.label}</span>
+                    <ChevronRight size={12} />
+                  </button>
+                ))}
               </div>
             </details>
           </section>
@@ -877,33 +1009,25 @@ export function AgentPage() {
           </div>
         </form>
 
-        <article className="agent-result" aria-live="polite">
+        <article
+          className={`agent-result${!runMutation.isPending && !result ? " is-empty" : ""}`}
+          aria-live="polite"
+        >
           <div className="agent-section-heading">
             <div>
               <p className="eyebrow">结果</p>
-              <h2>工具轨迹与回答</h2>
+              <h2>回答与计划</h2>
             </div>
             {elapsedSeconds && <span>{elapsedSeconds} 秒</span>}
           </div>
-          <ol className="agent-result-flow" aria-label="任务处理流程">
-            <li className={runMutation.isPending || result ? "active" : ""}>
-              <span>1</span>
-              理解任务
-            </li>
-            <li className={runMutation.isPending || result ? "active" : ""}>
-              <span>2</span>
-              调用工具
-            </li>
-            <li className={result ? "active" : ""}>
-              <span>3</span>
-              生成回答
-            </li>
-          </ol>
+          {runMutation.isPending && (
+            <div className="agent-running-stage" role="status">
+              <RefreshCw className="spinning" size={14} />
+              <span>正在处理当前任务，可随时取消</span>
+            </div>
+          )}
           {runMutation.isPending ? (
-            <div className="agent-empty-result">
-              <span className="agent-empty-icon">
-                <RefreshCw className="spinning" size={20} />
-              </span>
+            <div className="agent-running-detail">
               <strong>
                 {providerMode !== "local"
                   ? "正在通过本机 Gateway 请求云端模型"
@@ -917,27 +1041,6 @@ export function AgentPage() {
             </div>
           ) : result ? (
             <div className="agent-completed-result">
-              <div className="agent-tool-timeline">
-                {result.toolEvents.length > 0 ? (
-                  result.toolEvents.map((tool) => (
-                    <div key={tool.toolCallId}>
-                      <span className="agent-tool-check">
-                        {tool.status === "awaiting_confirmation" ? (
-                          <ShieldCheck size={11} />
-                        ) : (
-                          <Check size={11} />
-                        )}
-                      </span>
-                      <div>
-                        <strong>{tool.label}</strong>
-                        <small>{tool.summary}</small>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <span className="agent-no-tool">本次说明未请求系统工具。</span>
-                )}
-              </div>
               {result.actionPlans.map((plan) => {
                 const copy = agentActionCopy[plan.actionKind];
                 return (
@@ -985,17 +1088,54 @@ export function AgentPage() {
               })}
               {actionMessage && <p className="agent-action-success">{actionMessage}</p>}
               <div className="agent-answer">{result.answer}</div>
-              <small className="agent-result-meta">
-                {result.modelName} · 会话 {result.runId.slice(-8)}
-              </small>
+              <details className="agent-tool-trace">
+                <summary>
+                  <span>工具轨迹 · {result.toolEvents.length} 项</span>
+                  <ChevronRight size={12} />
+                </summary>
+                <div className="agent-tool-timeline">
+                  {result.toolEvents.length > 0 ? (
+                    result.toolEvents.map((tool) => (
+                      <div key={tool.toolCallId}>
+                        <span className="agent-tool-check">
+                          {tool.status === "awaiting_confirmation" ? (
+                            <ShieldCheck size={11} />
+                          ) : (
+                            <Check size={11} />
+                          )}
+                        </span>
+                        <div>
+                          <strong>{tool.label}</strong>
+                          <small>{tool.summary}</small>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="agent-no-tool">本次说明未请求系统工具。</span>
+                  )}
+                </div>
+              </details>
+              <details className="agent-result-technical">
+                <summary>
+                  <span>技术详情</span>
+                  <ChevronRight size={12} />
+                </summary>
+                <dl>
+                  <div>
+                    <dt>模型</dt>
+                    <dd>{result.modelName}</dd>
+                  </div>
+                  <div>
+                    <dt>Run ID</dt>
+                    <dd>{result.runId}</dd>
+                  </div>
+                </dl>
+              </details>
             </div>
           ) : (
             <div className="agent-empty-result">
-              <span className="agent-empty-icon">
-                <Bot size={21} />
-              </span>
               <strong>等待一项 HAL100 管理任务</strong>
-              <span>选择左侧快捷任务或输入目标，执行轨迹与受控计划会在这里逐项展开。</span>
+              <span>选择推荐任务、打开任务库，或直接输入目标。</span>
             </div>
           )}
         </article>

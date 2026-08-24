@@ -13,6 +13,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(dev)]
+use std::{
+    io::{Read, Write},
+    net::{TcpStream, ToSocketAddrs},
+};
+
 use hal100_core::AppCore;
 use hal100_infra::{
     BackendConfig, BackendManager, CredentialRegistry, DEFAULT_GATEWAY_ADDRESS, Database,
@@ -50,6 +56,10 @@ use crate::agent_service::AgentService;
 const TRAY_OPEN_MENU_ID: &str = "open";
 const TRAY_QUIT_MENU_ID: &str = "quit";
 const DEV_HIDE_WINDOW_ARGUMENT: &str = "--hal100-dev-hide-window";
+#[cfg(dev)]
+const DEV_FRONTEND_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+#[cfg(dev)]
+const DEV_FRONTEND_FAILURE_SCRIPT: &str = include_str!("development_frontend_failure.js");
 
 struct CoreState {
     core: Arc<AppCore<MacOsSystemProbe>>,
@@ -161,6 +171,104 @@ fn bind_gateway_listener(address: SocketAddr) -> Result<TcpListener, std::io::Er
     TcpListener::bind(address)
 }
 
+#[cfg(dev)]
+fn development_frontend_response_is_hal100(response: &str) -> bool {
+    (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
+        && response.contains("<title>HAL100</title>")
+        && response.contains("/src/bootstrap.ts")
+}
+
+#[cfg(dev)]
+fn development_frontend_is_available(url: &tauri::Url) -> bool {
+    if url.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let Some(port) = url.port_or_known_default() else {
+        return false;
+    };
+    let Ok(addresses) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+
+    for address in addresses {
+        let Ok(mut stream) = TcpStream::connect_timeout(&address, DEV_FRONTEND_PROBE_TIMEOUT)
+        else {
+            continue;
+        };
+        let _ = stream.set_read_timeout(Some(DEV_FRONTEND_PROBE_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(DEV_FRONTEND_PROBE_TIMEOUT));
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n",
+            if url.path().is_empty() {
+                "/"
+            } else {
+                url.path()
+            }
+        );
+        if stream.write_all(request.as_bytes()).is_err() {
+            continue;
+        }
+        let mut response = String::new();
+        if stream.take(64 * 1024).read_to_string(&mut response).is_ok()
+            && development_frontend_response_is_hal100(&response)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(dev)]
+fn guard_development_frontend(app: &tauri::App) -> bool {
+    let dev_url = app.config().build.dev_url.as_ref();
+    if dev_url.is_some_and(development_frontend_is_available) {
+        return true;
+    }
+
+    tracing::error!(
+        error_code = if dev_url.is_some() {
+            "frontend_dev_server_unavailable"
+        } else {
+            "frontend_dev_url_missing"
+        },
+        dev_url = dev_url.map_or("not-configured", tauri::Url::as_str),
+        "desktop_frontend_startup_blocked"
+    );
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(error) = window.eval(DEV_FRONTEND_FAILURE_SCRIPT) {
+            tracing::error!(
+                error_code = "frontend_failure_view_injection_failed",
+                error = %error,
+                "desktop_frontend_failure_view_failed"
+            );
+        } else {
+            tracing::info!(
+                diagnostic_code = "frontend_dev_server_unavailable",
+                "desktop_frontend_failure_view_shown"
+            );
+        }
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let handle = app.handle().clone();
+    app.dialog()
+        .message(
+            "HAL100 的前端开发服务未配置、未运行或不是当前项目，因此已阻止打开空白窗口。\n\n请在仓库根目录执行：pnpm desktop:open",
+        )
+        .title("HAL100 界面无法启动")
+        .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::OkCustom("退出".to_owned()))
+        .show(move |confirmed| {
+            if confirmed {
+                handle.exit(1);
+            }
+        });
+    false
+}
+
 fn unix_time_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -236,6 +344,15 @@ fn handle_single_instance(app: &tauri::AppHandle, arguments: &[String]) {
             let _ = window.hide();
             tracing::info!("development_window_hidden_for_stability");
         }
+        return;
+    }
+    show_or_create_main_window(app);
+}
+
+fn reveal_main_window_after_setup(app: &tauri::AppHandle) {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    if dev_hide_window_requested(&arguments) {
+        tracing::info!("development_window_hidden_for_stability");
         return;
     }
     show_or_create_main_window(app);
@@ -464,9 +581,21 @@ async fn apply_agent_action_plan(
             "确认 Agent 的模型移除计划",
             "确认后 Rust Core 会重新校验活动模型、所有权和路径：托管文件只移到系统废纸篓，外部文件不会改动。",
         ),
-        hal100_protocol::AgentActionKind::ConfigureOpenCode => (
-            "确认 Agent 的 OpenCode 配置计划",
-            "确认后 Rust Core 会再次检查文件快照、Provider 所有权和符号链接，并在需要时创建备份。",
+        hal100_protocol::AgentActionKind::InstallExternalAgent => (
+            "确认 Agent 的外部软件私有安装计划",
+            "确认后 Rust Core 会再次核对固定官方包、归档完整性和完整依赖闭包，并只安装到 HAL100 私有应用数据目录；不会申请管理员权限，也不会修改 PATH、HOME、用户配置或现有安装。",
+        ),
+        hal100_protocol::AgentActionKind::RemoveExternalAgent => (
+            "确认 Agent 的外部软件私有卸载计划",
+            "确认后 Rust Core 会重新验证私有运行时的固定版本、入口和完整依赖闭包，仅将 HAL100 私有目录移入系统废纸篓；用户安装、配置、凭据和会话不会改动。",
+        ),
+        hal100_protocol::AgentActionKind::ConfigureExternalAgent => (
+            "确认 Agent 的外部软件配置计划",
+            "确认后 Rust Core 会再次检查配置快照、受管片段所有权和符号链接，并以独立凭据执行；写后验证失败会自动回滚。",
+        ),
+        hal100_protocol::AgentActionKind::DisconnectExternalAgent => (
+            "确认 Agent 的外部软件断开计划",
+            "确认后 Rust Core 只会移除 HAL100 受管配置片段和该软件的专属凭据；不会删除用户配置文件或其他凭据。",
         ),
     };
     let details = plan
@@ -487,6 +616,7 @@ async fn apply_agent_action_plan(
             plan.action_kind,
             hal100_protocol::AgentActionKind::RemoveModel
                 | hal100_protocol::AgentActionKind::RemoveLlamaCpp
+                | hal100_protocol::AgentActionKind::RemoveExternalAgent
         ),
     )
     .await
@@ -1999,6 +2129,11 @@ pub fn run() {
                 "desktop_runtime_started"
             );
 
+            #[cfg(dev)]
+            if !guard_development_frontend(app) {
+                return Ok(());
+            }
+
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             #[cfg(unix)]
@@ -2046,6 +2181,13 @@ pub fn run() {
             ));
             let external_model_profiles =
                 ExternalModelProfileRegistry::conservative_managed_route();
+            let managed_external_agent_deployment = Arc::new(
+                hal100_infra::ManagedExternalAgentDeploymentManager::for_macos(
+                    database.clone(),
+                    &home_directory,
+                    &data_dir,
+                ),
+            );
             let pi_coding_agent_manager =
                 Arc::new(PiCodingAgentIntegrationAdapter::with_gateway_base_url(
                     database.clone(),
@@ -2153,9 +2295,13 @@ pub fn run() {
                 agent_runtime,
                 llama_cpp_manager.clone(),
                 open_code_manager.clone(),
+                pi_coding_agent_manager.clone(),
+                openclaw_manager.clone(),
+                hermes_agent_manager.clone(),
                 removal_manager.clone(),
                 remote_catalog.clone(),
                 download_manager.clone(),
+                managed_external_agent_deployment,
                 gateway_control.clone(),
                 database.clone(),
                 credentials.clone(),
@@ -2214,6 +2360,7 @@ pub fn run() {
             app.manage(GatewayRuntimeState { task: gateway_task });
             install_tray(app)?;
             tracing::info!("tray_ready");
+            reveal_main_window_after_setup(app.handle());
             #[cfg(feature = "benchmark-hooks")]
             {
                 schedule_benchmark_window_close(app.handle());
@@ -2240,6 +2387,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(dev)]
+    use super::{DEV_FRONTEND_FAILURE_SCRIPT, development_frontend_response_is_hal100};
     use super::{
         DEV_HIDE_WINDOW_ARGUMENT, bind_gateway_listener, dev_hide_window_requested,
         should_hide_window_on_close, should_prevent_exit,
@@ -2272,6 +2421,35 @@ mod tests {
         assert!(!dev_hide_window_requested(&[
             "/workspace/target/debug/hal100-desktop".to_owned()
         ]));
+    }
+
+    #[test]
+    #[cfg(dev)]
+    fn development_frontend_probe_requires_the_hal100_bootstrap_document() {
+        assert!(development_frontend_response_is_hal100(
+            "HTTP/1.1 200 OK\r\n\r\n<title>HAL100</title><script src=\"/src/bootstrap.ts\"></script>"
+        ));
+        assert!(!development_frontend_response_is_hal100(
+            "HTTP/1.1 200 OK\r\n\r\n<title>Another service</title>"
+        ));
+        assert!(!development_frontend_response_is_hal100(
+            "HTTP/1.1 503 Service Unavailable\r\n\r\n<title>HAL100</title><script src=\"/src/bootstrap.ts\"></script>"
+        ));
+    }
+
+    #[test]
+    #[cfg(dev)]
+    fn development_frontend_failure_view_is_actionable_and_diagnostic() {
+        assert!(DEV_FRONTEND_FAILURE_SCRIPT.contains("HAL100 界面无法启动"));
+        assert!(DEV_FRONTEND_FAILURE_SCRIPT.contains("pnpm desktop:open"));
+        assert!(DEV_FRONTEND_FAILURE_SCRIPT.contains("frontend_dev_server_unavailable"));
+    }
+
+    #[test]
+    fn configured_main_window_stays_hidden_until_native_setup_finishes() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        assert_eq!(config["app"]["windows"][0]["visible"], false);
     }
 
     #[test]

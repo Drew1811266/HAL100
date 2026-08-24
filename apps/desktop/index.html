@@ -9,7 +9,199 @@
     <title>HAL100</title>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <div id="root">
+      <main class="startup-shell" role="status" aria-live="polite">
+        <div class="startup-card">
+          <span class="startup-mark" aria-hidden="true">H</span>
+          <div>
+            <strong>正在启动 HAL100</strong>
+            <p>正在连接本地核心与界面资源…</p>
+          </div>
+          <span class="startup-progress" aria-hidden="true"></span>
+        </div>
+      </main>
+    </div>
+    <style>
+      :root {
+        color: var(--text, #292824);
+        background: var(--page, #f7f5f0);
+        color-scheme: light;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC",
+          "Microsoft YaHei UI", sans-serif;
+      }
+
+      html,
+      body,
+      #root {
+        min-width: 0;
+        min-height: 620px;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        overflow: hidden;
+      }
+
+      .startup-shell {
+        display: grid;
+        height: 100%;
+        place-items: center;
+        background: #f7f5f0;
+      }
+
+      .startup-card {
+        position: relative;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        width: min(410px, calc(100% - 64px));
+        gap: 16px;
+        padding: 24px;
+        overflow: hidden;
+        border: 1px solid var(--line, #e3ded5);
+        border-radius: 18px;
+        background: var(--panel-strong, #fffefb);
+        box-shadow: var(--shadow-float, 0 18px 50px rgba(55, 47, 37, 0.13));
+      }
+
+      .startup-mark {
+        display: grid;
+        width: 44px;
+        height: 44px;
+        place-items: center;
+        border-radius: 13px;
+        color: #fff;
+        background: #a54b40;
+        font-size: 19px;
+        font-weight: 700;
+      }
+
+      .startup-card strong {
+        display: block;
+        margin-top: 2px;
+        font-size: 17px;
+      }
+
+      .startup-card p {
+        margin: 7px 0 0;
+        color: #6e6a63;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .startup-progress {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        height: 3px;
+        overflow: hidden;
+        background: #f2dfda;
+      }
+
+      .startup-progress::after {
+        position: absolute;
+        width: 42%;
+        height: 100%;
+        border-radius: 99px;
+        background: #a54b40;
+        content: "";
+        animation: startup-progress 1.2s ease-in-out infinite;
+      }
+
+      .startup-failure {
+        display: grid;
+        min-width: 0;
+        min-height: 620px;
+        height: 100%;
+        padding: 40px;
+        box-sizing: border-box;
+        place-items: center;
+        color: var(--text, #292824);
+        background: var(--page, #f7f5f0);
+      }
+
+      .startup-failure-card {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        width: min(540px, 100%);
+        gap: 18px;
+        padding: 28px;
+        box-sizing: border-box;
+        border: 1px solid var(--line, #e3ded5);
+        border-radius: 18px;
+        background: var(--panel-strong, #fffefb);
+        box-shadow: var(--shadow-float, 0 18px 50px rgba(55, 47, 37, 0.13));
+      }
+
+      .startup-failure-badge {
+        display: grid;
+        width: 44px;
+        height: 44px;
+        place-items: center;
+        border-radius: 13px;
+        color: #fff;
+        background: var(--danger, #b3423e);
+        font-size: 20px;
+        font-weight: 700;
+      }
+
+      .startup-failure h1 {
+        margin: 1px 0 8px;
+        font-size: 20px;
+      }
+
+      .startup-failure p {
+        margin: 0;
+        color: var(--muted, #6e6a63);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .startup-failure code {
+        display: block;
+        width: fit-content;
+        margin-top: 14px;
+        padding: 5px 8px;
+        border-radius: 7px;
+        color: var(--muted, #6e6a63);
+        background: var(--panel, #f5f2ec);
+        font-size: 11px;
+      }
+
+      .startup-failure button {
+        min-height: 38px;
+        margin-top: 18px;
+        padding: 0 16px;
+        border: 0;
+        border-radius: 9px;
+        color: #fff;
+        background: var(--accent, #a54b40);
+        cursor: pointer;
+        font: inherit;
+      }
+
+      .startup-failure button:hover {
+        background: var(--accent-hover, #913e35);
+      }
+
+      @keyframes startup-progress {
+        from {
+          transform: translateX(-100%);
+        }
+        to {
+          transform: translateX(340%);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .startup-progress::after {
+          animation: none;
+          transform: translateX(70%);
+        }
+      }
+    </style>
+    <script type="module" src="/src/bootstrap.ts"></script>
   </body>
 </html>

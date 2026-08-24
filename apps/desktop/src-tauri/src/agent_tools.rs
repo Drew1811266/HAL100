@@ -8,24 +8,36 @@ use std::{
     time::Duration,
 };
 
-use hal100_core::{AgentToolPolicy, AuthorizedAgentTool};
+use hal100_core::{
+    AgentToolPolicy, AuthorizedAgentTool, BUILT_IN_AGENT_RUNTIME, ExternalAgentIntegrationId,
+    ExternalAgentIntegrationRegistry,
+};
 use hal100_infra::{
     Database, DatabaseError, EngineManagerError, EnvironmentDiagnosticError,
-    EnvironmentDiagnostics, GatewayState, LlamaCppManager, ModelDownloadError,
-    ModelDownloadManager, ModelRemovalError, ModelRemovalManager, OpenCodeIntegrationError,
-    OpenCodeManager, RemoteModelCatalog, RemoteModelCatalogError,
+    EnvironmentDiagnostics, GatewayState, HermesAgentIntegrationAdapter,
+    HermesAgentIntegrationError, LlamaCppManager, ManagedExternalAgentDeploymentError,
+    ManagedExternalAgentDeploymentManager, ModelDownloadError, ModelDownloadManager,
+    ModelRemovalError, ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawIntegrationError,
+    OpenCodeIntegrationError, OpenCodeManager, PiCodingAgentIntegrationAdapter,
+    PiCodingAgentIntegrationError, RemoteModelCatalog, RemoteModelCatalogError,
 };
 use hal100_platform::{HardwareProbeError, MacOsSystemProbe};
 use hal100_protocol::{
-    AGENT_RPC_MAX_TOOL_RESULT_BYTES, AgentActionKind, AgentActionPlan, AgentRuntimeCatalog,
-    AgentRuntimeModel, AgentSystemSummary, AgentToolEvent, DiagnosticRepairKind,
-    ENVIRONMENT_DIAGNOSTICS_TOOL, EngineInstallState, EnvironmentDiagnosticReport, LocalModelState,
+    AGENT_RPC_MAX_TOOL_RESULT_BYTES, AgentActionKind, AgentActionPlan,
+    AgentExternalIntegrationStatus, AgentOperationalEvent, AgentOperationalHealthObservation,
+    AgentOperationalHealthSample, AgentOperationalHealthStatus, AgentOperationalHistory,
+    AgentRuntimeCatalog, AgentRuntimeModel, AgentSystemSummary, AgentToolEvent,
+    DiagnosticRepairKind, DiagnosticSeverity, ENVIRONMENT_DIAGNOSTICS_TOOL,
+    EXTERNAL_AGENT_STATUS_TOOL, EngineInstallState, EnvironmentDiagnosticReport,
+    ExternalAgentGatewayProtocol, ExternalAgentIntegrationState, LocalModelState,
     MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL, ModelDownloadSnapshot,
-    ModelRemovalKind, OPENCODE_STATUS_TOOL, OpenCodeIntegrationState, PLAN_DIAGNOSTIC_REPAIR_TOOL,
-    PLAN_ENGINE_INSTALL_TOOL, PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_DOWNLOAD_TOOL,
-    PLAN_MODEL_REMOVAL_TOOL, PLAN_MODEL_START_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL,
-    RUNTIME_CATALOG_TOOL, RemoteModelRepository, RemoteModelSearchResults, SYSTEM_SUMMARY_TOOL,
-    ToolCallRequestPayload, ToolCallResultPayload,
+    ModelRemovalKind, OPERATIONAL_HEALTH_OBSERVATION_TOOL, OPERATIONAL_HISTORY_TOOL,
+    OpenCodeIntegrationState, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
+    PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+    PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+    PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
+    PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, RemoteModelRepository, RemoteModelSearchResults,
+    SYSTEM_SUMMARY_TOOL, ToolCallRequestPayload, ToolCallResultPayload,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -38,6 +50,9 @@ use crate::agent_action::{
 
 const ACTION_PLAN_TTL_MS: i64 = 5 * 60 * 1_000;
 const TOOL_CANCELLATION_POLL: Duration = Duration::from_millis(100);
+const OPERATIONAL_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
+const OPERATIONAL_OBSERVATION_SAMPLES: usize = 3;
+const INTERNAL_CLOUD_BACKEND_PREFIX: &str = "hal100-agent-cloud-";
 
 #[derive(Debug, Error)]
 pub(super) enum AgentToolExecutionError {
@@ -58,6 +73,12 @@ pub(super) enum AgentToolExecutionError {
     #[error(transparent)]
     OpenCode(#[from] OpenCodeIntegrationError),
     #[error(transparent)]
+    PiCodingAgent(#[from] PiCodingAgentIntegrationError),
+    #[error(transparent)]
+    OpenClaw(#[from] OpenClawIntegrationError),
+    #[error(transparent)]
+    HermesAgent(#[from] HermesAgentIntegrationError),
+    #[error(transparent)]
     ModelRemoval(#[from] ModelRemovalError),
     #[error(transparent)]
     Diagnostics(#[from] EnvironmentDiagnosticError),
@@ -65,6 +86,8 @@ pub(super) enum AgentToolExecutionError {
     RemoteCatalog(#[from] RemoteModelCatalogError),
     #[error(transparent)]
     ModelDownload(#[from] ModelDownloadError),
+    #[error(transparent)]
+    ManagedDeployment(#[from] ManagedExternalAgentDeploymentError),
 }
 
 impl AgentToolExecutionError {
@@ -79,10 +102,52 @@ impl AgentToolExecutionError {
             Self::Database(_) => "database_failed",
             Self::Engine(_) => "managed_model_operation_failed",
             Self::OpenCode(_) => "opencode_configuration_failed",
+            Self::PiCodingAgent(_) => "pi_coding_agent_integration_failed",
+            Self::OpenClaw(_) => "openclaw_integration_failed",
+            Self::HermesAgent(_) => "hermes_agent_integration_failed",
             Self::ModelRemoval(_) => "model_removal_failed",
             Self::Diagnostics(_) => "environment_diagnostics_failed",
             Self::RemoteCatalog(error) => error.code(),
             Self::ModelDownload(error) => error.code(),
+            Self::ManagedDeployment(error) => match error {
+                ManagedExternalAgentDeploymentError::RecipeUnavailable => {
+                    "deployment_recipe_unavailable"
+                }
+                ManagedExternalAgentDeploymentError::AlreadyInstalled => {
+                    "external_agent_already_installed"
+                }
+                ManagedExternalAgentDeploymentError::ManagedInstallationNotFound => {
+                    "managed_external_agent_not_installed"
+                }
+                ManagedExternalAgentDeploymentError::PackageManagerUnavailable => "npm_unavailable",
+                ManagedExternalAgentDeploymentError::PackageMetadataMismatch => {
+                    "deployment_recipe_drift"
+                }
+                ManagedExternalAgentDeploymentError::DependencyClosureMismatch => {
+                    "deployment_dependency_drift"
+                }
+                ManagedExternalAgentDeploymentError::VerificationFailed => {
+                    "deployment_verification_failed"
+                }
+                ManagedExternalAgentDeploymentError::UnsafeInstallRoot => "unsafe_deployment_root",
+                ManagedExternalAgentDeploymentError::ManagedInstallationChanged => {
+                    "managed_external_agent_changed"
+                }
+                ManagedExternalAgentDeploymentError::TrashFailed => {
+                    "managed_external_agent_trash_failed"
+                }
+                ManagedExternalAgentDeploymentError::RemovalRollbackFailed => {
+                    "managed_external_agent_restore_failed"
+                }
+                ManagedExternalAgentDeploymentError::InvalidPlan => {
+                    "managed_deployment_plan_unavailable"
+                }
+                ManagedExternalAgentDeploymentError::CommandFailed(_) => {
+                    "managed_deployment_command_failed"
+                }
+                ManagedExternalAgentDeploymentError::Database(_) => "database_failed",
+                ManagedExternalAgentDeploymentError::Io(_) => "managed_deployment_io_failed",
+            },
         }
     }
 }
@@ -99,10 +164,14 @@ pub(super) struct AgentToolExecutor {
     database: Arc<Database>,
     engine: Arc<LlamaCppManager>,
     open_code: Arc<OpenCodeManager>,
+    pi_coding_agent: Arc<PiCodingAgentIntegrationAdapter>,
+    openclaw: Arc<OpenClawIntegrationAdapter>,
+    hermes_agent: Arc<HermesAgentIntegrationAdapter>,
     model_removal: Arc<ModelRemovalManager>,
     diagnostics: Arc<EnvironmentDiagnostics>,
     remote_catalog: Arc<RemoteModelCatalog>,
     model_download: Arc<ModelDownloadManager>,
+    managed_deployment: Arc<ManagedExternalAgentDeploymentManager>,
     gateway: GatewayState,
     action_plans: AgentActionPlanStore,
 }
@@ -114,10 +183,14 @@ impl AgentToolExecutor {
         database: Arc<Database>,
         engine: Arc<LlamaCppManager>,
         open_code: Arc<OpenCodeManager>,
+        pi_coding_agent: Arc<PiCodingAgentIntegrationAdapter>,
+        openclaw: Arc<OpenClawIntegrationAdapter>,
+        hermes_agent: Arc<HermesAgentIntegrationAdapter>,
         model_removal: Arc<ModelRemovalManager>,
         diagnostics: Arc<EnvironmentDiagnostics>,
         remote_catalog: Arc<RemoteModelCatalog>,
         model_download: Arc<ModelDownloadManager>,
+        managed_deployment: Arc<ManagedExternalAgentDeploymentManager>,
         gateway: GatewayState,
         action_plans: AgentActionPlanStore,
     ) -> Self {
@@ -126,10 +199,14 @@ impl AgentToolExecutor {
             database,
             engine,
             open_code,
+            pi_coding_agent,
+            openclaw,
+            hermes_agent,
             model_removal,
             diagnostics,
             remote_catalog,
             model_download,
+            managed_deployment,
             gateway,
             action_plans,
         }
@@ -138,15 +215,18 @@ impl AgentToolExecutor {
     pub(super) fn start_run(
         &self,
         run_id: String,
+        external_agent_target: Option<ExternalAgentIntegrationId>,
         runtime_handle: tokio::runtime::Handle,
         cancellation: Arc<AtomicBool>,
     ) -> AgentToolRun {
         AgentToolRun {
             executor: self.clone(),
             run_id,
+            external_agent_target,
             tool_events: Vec::new(),
             action_plans: Vec::new(),
             diagnostic_report: None,
+            external_agent_inspection: None,
             model_search: None,
             model_repository: None,
             runtime_handle,
@@ -175,9 +255,11 @@ impl AgentToolExecutor {
 pub(super) struct AgentToolRun {
     executor: AgentToolExecutor,
     run_id: String,
+    external_agent_target: Option<ExternalAgentIntegrationId>,
     tool_events: Vec<AgentToolEvent>,
     action_plans: Vec<AgentActionPlan>,
     diagnostic_report: Option<EnvironmentDiagnosticReport>,
+    external_agent_inspection: Option<ExternalAgentIntegrationId>,
     model_search: Option<RemoteModelSearchResults>,
     model_repository: Option<RemoteModelRepository>,
     runtime_handle: tokio::runtime::Handle,
@@ -206,6 +288,12 @@ impl AgentToolRun {
             Ok(AuthorizedAgentTool::InspectEnvironmentDiagnostics) => {
                 self.inspect_environment(request)?
             }
+            Ok(AuthorizedAgentTool::InspectOperationalHistory) => {
+                self.inspect_operational_history(request)?
+            }
+            Ok(AuthorizedAgentTool::ObserveOperationalHealth) => {
+                self.observe_operational_health(request)?
+            }
             Ok(AuthorizedAgentTool::PlanModelStart { model_id }) => {
                 self.plan_model_start(request, &model_id)?
             }
@@ -218,9 +306,20 @@ impl AgentToolRun {
             }) => self.plan_diagnostic_repair(request, &report_id, &finding_id)?,
             Ok(AuthorizedAgentTool::PlanEngineInstall) => self.plan_engine_install(request)?,
             Ok(AuthorizedAgentTool::PlanEngineRemove) => self.plan_engine_remove(request)?,
-            Ok(AuthorizedAgentTool::InspectOpenCodeStatus) => self.inspect_opencode(request)?,
-            Ok(AuthorizedAgentTool::PlanOpenCodeConfiguration) => {
-                self.plan_opencode_configuration(request)?
+            Ok(AuthorizedAgentTool::InspectExternalAgent { integration_id }) => {
+                self.inspect_external_agent(request, integration_id)?
+            }
+            Ok(AuthorizedAgentTool::PlanExternalAgentConfiguration { integration_id }) => {
+                self.plan_external_agent_configuration(request, integration_id)?
+            }
+            Ok(AuthorizedAgentTool::PlanExternalAgentDisconnection { integration_id }) => {
+                self.plan_external_agent_disconnection(request, integration_id)?
+            }
+            Ok(AuthorizedAgentTool::PlanExternalAgentInstallation { integration_id }) => {
+                self.plan_external_agent_installation(request, integration_id)?
+            }
+            Ok(AuthorizedAgentTool::PlanManagedExternalAgentRemoval { integration_id }) => {
+                self.plan_managed_external_agent_removal(request, integration_id)?
             }
             Ok(AuthorizedAgentTool::SearchModelCatalog { query }) => {
                 self.search_model_catalog(request, &query)?
@@ -334,6 +433,140 @@ impl AgentToolRun {
                 ))
             }
         }
+    }
+
+    fn inspect_operational_history(
+        &mut self,
+        request: &ToolCallRequestPayload,
+    ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
+        const MAX_OPERATIONAL_EVENTS: u32 = 24;
+        let audit = self.executor.database.audit_log(MAX_OPERATIONAL_EVENTS)?;
+        let events = audit
+            .events
+            .into_iter()
+            .map(|event| AgentOperationalEvent {
+                event_type: safe_operational_identifier(&event.event_type),
+                target_type: safe_operational_identifier(&event.target_type),
+                occurred_at_ms: event.created_at_ms,
+                error_code: safe_operational_detail(&event.details, "errorCode"),
+                action: safe_operational_detail(&event.details, "action"),
+                reason: safe_operational_detail(&event.details, "reason"),
+            })
+            .collect::<Vec<_>>();
+        let history = AgentOperationalHistory {
+            generated_at_ms: now_ms(),
+            total_event_count: audit.total_count,
+            returned_event_count: saturating_u32(events.len()),
+            events,
+        };
+        self.record_completed(
+            request,
+            OPERATIONAL_HISTORY_TOOL,
+            "读取近期运维事件",
+            format!(
+                "Rust 已返回最近 {} 条脱敏事件；不包含提示词、回答、凭据、本地路径或目标ID。",
+                history.returned_event_count
+            ),
+        );
+        success(request, history)
+    }
+
+    fn observe_operational_health(
+        &mut self,
+        request: &ToolCallRequestPayload,
+    ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
+        let report = match self.executor.diagnostics.run() {
+            Ok(report) => report,
+            Err(error) => {
+                let error = AgentToolExecutionError::from(error);
+                return Ok(ToolCallResultPayload::error(
+                    &request.tool_call_id,
+                    error.code(),
+                    "Rust could not complete the bounded deployment readiness observation",
+                ));
+            }
+        };
+        let mut samples = Vec::with_capacity(OPERATIONAL_OBSERVATION_SAMPLES);
+        for index in 0..OPERATIONAL_OBSERVATION_SAMPLES {
+            if self.cancellation.load(Ordering::Acquire) {
+                return Err(AgentToolExecutionError::Cancelled);
+            }
+            let engine = self.executor.engine.status()?;
+            let routing = self.executor.gateway.routing_snapshot();
+            let user_backends = routing
+                .backend_ids
+                .iter()
+                .filter(|backend_id| is_user_backend(backend_id))
+                .count();
+            let open_circuits = routing
+                .backend_health
+                .iter()
+                .filter(|health| is_user_backend(&health.backend_id) && health.circuit_open)
+                .count();
+            samples.push(AgentOperationalHealthSample {
+                observed_at_ms: now_ms(),
+                engine_runtime_state: engine.runtime_state,
+                active_route: routing
+                    .active_backend_id
+                    .as_deref()
+                    .is_some_and(is_user_backend),
+                registered_backend_count: saturating_u32(user_backends),
+                open_circuit_count: saturating_u32(open_circuits),
+            });
+            if index + 1 < OPERATIONAL_OBSERVATION_SAMPLES {
+                self.await_remote(async {
+                    tokio::time::sleep(OPERATIONAL_OBSERVATION_INTERVAL).await;
+                })?;
+            }
+        }
+        let stable = samples
+            .windows(2)
+            .all(|pair| sample_state(&pair[0]) == sample_state(&pair[1]));
+        let mut blocking_codes = report
+            .findings
+            .iter()
+            .filter(|finding| finding.severity != DiagnosticSeverity::Info)
+            .map(|finding| finding.code.clone())
+            .collect::<Vec<_>>();
+        blocking_codes.sort();
+        blocking_codes.dedup();
+        blocking_codes.truncate(16);
+        let window_ms = samples
+            .last()
+            .zip(samples.first())
+            .map(|(last, first)| last.observed_at_ms.saturating_sub(first.observed_at_ms))
+            .unwrap_or_default();
+        let observation = AgentOperationalHealthObservation {
+            generated_at_ms: now_ms(),
+            window_ms: window_ms.clamp(0, i64::from(u32::MAX)) as u32,
+            sample_count: saturating_u32(samples.len()),
+            stable,
+            status: if report.error_count > 0 {
+                AgentOperationalHealthStatus::Blocked
+            } else if report.warning_count > 0 {
+                AgentOperationalHealthStatus::NeedsAttention
+            } else {
+                AgentOperationalHealthStatus::Ready
+            },
+            engine_install_state: report.engine_install_state,
+            ready_model_count: report.ready_model_count,
+            configured_backend_count: report.configured_backend_count,
+            installed_external_agent_count: report.installed_external_agent_count,
+            configured_external_agent_count: report.configured_external_agent_count,
+            attention_external_agent_count: report.attention_external_agent_count,
+            blocking_codes,
+            samples,
+        };
+        self.record_completed(
+            request,
+            OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+            "检查部署就绪与运行稳定性",
+            format!(
+                "Rust 已在 {} 毫秒固定窗口内完成 {} 次脱敏采样；未读取原始日志、路径或凭据。",
+                observation.window_ms, observation.sample_count
+            ),
+        );
+        success(request, observation)
     }
 
     fn plan_model_start(
@@ -537,60 +770,283 @@ impl AgentToolRun {
         }
     }
 
-    fn inspect_opencode(
+    fn inspect_external_agent(
         &mut self,
         request: &ToolCallRequestPayload,
+        integration_id: ExternalAgentIntegrationId,
     ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
-        match self.executor.open_code.detect() {
-            Ok(detection) => {
+        if self.external_agent_target != Some(integration_id) {
+            return Ok(tool_error(
+                request,
+                "external_agent_target_mismatch",
+                "integrationId must match the external Agent named in the validated user prompt",
+            ));
+        }
+        let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
+        match build_external_agent_status(&self.executor, integration_id) {
+            Ok(status) => {
+                self.external_agent_inspection = Some(integration_id);
                 self.record_completed(
                     request,
-                    OPENCODE_STATUS_TOOL,
-                    "检查 OpenCode 接入状态",
-                    "Rust 已检查 OpenCode 安装、全局配置和 HAL100 Provider 所有权。".to_owned(),
+                    EXTERNAL_AGENT_STATUS_TOOL,
+                    "检查外部 Agent 接入状态",
+                    format!(
+                        "Rust 已检查 {} 的安装、受管配置和所有权；路径与配置内容未发送给 Agent。",
+                        descriptor.display_name
+                    ),
                 );
-                success(request, detection)
+                success(request, status)
+            }
+            Err(error) => Ok(tool_error(
+                request,
+                error.code(),
+                "Rust could not inspect the requested external Agent safely",
+            )),
+        }
+    }
+
+    fn plan_external_agent_configuration(
+        &mut self,
+        request: &ToolCallRequestPayload,
+        integration_id: ExternalAgentIntegrationId,
+    ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
+        if self.external_agent_inspection != Some(integration_id) {
+            return Ok(tool_error(
+                request,
+                "external_agent_status_required",
+                "inspect_external_agent must complete for the same integrationId before planning configuration",
+            ));
+        }
+        if self.has_action_plan() {
+            return Ok(action_already_planned(request));
+        }
+        let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
+        match build_external_agent_configuration_plan(&self.executor, &self.run_id, integration_id)
+        {
+            Ok(pending) => {
+                let display_name = descriptor.display_name;
+                self.register_pending_action(
+                    pending,
+                    request,
+                    PendingActionPresentation {
+                        tool_name: PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+                        label: "生成外部 Agent 配置计划",
+                        summary: format!(
+                            "{display_name} 配置事务计划已生成；尚未写入配置，必须通过 Rust 原生确认。"
+                        ),
+                    },
+                )
+            }
+            Err(error) => Ok(tool_error(
+                request,
+                error.code(),
+                "Rust refused to create an unsafe or conflicting external Agent configuration plan",
+            )),
+        }
+    }
+
+    fn plan_external_agent_installation(
+        &mut self,
+        request: &ToolCallRequestPayload,
+        integration_id: ExternalAgentIntegrationId,
+    ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
+        if self.external_agent_inspection != Some(integration_id) {
+            return Ok(tool_error(
+                request,
+                "external_agent_status_required",
+                "inspect_external_agent must complete for the same integrationId before planning installation",
+            ));
+        }
+        if self.has_action_plan() {
+            return Ok(action_already_planned(request));
+        }
+        let status = build_external_agent_status(&self.executor, integration_id)?;
+        if status.installed {
+            return Ok(tool_error(
+                request,
+                "external_agent_already_installed",
+                "HAL100 will not replace an existing user or managed external Agent installation",
+            ));
+        }
+        let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
+        match self
+            .executor
+            .managed_deployment
+            .plan_install(integration_id)
+        {
+            Ok(deployment) => {
+                let pending = PendingAgentAction {
+                    executor: AgentActionExecutor::InstallExternalAgent {
+                        integration_id,
+                        deployment_plan_id: deployment.plan_id,
+                    },
+                    plan: AgentActionPlan {
+                        plan_id: next_plan_id(),
+                        run_id: self.run_id.clone(),
+                        action_kind: AgentActionKind::InstallExternalAgent,
+                        target_id: descriptor.integration_id.to_owned(),
+                        target_name: descriptor.display_name.to_owned(),
+                        current_state: Some(
+                            "Rust 已确认未检测到现有安装，并核对固定官方包元数据".to_owned(),
+                        ),
+                        details: vec![
+                            format!(
+                                "固定包：{}@{}",
+                                deployment.package_name, deployment.package_version
+                            ),
+                            format!("安装范围：{}", deployment.install_scope),
+                        ]
+                        .into_iter()
+                        .chain(deployment.lifecycle_notes.into_iter().map(str::to_owned))
+                        .collect(),
+                        expires_at_ms: deployment.expires_at_ms,
+                        action_summary: format!(
+                            "将 {} 安装为 HAL100 私有、固定版本的外部 Agent，不改动用户现有环境",
+                            descriptor.display_name
+                        ),
+                        requires_native_confirmation: true,
+                    },
+                };
+                self.register_pending_action(
+                    pending,
+                    request,
+                    PendingActionPresentation {
+                        tool_name: PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+                        label: "生成外部 Agent 私有安装计划",
+                        summary: format!(
+                            "{} 私有安装计划已生成；尚未安装，必须通过 Rust 原生确认。",
+                            descriptor.display_name
+                        ),
+                    },
+                )
             }
             Err(error) => {
                 let error = AgentToolExecutionError::from(error);
                 Ok(tool_error(
                     request,
                     error.code(),
-                    "Rust could not inspect OpenCode safely",
+                    "Rust refused to create an unavailable, conflicting, or unverified deployment plan",
                 ))
             }
         }
     }
 
-    fn plan_opencode_configuration(
+    fn plan_managed_external_agent_removal(
         &mut self,
         request: &ToolCallRequestPayload,
+        integration_id: ExternalAgentIntegrationId,
     ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
-        if !self.completed(OPENCODE_STATUS_TOOL) {
+        if self.external_agent_inspection != Some(integration_id) {
             return Ok(tool_error(
                 request,
-                "opencode_status_required",
-                "inspect_opencode_status must complete before planning configuration",
+                "external_agent_status_required",
+                "inspect_external_agent must complete for the same integrationId before planning managed removal",
             ));
         }
         if self.has_action_plan() {
             return Ok(action_already_planned(request));
         }
-        match build_opencode_configuration_plan(&self.executor, &self.run_id) {
-            Ok(pending) => self.register_pending_action(
-                pending,
+        let status = build_external_agent_status(&self.executor, integration_id)?;
+        if !status.managed_installation {
+            return Ok(tool_error(
                 request,
-                PendingActionPresentation {
-                    tool_name: PLAN_OPENCODE_CONFIGURATION_TOOL,
-                    label: "生成 OpenCode 配置计划",
-                    summary: "OpenCode 配置计划已生成；尚未写入配置，必须通过 Rust 原生确认。"
-                        .to_owned(),
-                },
-            ),
+                "managed_external_agent_not_installed",
+                "HAL100 will not remove a user-installed external Agent",
+            ));
+        }
+        let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
+        match self
+            .executor
+            .managed_deployment
+            .plan_removal(integration_id)
+        {
+            Ok(removal) => {
+                let pending = PendingAgentAction {
+                    executor: AgentActionExecutor::RemoveExternalAgent {
+                        integration_id,
+                        deployment_plan_id: removal.plan_id,
+                    },
+                    plan: AgentActionPlan {
+                        plan_id: next_plan_id(),
+                        run_id: self.run_id.clone(),
+                        action_kind: AgentActionKind::RemoveExternalAgent,
+                        target_id: descriptor.integration_id.to_owned(),
+                        target_name: descriptor.display_name.to_owned(),
+                        current_state: Some(format!(
+                            "Rust 已确认存在 HAL100 私有 {} {}",
+                            descriptor.display_name, removal.package_version
+                        )),
+                        details: std::iter::once(format!("移除范围：{}", removal.removal_scope))
+                            .chain(removal.lifecycle_notes.into_iter().map(str::to_owned))
+                            .collect(),
+                        expires_at_ms: removal.expires_at_ms,
+                        action_summary: format!(
+                            "仅将 HAL100 私有 {} 运行时移入系统废纸篓；用户安装、配置和会话保持不变",
+                            descriptor.display_name
+                        ),
+                        requires_native_confirmation: true,
+                    },
+                };
+                self.register_pending_action(
+                    pending,
+                    request,
+                    PendingActionPresentation {
+                        tool_name: PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
+                        label: "生成外部 Agent 私有卸载计划",
+                        summary: format!(
+                            "{} 私有卸载计划已生成；尚未移动任何文件，必须通过 Rust 原生确认。",
+                            descriptor.display_name
+                        ),
+                    },
+                )
+            }
+            Err(error) => {
+                let error = AgentToolExecutionError::from(error);
+                Ok(tool_error(
+                    request,
+                    error.code(),
+                    "Rust refused to remove a missing, changed, user-owned, or unsafe external Agent runtime",
+                ))
+            }
+        }
+    }
+
+    fn plan_external_agent_disconnection(
+        &mut self,
+        request: &ToolCallRequestPayload,
+        integration_id: ExternalAgentIntegrationId,
+    ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
+        if self.external_agent_inspection != Some(integration_id) {
+            return Ok(tool_error(
+                request,
+                "external_agent_status_required",
+                "inspect_external_agent must complete for the same integrationId before planning disconnection",
+            ));
+        }
+        if self.has_action_plan() {
+            return Ok(action_already_planned(request));
+        }
+        let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
+        match build_external_agent_disconnection_plan(&self.executor, &self.run_id, integration_id)
+        {
+            Ok(pending) => {
+                let display_name = descriptor.display_name;
+                self.register_pending_action(
+                    pending,
+                    request,
+                    PendingActionPresentation {
+                        tool_name: PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
+                        label: "生成外部 Agent 断开计划",
+                        summary: format!(
+                            "{display_name} 断开事务计划已生成；尚未修改配置或撤销凭据，必须通过 Rust 原生确认。"
+                        ),
+                    },
+                )
+            }
             Err(error) => Ok(tool_error(
                 request,
                 error.code(),
-                "Rust refused to create an unsafe or conflicting OpenCode plan",
+                "Rust refused to create an unsafe external Agent disconnection plan",
             )),
         }
     }
@@ -915,6 +1371,22 @@ where
     })
 }
 
+fn is_user_backend(backend_id: &str) -> bool {
+    backend_id != BUILT_IN_AGENT_RUNTIME.runtime_id
+        && !backend_id.starts_with(INTERNAL_CLOUD_BACKEND_PREFIX)
+}
+
+fn sample_state(
+    sample: &AgentOperationalHealthSample,
+) -> (hal100_protocol::EngineRuntimeState, bool, u32, u32) {
+    (
+        sample.engine_runtime_state,
+        sample.active_route,
+        sample.registered_backend_count,
+        sample.open_circuit_count,
+    )
+}
+
 fn build_runtime_catalog(
     executor: &AgentToolExecutor,
 ) -> Result<AgentRuntimeCatalog, AgentToolExecutionError> {
@@ -1115,34 +1587,247 @@ fn build_engine_remove_plan(
     }))
 }
 
-fn build_opencode_configuration_plan(
+fn build_external_agent_status(
+    executor: &AgentToolExecutor,
+    integration_id: ExternalAgentIntegrationId,
+) -> Result<AgentExternalIntegrationStatus, AgentToolExecutionError> {
+    let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
+    let managed_installation = integration_id == ExternalAgentIntegrationId::PiCodingAgent
+        && executor.managed_deployment.managed_pi_installed()?;
+    let (installed, version, integration_state, configured_protocol, warning_count) =
+        match integration_id {
+            ExternalAgentIntegrationId::OpenCode => {
+                let detection = executor.open_code.detect()?;
+                let state = match detection.integration_state {
+                    OpenCodeIntegrationState::NotConfigured if detection.installed => {
+                        ExternalAgentIntegrationState::InstalledNotConfigured
+                    }
+                    OpenCodeIntegrationState::NotConfigured => {
+                        ExternalAgentIntegrationState::NotInstalled
+                    }
+                    OpenCodeIntegrationState::Configured => {
+                        ExternalAgentIntegrationState::Configured
+                    }
+                    OpenCodeIntegrationState::Conflict => ExternalAgentIntegrationState::Conflict,
+                    OpenCodeIntegrationState::ModifiedOutsideHal100 => {
+                        ExternalAgentIntegrationState::ModifiedOutsideHal100
+                    }
+                };
+                let protocol = (state == ExternalAgentIntegrationState::Configured)
+                    .then_some(ExternalAgentGatewayProtocol::OpenAiChatCompletions);
+                (
+                    detection.installed,
+                    detection.version,
+                    state,
+                    protocol,
+                    detection.warnings.len(),
+                )
+            }
+            ExternalAgentIntegrationId::PiCodingAgent => {
+                let detection = executor.pi_coding_agent.detect()?;
+                (
+                    detection.installed,
+                    detection.version,
+                    detection.integration_state,
+                    detection.configured_protocol,
+                    detection.warnings.len(),
+                )
+            }
+            ExternalAgentIntegrationId::OpenClaw => {
+                let detection = executor.openclaw.detect()?;
+                (
+                    detection.installed,
+                    detection.version,
+                    detection.integration_state,
+                    detection.configured_protocol,
+                    detection.warnings.len(),
+                )
+            }
+            ExternalAgentIntegrationId::HermesAgent => {
+                let detection = executor.hermes_agent.detect()?;
+                (
+                    detection.installed,
+                    detection.version,
+                    detection.integration_state,
+                    detection.configured_protocol,
+                    detection.warnings.len(),
+                )
+            }
+        };
+    Ok(AgentExternalIntegrationStatus {
+        integration_id: descriptor.integration_id.to_owned(),
+        display_name: descriptor.display_name.to_owned(),
+        installed,
+        managed_installation,
+        version,
+        integration_state,
+        configured_protocol,
+        warning_count: warning_count.try_into().unwrap_or(u32::MAX),
+    })
+}
+
+fn build_external_agent_configuration_plan(
     executor: &AgentToolExecutor,
     run_id: &str,
+    integration_id: ExternalAgentIntegrationId,
 ) -> Result<PendingAgentAction, AgentToolExecutionError> {
-    let configuration_plan = executor.open_code.plan_configuration()?;
+    let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
+    let (integration_plan_id, expires_at_ms, creates_backup, preserves_default_model, protocol) =
+        match integration_id {
+            ExternalAgentIntegrationId::OpenCode => {
+                let plan = executor.open_code.plan_configuration()?;
+                (
+                    plan.plan_id,
+                    plan.expires_at_ms,
+                    plan.creates_backup,
+                    plan.preserves_default_model,
+                    ExternalAgentGatewayProtocol::OpenAiChatCompletions,
+                )
+            }
+            ExternalAgentIntegrationId::PiCodingAgent => {
+                let plan = executor.pi_coding_agent.plan_configuration()?;
+                (
+                    plan.plan_id,
+                    plan.expires_at_ms,
+                    plan.creates_backup,
+                    plan.preserves_default_model,
+                    plan.gateway_protocol,
+                )
+            }
+            ExternalAgentIntegrationId::OpenClaw => {
+                let plan = executor
+                    .openclaw
+                    .plan_configuration(ExternalAgentGatewayProtocol::OpenAiChatCompletions)?;
+                (
+                    plan.plan_id,
+                    plan.expires_at_ms,
+                    plan.creates_backup,
+                    plan.preserves_default_model,
+                    plan.gateway_protocol,
+                )
+            }
+            ExternalAgentIntegrationId::HermesAgent => {
+                let plan = executor.hermes_agent.plan_configuration()?;
+                (
+                    plan.plan_id,
+                    plan.expires_at_ms,
+                    plan.creates_backup,
+                    plan.preserves_default_model,
+                    plan.gateway_protocol,
+                )
+            }
+        };
     Ok(PendingAgentAction {
-        executor: AgentActionExecutor::ConfigureOpenCode {
-            configuration_plan_id: configuration_plan.plan_id.clone(),
+        executor: AgentActionExecutor::ConfigureExternalAgent {
+            integration_id,
+            integration_plan_id,
         },
         plan: AgentActionPlan {
             plan_id: next_plan_id(),
             run_id: run_id.to_owned(),
-            action_kind: AgentActionKind::ConfigureOpenCode,
-            target_id: "opencode".to_owned(),
-            target_name: "OpenCode".to_owned(),
-            current_state: Some("Rust 已检查现有全局配置与 HAL100 Provider 所有权".to_owned()),
+            action_kind: AgentActionKind::ConfigureExternalAgent,
+            target_id: descriptor.integration_id.to_owned(),
+            target_name: descriptor.display_name.to_owned(),
+            current_state: Some("Rust 已检查现有配置快照与 HAL100 受管片段所有权".to_owned()),
             details: vec![
-                format!("配置文件：{}", configuration_plan.config_path),
-                "保留用户默认模型，不覆盖冲突 Provider".to_owned(),
-                if configuration_plan.creates_backup {
-                    "写入前创建原配置备份".to_owned()
+                format!("使用受支持的 {:?} Gateway 协议", protocol),
+                if preserves_default_model {
+                    "保留用户默认模型，并拒绝覆盖冲突配置".to_owned()
                 } else {
-                    "当前无需创建旧配置备份".to_owned()
+                    "只写入适配器声明的 HAL100 受管配置".to_owned()
+                },
+                "使用该外部 Agent 的独立 Gateway 凭据".to_owned(),
+                if creates_backup {
+                    "写入前创建原配置备份；写后验证失败时自动回滚".to_owned()
+                } else {
+                    "写后验证失败时移除新配置并自动回滚".to_owned()
                 },
             ],
-            expires_at_ms: configuration_plan.expires_at_ms,
-            action_summary: "向 OpenCode 写入由 HAL100 管理的 Gateway Provider 和独立凭据引用"
-                .to_owned(),
+            expires_at_ms,
+            action_summary: format!(
+                "以事务方式为 {} 写入 HAL100 受管 Gateway 配置和独立凭据",
+                descriptor.display_name
+            ),
+            requires_native_confirmation: true,
+        },
+    })
+}
+
+fn build_external_agent_disconnection_plan(
+    executor: &AgentToolExecutor,
+    run_id: &str,
+    integration_id: ExternalAgentIntegrationId,
+) -> Result<PendingAgentAction, AgentToolExecutionError> {
+    let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
+    let (integration_plan_id, expires_at_ms, creates_backup, revokes_credential) =
+        match integration_id {
+            ExternalAgentIntegrationId::OpenCode => {
+                let plan = executor.open_code.plan_disconnection()?;
+                (
+                    plan.plan_id,
+                    plan.expires_at_ms,
+                    plan.creates_backup,
+                    plan.revokes_credential,
+                )
+            }
+            ExternalAgentIntegrationId::PiCodingAgent => {
+                let plan = executor.pi_coding_agent.plan_disconnection()?;
+                (
+                    plan.plan_id,
+                    plan.expires_at_ms,
+                    plan.creates_backup,
+                    plan.revokes_credential,
+                )
+            }
+            ExternalAgentIntegrationId::OpenClaw => {
+                let plan = executor.openclaw.plan_disconnection()?;
+                (
+                    plan.plan_id,
+                    plan.expires_at_ms,
+                    plan.creates_backup,
+                    plan.revokes_credential,
+                )
+            }
+            ExternalAgentIntegrationId::HermesAgent => {
+                let plan = executor.hermes_agent.plan_disconnection()?;
+                (
+                    plan.plan_id,
+                    plan.expires_at_ms,
+                    plan.creates_backup,
+                    plan.revokes_credential,
+                )
+            }
+        };
+    Ok(PendingAgentAction {
+        executor: AgentActionExecutor::DisconnectExternalAgent {
+            integration_id,
+            integration_plan_id,
+        },
+        plan: AgentActionPlan {
+            plan_id: next_plan_id(),
+            run_id: run_id.to_owned(),
+            action_kind: AgentActionKind::DisconnectExternalAgent,
+            target_id: descriptor.integration_id.to_owned(),
+            target_name: descriptor.display_name.to_owned(),
+            current_state: Some("Rust 已确认 HAL100 受管配置与独立凭据仍保持原快照".to_owned()),
+            details: vec![
+                "只移除 HAL100 受管配置片段，不删除用户配置文件".to_owned(),
+                if revokes_credential {
+                    "撤销并删除该外部 Agent 的专属 Gateway 凭据".to_owned()
+                } else {
+                    "不操作任何非 HAL100 凭据".to_owned()
+                },
+                if creates_backup {
+                    "修改前创建原配置备份；任一步失败时自动回滚".to_owned()
+                } else {
+                    "任一步失败时恢复原有受管状态".to_owned()
+                },
+            ],
+            expires_at_ms,
+            action_summary: format!(
+                "以事务方式断开 {}，仅移除 HAL100 受管资源",
+                descriptor.display_name
+            ),
             requires_native_confirmation: true,
         },
     })
@@ -1167,16 +1852,15 @@ fn build_diagnostic_repair_plan(
             .ok_or(AgentToolExecutionError::ActionPlan(
                 AgentActionPlanError::Unavailable,
             ))?,
-        DiagnosticRepairKind::ConfigureOpenCode => {
-            let detection = executor.open_code.detect()?;
-            if !detection.installed
-                || detection.integration_state != OpenCodeIntegrationState::NotConfigured
-            {
-                return Err(AgentToolExecutionError::ActionPlan(
-                    AgentActionPlanError::Unavailable,
-                ));
-            }
-            build_opencode_configuration_plan(executor, run_id)?
+        DiagnosticRepairKind::ConfigureExternalAgent => {
+            let target_id = finding
+                .target_id
+                .as_deref()
+                .ok_or(AgentToolExecutionError::InvalidProtocol)?;
+            let integration_id = ExternalAgentIntegrationRegistry::by_integration_id(target_id)
+                .map(|descriptor| descriptor.id)
+                .ok_or(AgentToolExecutionError::InvalidProtocol)?;
+            build_external_agent_configuration_plan(executor, run_id, integration_id)?
         }
         DiagnosticRepairKind::RemoveModelIndex => {
             let target_id = finding
@@ -1240,6 +1924,31 @@ fn action_already_planned(request: &ToolCallRequestPayload) -> ToolCallResultPay
 
 fn next_plan_id() -> String {
     format!("agent-plan-{}", Uuid::new_v4().simple())
+}
+
+fn safe_operational_identifier(value: &str) -> String {
+    let valid = !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_-.:".contains(character));
+    if valid {
+        value.to_owned()
+    } else {
+        "unknown".to_owned()
+    }
+}
+
+fn safe_operational_detail(details: &[hal100_protocol::AuditDetail], key: &str) -> Option<String> {
+    details
+        .iter()
+        .find(|detail| detail.key == key)
+        .map(|detail| safe_operational_identifier(&detail.value))
+        .filter(|value| value != "unknown")
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    value.try_into().unwrap_or(u32::MAX)
 }
 
 fn now_ms() -> i64 {

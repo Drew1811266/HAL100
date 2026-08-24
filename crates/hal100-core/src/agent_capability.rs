@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 
 use hal100_protocol::{
-    ENVIRONMENT_DIAGNOSTICS_TOOL, MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL,
-    OPENCODE_STATUS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
-    PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL, RUNTIME_CATALOG_TOOL,
-    SYSTEM_SUMMARY_TOOL,
+    ENVIRONMENT_DIAGNOSTICS_TOOL, EXTERNAL_AGENT_STATUS_TOOL, MODEL_CATALOG_SEARCH_TOOL,
+    MODEL_REPOSITORY_INSPECTION_TOOL, OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+    OPERATIONAL_HISTORY_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
+    PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+    PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+    PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
+    PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
 };
 
 /// Stable business identities for the capabilities exposed to HAL100 Agent.
@@ -23,11 +25,16 @@ pub enum AgentCapabilityId {
     PlanDiagnosticRepair = 5,
     PlanEngineInstall = 6,
     PlanEngineRemove = 7,
-    InspectOpenCodeStatus = 8,
-    PlanOpenCodeConfiguration = 9,
-    SearchModelCatalog = 10,
-    InspectModelRepository = 11,
-    PlanModelDownload = 12,
+    InspectExternalAgent = 8,
+    PlanExternalAgentConfiguration = 9,
+    PlanExternalAgentDisconnection = 10,
+    SearchModelCatalog = 11,
+    InspectModelRepository = 12,
+    PlanModelDownload = 13,
+    InspectOperationalHistory = 14,
+    ObserveOperationalHealth = 15,
+    PlanExternalAgentInstallation = 16,
+    PlanManagedExternalAgentRemoval = 17,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +57,7 @@ pub enum AgentCapabilityDataScope {
     DiagnosticMetadata,
     IntegrationMetadata,
     PublicCatalogMetadata,
+    OperationalMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,14 +76,14 @@ const RUNTIME_CATALOG_PREREQUISITE: &[AgentCapabilityId] =
     &[AgentCapabilityId::InspectRuntimeCatalog];
 const ENVIRONMENT_DIAGNOSTICS_PREREQUISITE: &[AgentCapabilityId] =
     &[AgentCapabilityId::InspectEnvironmentDiagnostics];
-const OPENCODE_STATUS_PREREQUISITE: &[AgentCapabilityId] =
-    &[AgentCapabilityId::InspectOpenCodeStatus];
+const EXTERNAL_AGENT_STATUS_PREREQUISITE: &[AgentCapabilityId] =
+    &[AgentCapabilityId::InspectExternalAgent];
 const MODEL_CATALOG_SEARCH_PREREQUISITE: &[AgentCapabilityId] =
     &[AgentCapabilityId::SearchModelCatalog];
 const MODEL_REPOSITORY_INSPECTION_PREREQUISITE: &[AgentCapabilityId] =
     &[AgentCapabilityId::InspectModelRepository];
 
-const AGENT_CAPABILITIES: [AgentCapabilityDescriptor; 13] = [
+const AGENT_CAPABILITIES: [AgentCapabilityDescriptor; 18] = [
     AgentCapabilityDescriptor {
         id: AgentCapabilityId::InspectSystemSummary,
         tool_name: SYSTEM_SUMMARY_TOOL,
@@ -149,8 +157,8 @@ const AGENT_CAPABILITIES: [AgentCapabilityDescriptor; 13] = [
         requires_native_confirmation: true,
     },
     AgentCapabilityDescriptor {
-        id: AgentCapabilityId::InspectOpenCodeStatus,
-        tool_name: OPENCODE_STATUS_TOOL,
+        id: AgentCapabilityId::InspectExternalAgent,
+        tool_name: EXTERNAL_AGENT_STATUS_TOOL,
         effect: AgentCapabilityEffect::ReadOnly,
         maximum_risk: AgentCapabilityRisk::ReadOnly,
         data_scope: AgentCapabilityDataScope::IntegrationMetadata,
@@ -158,12 +166,21 @@ const AGENT_CAPABILITIES: [AgentCapabilityDescriptor; 13] = [
         requires_native_confirmation: false,
     },
     AgentCapabilityDescriptor {
-        id: AgentCapabilityId::PlanOpenCodeConfiguration,
-        tool_name: PLAN_OPENCODE_CONFIGURATION_TOOL,
+        id: AgentCapabilityId::PlanExternalAgentConfiguration,
+        tool_name: PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
         effect: AgentCapabilityEffect::ActionPlan,
         maximum_risk: AgentCapabilityRisk::ControlledChange,
         data_scope: AgentCapabilityDataScope::IntegrationMetadata,
-        prerequisites: OPENCODE_STATUS_PREREQUISITE,
+        prerequisites: EXTERNAL_AGENT_STATUS_PREREQUISITE,
+        requires_native_confirmation: true,
+    },
+    AgentCapabilityDescriptor {
+        id: AgentCapabilityId::PlanExternalAgentDisconnection,
+        tool_name: PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
+        effect: AgentCapabilityEffect::ActionPlan,
+        maximum_risk: AgentCapabilityRisk::ControlledChange,
+        data_scope: AgentCapabilityDataScope::IntegrationMetadata,
+        prerequisites: EXTERNAL_AGENT_STATUS_PREREQUISITE,
         requires_native_confirmation: true,
     },
     AgentCapabilityDescriptor {
@@ -191,6 +208,42 @@ const AGENT_CAPABILITIES: [AgentCapabilityDescriptor; 13] = [
         maximum_risk: AgentCapabilityRisk::ControlledChange,
         data_scope: AgentCapabilityDataScope::PublicCatalogMetadata,
         prerequisites: MODEL_REPOSITORY_INSPECTION_PREREQUISITE,
+        requires_native_confirmation: true,
+    },
+    AgentCapabilityDescriptor {
+        id: AgentCapabilityId::InspectOperationalHistory,
+        tool_name: OPERATIONAL_HISTORY_TOOL,
+        effect: AgentCapabilityEffect::ReadOnly,
+        maximum_risk: AgentCapabilityRisk::ReadOnly,
+        data_scope: AgentCapabilityDataScope::OperationalMetadata,
+        prerequisites: NO_PREREQUISITES,
+        requires_native_confirmation: false,
+    },
+    AgentCapabilityDescriptor {
+        id: AgentCapabilityId::ObserveOperationalHealth,
+        tool_name: OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+        effect: AgentCapabilityEffect::ReadOnly,
+        maximum_risk: AgentCapabilityRisk::ReadOnly,
+        data_scope: AgentCapabilityDataScope::OperationalMetadata,
+        prerequisites: NO_PREREQUISITES,
+        requires_native_confirmation: false,
+    },
+    AgentCapabilityDescriptor {
+        id: AgentCapabilityId::PlanExternalAgentInstallation,
+        tool_name: PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+        effect: AgentCapabilityEffect::ActionPlan,
+        maximum_risk: AgentCapabilityRisk::ControlledChange,
+        data_scope: AgentCapabilityDataScope::IntegrationMetadata,
+        prerequisites: EXTERNAL_AGENT_STATUS_PREREQUISITE,
+        requires_native_confirmation: true,
+    },
+    AgentCapabilityDescriptor {
+        id: AgentCapabilityId::PlanManagedExternalAgentRemoval,
+        tool_name: PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
+        effect: AgentCapabilityEffect::ActionPlan,
+        maximum_risk: AgentCapabilityRisk::DestructiveChange,
+        data_scope: AgentCapabilityDataScope::IntegrationMetadata,
+        prerequisites: EXTERNAL_AGENT_STATUS_PREREQUISITE,
         requires_native_confirmation: true,
     },
 ];
@@ -263,8 +316,8 @@ mod tests {
 
     #[test]
     fn registry_has_one_descriptor_for_every_stable_capability() {
-        assert_eq!(AgentCapabilityRegistry::all().len(), 13);
-        assert_eq!(usize::from(AGENT_CAPABILITY_COUNT), 13);
+        assert_eq!(AgentCapabilityRegistry::all().len(), 18);
+        assert_eq!(usize::from(AGENT_CAPABILITY_COUNT), 18);
 
         let ids = AgentCapabilityRegistry::all()
             .iter()
@@ -274,8 +327,8 @@ mod tests {
             .iter()
             .map(|descriptor| descriptor.tool_name)
             .collect::<HashSet<_>>();
-        assert_eq!(ids.len(), 13);
-        assert_eq!(tool_names.len(), 13);
+        assert_eq!(ids.len(), 18);
+        assert_eq!(tool_names.len(), 18);
         for descriptor in AgentCapabilityRegistry::all() {
             assert_eq!(
                 AgentCapabilityRegistry::descriptor(descriptor.id),
@@ -290,13 +343,13 @@ mod tests {
     }
 
     #[test]
-    fn registry_matches_the_shared_rpc_v4_tool_manifest() {
+    fn registry_matches_the_shared_rpc_v9_tool_manifest() {
         let manifest: serde_json::Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v4-tools.json"))
-                .expect("shared Agent RPC v4 tool manifest");
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v9-tools.json"))
+                .expect("shared Agent RPC v9 tool manifest");
         let tools = manifest["tools"].as_array().expect("tool manifest array");
 
-        assert_eq!(manifest["protocolVersion"], 4);
+        assert_eq!(manifest["protocolVersion"], 9);
         assert_eq!(tools.len(), AgentCapabilityRegistry::all().len());
         for (tool, descriptor) in tools.iter().zip(AgentCapabilityRegistry::all()) {
             assert_eq!(tool["name"], descriptor.tool_name);
@@ -344,15 +397,15 @@ mod tests {
         let mut requirements = AgentCapabilitySet::new();
         requirements.require(AgentCapabilityId::PlanModelStart);
         requirements.require(AgentCapabilityId::PlanDiagnosticRepair);
-        requirements.require(AgentCapabilityId::PlanOpenCodeConfiguration);
+        requirements.require(AgentCapabilityId::PlanExternalAgentConfiguration);
 
         for expected in [
             AgentCapabilityId::PlanModelStart,
             AgentCapabilityId::InspectRuntimeCatalog,
             AgentCapabilityId::PlanDiagnosticRepair,
             AgentCapabilityId::InspectEnvironmentDiagnostics,
-            AgentCapabilityId::PlanOpenCodeConfiguration,
-            AgentCapabilityId::InspectOpenCodeStatus,
+            AgentCapabilityId::PlanExternalAgentConfiguration,
+            AgentCapabilityId::InspectExternalAgent,
         ] {
             assert!(requirements.contains(expected));
         }

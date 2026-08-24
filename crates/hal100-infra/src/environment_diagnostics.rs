@@ -4,14 +4,16 @@ use hal100_core::BUILT_IN_AGENT_RUNTIME;
 use hal100_protocol::{
     DiagnosticComponent, DiagnosticRepairKind, DiagnosticSeverity, EngineInstallState,
     EngineRuntimeState, EnvironmentDiagnosticFinding, EnvironmentDiagnosticReport,
-    EnvironmentHealthStatus, LocalModelState, OpenCodeIntegrationState,
+    EnvironmentHealthStatus, ExternalAgentDetection, ExternalAgentIntegrationState,
+    LocalModelState, OpenCodeIntegrationState,
 };
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    AGENT_MODEL_ID, Database, DatabaseError, EngineManagerError, GatewayState, LlamaCppManager,
-    OpenCodeIntegrationError, OpenCodeManager,
+    AGENT_MODEL_ID, Database, DatabaseError, EngineManagerError, GatewayState,
+    HermesAgentIntegrationAdapter, LlamaCppManager, OpenClawIntegrationAdapter,
+    OpenCodeIntegrationError, OpenCodeManager, PiCodingAgentIntegrationAdapter,
 };
 
 const MAX_FINDINGS: usize = 64;
@@ -33,6 +35,9 @@ pub struct EnvironmentDiagnostics {
     database: Arc<Database>,
     engine: Arc<LlamaCppManager>,
     open_code: Arc<OpenCodeManager>,
+    pi_coding_agent: Arc<PiCodingAgentIntegrationAdapter>,
+    openclaw: Arc<OpenClawIntegrationAdapter>,
+    hermes_agent: Arc<HermesAgentIntegrationAdapter>,
     gateway: GatewayState,
 }
 
@@ -52,12 +57,18 @@ impl EnvironmentDiagnostics {
         database: Arc<Database>,
         engine: Arc<LlamaCppManager>,
         open_code: Arc<OpenCodeManager>,
+        pi_coding_agent: Arc<PiCodingAgentIntegrationAdapter>,
+        openclaw: Arc<OpenClawIntegrationAdapter>,
+        hermes_agent: Arc<HermesAgentIntegrationAdapter>,
         gateway: GatewayState,
     ) -> Self {
         Self {
             database,
             engine,
             open_code,
+            pi_coding_agent,
+            openclaw,
+            hermes_agent,
             gateway,
         }
     }
@@ -66,7 +77,10 @@ impl EnvironmentDiagnostics {
         self.database.refresh_local_model_states()?;
         let engine = self.engine.status()?;
         let models = self.database.local_models()?;
-        let open_code = self.open_code.detect()?;
+        let open_code = self.open_code.detect();
+        let pi_coding_agent = self.pi_coding_agent.detect();
+        let openclaw = self.openclaw.detect();
+        let hermes_agent = self.hermes_agent.detect();
         let routing = self.gateway.routing_snapshot();
         let mut findings = Vec::new();
 
@@ -229,74 +243,52 @@ impl EnvironmentDiagnostics {
             }
         }
 
-        if !open_code.installed {
-            findings.push(FindingDraft {
-                code: "opencode_not_installed",
-                component: DiagnosticComponent::OpenCode,
-                severity: DiagnosticSeverity::Info,
-                title: "未检测到 OpenCode".to_owned(),
-                summary: "OpenCode是首版适配客户端，但不是HAL100 Gateway运行的必需组件。"
-                    .to_owned(),
-                target_id: Some("opencode".to_owned()),
-                repair_kind: None,
-                repair_summary: None,
-            });
-        } else {
-            match open_code.integration_state {
-                OpenCodeIntegrationState::NotConfigured => findings.push(FindingDraft {
-                    code: "opencode_not_configured",
+        let mut integration_counts = ExternalAgentCounts::default();
+        match open_code.as_ref() {
+            Ok(detection) => add_external_agent_findings(
+                &mut findings,
+                &mut integration_counts,
+                ExternalAgentFindingInput {
+                    integration_id: "opencode",
+                    display_name: "OpenCode",
                     component: DiagnosticComponent::OpenCode,
-                    severity: DiagnosticSeverity::Warning,
-                    title: "OpenCode 尚未接入 HAL100".to_owned(),
-                    summary: "已检测到OpenCode，但全局配置中没有HAL100托管Provider。".to_owned(),
-                    target_id: Some("opencode".to_owned()),
-                    repair_kind: Some(DiagnosticRepairKind::ConfigureOpenCode),
-                    repair_summary: Some(
-                        "保留用户默认模型，并写入HAL100 Gateway Provider和独立凭据引用。"
-                            .to_owned(),
-                    ),
-                }),
-                OpenCodeIntegrationState::Conflict => findings.push(FindingDraft {
-                    code: "opencode_provider_conflict",
-                    component: DiagnosticComponent::OpenCode,
-                    severity: DiagnosticSeverity::Error,
-                    title: "OpenCode 存在非HAL100所有的同名Provider".to_owned(),
-                    summary: "HAL100拒绝覆盖用户或其他工具创建的Provider，需要用户先处理命名冲突。"
-                        .to_owned(),
-                    target_id: Some("opencode".to_owned()),
-                    repair_kind: None,
-                    repair_summary: None,
-                }),
-                OpenCodeIntegrationState::ModifiedOutsideHal100 => findings.push(FindingDraft {
-                    code: "opencode_modified_outside_hal100",
-                    component: DiagnosticComponent::OpenCode,
-                    severity: DiagnosticSeverity::Error,
-                    title: "HAL100托管的OpenCode配置已在外部发生变化".to_owned(),
-                    summary: "为保护用户配置，HAL100不会自动覆盖；需要检查差异后重新确认。"
-                        .to_owned(),
-                    target_id: Some("opencode".to_owned()),
-                    repair_kind: None,
-                    repair_summary: None,
-                }),
-                OpenCodeIntegrationState::Configured => {
-                    if !open_code.warnings.is_empty() {
-                        findings.push(FindingDraft {
-                            code: "opencode_configuration_warning",
-                            component: DiagnosticComponent::OpenCode,
-                            severity: DiagnosticSeverity::Info,
-                            title: "OpenCode配置存在提示".to_owned(),
-                            summary: format!(
-                                "检测到{}项版本或配置优先级提示；未自动修改。",
-                                open_code.warnings.len()
-                            ),
-                            target_id: Some("opencode".to_owned()),
-                            repair_kind: None,
-                            repair_summary: None,
-                        });
-                    }
-                }
-            }
+                    installed: detection.installed,
+                    state: open_code_state(detection.installed, detection.integration_state),
+                    warning_count: detection.warnings.len(),
+                },
+            ),
+            Err(_) => add_external_agent_probe_failure(
+                &mut findings,
+                &mut integration_counts,
+                "opencode",
+                "OpenCode",
+                DiagnosticComponent::OpenCode,
+            ),
         }
+        add_external_detection_result(
+            &mut findings,
+            &mut integration_counts,
+            pi_coding_agent.as_ref().ok(),
+            "pi-coding-agent",
+            "Pi Coding Agent",
+            DiagnosticComponent::PiCodingAgent,
+        );
+        add_external_detection_result(
+            &mut findings,
+            &mut integration_counts,
+            openclaw.as_ref().ok(),
+            "openclaw",
+            "OpenClaw",
+            DiagnosticComponent::OpenClaw,
+        );
+        add_external_detection_result(
+            &mut findings,
+            &mut integration_counts,
+            hermes_agent.as_ref().ok(),
+            "hermes-agent",
+            "Hermes Agent",
+            DiagnosticComponent::HermesAgent,
+        );
 
         findings.sort_by_key(|finding| {
             (
@@ -346,14 +338,203 @@ impl EnvironmentDiagnostics {
             ready_model_count: saturating_u32(ready_model_count),
             unhealthy_model_count: saturating_u32(unhealthy_model_count),
             configured_backend_count: saturating_u32(user_backend_ids.len()),
-            open_code_installed: open_code.installed,
-            open_code_integration_state: open_code.integration_state,
+            open_code_installed: open_code
+                .as_ref()
+                .is_ok_and(|detection| detection.installed),
+            open_code_integration_state: open_code
+                .as_ref()
+                .map(|detection| detection.integration_state)
+                .unwrap_or(OpenCodeIntegrationState::NotConfigured),
+            installed_external_agent_count: saturating_u32(integration_counts.installed),
+            configured_external_agent_count: saturating_u32(integration_counts.configured),
+            attention_external_agent_count: saturating_u32(integration_counts.attention),
             warning_count: saturating_u32(warning_count),
             error_count: saturating_u32(error_count),
             omitted_finding_count: saturating_u32(omitted_finding_count),
             findings,
         })
     }
+}
+
+#[derive(Default)]
+struct ExternalAgentCounts {
+    installed: usize,
+    configured: usize,
+    attention: usize,
+}
+
+struct ExternalAgentFindingInput<'a> {
+    integration_id: &'a str,
+    display_name: &'a str,
+    component: DiagnosticComponent,
+    installed: bool,
+    state: ExternalAgentIntegrationState,
+    warning_count: usize,
+}
+
+fn open_code_state(
+    installed: bool,
+    state: OpenCodeIntegrationState,
+) -> ExternalAgentIntegrationState {
+    if !installed {
+        return ExternalAgentIntegrationState::NotInstalled;
+    }
+    match state {
+        OpenCodeIntegrationState::NotConfigured => {
+            ExternalAgentIntegrationState::InstalledNotConfigured
+        }
+        OpenCodeIntegrationState::Configured => ExternalAgentIntegrationState::Configured,
+        OpenCodeIntegrationState::Conflict => ExternalAgentIntegrationState::Conflict,
+        OpenCodeIntegrationState::ModifiedOutsideHal100 => {
+            ExternalAgentIntegrationState::ModifiedOutsideHal100
+        }
+    }
+}
+
+fn add_external_detection_result(
+    findings: &mut Vec<FindingDraft>,
+    counts: &mut ExternalAgentCounts,
+    detection: Option<&ExternalAgentDetection>,
+    integration_id: &'static str,
+    display_name: &'static str,
+    component: DiagnosticComponent,
+) {
+    if let Some(detection) = detection {
+        add_external_agent_findings(
+            findings,
+            counts,
+            ExternalAgentFindingInput {
+                integration_id,
+                display_name,
+                component,
+                installed: detection.installed,
+                state: detection.integration_state,
+                warning_count: detection.warnings.len(),
+            },
+        );
+    } else {
+        add_external_agent_probe_failure(findings, counts, integration_id, display_name, component);
+    }
+}
+
+fn add_external_agent_probe_failure(
+    findings: &mut Vec<FindingDraft>,
+    counts: &mut ExternalAgentCounts,
+    integration_id: &str,
+    display_name: &str,
+    component: DiagnosticComponent,
+) {
+    counts.attention += 1;
+    findings.push(FindingDraft {
+        code: "external_agent_probe_failed",
+        component,
+        severity: DiagnosticSeverity::Error,
+        title: format!("{display_name} 检测失败"),
+        summary: "受控检测未能形成可信快照；HAL100没有修改配置，也不会根据不完整状态生成修复计划。"
+            .to_owned(),
+        target_id: Some(integration_id.to_owned()),
+        repair_kind: None,
+        repair_summary: None,
+    });
+}
+
+fn add_external_agent_findings(
+    findings: &mut Vec<FindingDraft>,
+    counts: &mut ExternalAgentCounts,
+    input: ExternalAgentFindingInput<'_>,
+) {
+    if input.installed {
+        counts.installed += 1;
+    }
+    if input.state == ExternalAgentIntegrationState::Configured {
+        counts.configured += 1;
+    }
+    let needs_attention = input.installed
+        && (input.state != ExternalAgentIntegrationState::Configured || input.warning_count > 0);
+    if needs_attention {
+        counts.attention += 1;
+    }
+
+    let (code, severity, title, summary, repair_kind, repair_summary) = match input.state {
+        ExternalAgentIntegrationState::NotInstalled => (
+            "external_agent_not_installed",
+            DiagnosticSeverity::Info,
+            format!("未检测到 {}", input.display_name),
+            "该软件是可选外部客户端，不影响HAL100内置Runtime和Gateway运行。".to_owned(),
+            None,
+            None,
+        ),
+        ExternalAgentIntegrationState::InstalledNotConfigured => (
+            "external_agent_not_configured",
+            DiagnosticSeverity::Warning,
+            format!("{} 尚未接入 HAL100", input.display_name),
+            "已检测到客户端，但没有可信的HAL100受管配置。".to_owned(),
+            Some(DiagnosticRepairKind::ConfigureExternalAgent),
+            Some("保留用户默认模型，并通过专用适配器写入受管配置和独立凭据。".to_owned()),
+        ),
+        ExternalAgentIntegrationState::Configured if input.warning_count == 0 => return,
+        ExternalAgentIntegrationState::Configured => (
+            "external_agent_configuration_warning",
+            DiagnosticSeverity::Info,
+            format!("{} 配置存在提示", input.display_name),
+            format!(
+                "受控检测产生{}项版本或配置提示；原始告警和本地路径不会发送给Agent。",
+                input.warning_count
+            ),
+            None,
+            None,
+        ),
+        ExternalAgentIntegrationState::NeedsRefresh => (
+            "external_agent_needs_refresh",
+            DiagnosticSeverity::Warning,
+            format!("{} 受管配置需要刷新", input.display_name),
+            "模型能力或Gateway受管片段已更新，可以生成可回滚的刷新计划。".to_owned(),
+            Some(DiagnosticRepairKind::ConfigureExternalAgent),
+            Some("重新生成HAL100受管片段；不改变用户默认模型或其他Provider。".to_owned()),
+        ),
+        ExternalAgentIntegrationState::Conflict => (
+            "external_agent_configuration_conflict",
+            DiagnosticSeverity::Error,
+            format!("{} 存在配置所有权冲突", input.display_name),
+            "HAL100拒绝覆盖不属于自己的同名配置，需要用户先检查冲突。".to_owned(),
+            None,
+            None,
+        ),
+        ExternalAgentIntegrationState::ModifiedOutsideHal100 => (
+            "external_agent_modified_outside_hal100",
+            DiagnosticSeverity::Error,
+            format!("{} 受管配置已在外部变化", input.display_name),
+            "当前快照与HAL100记录不一致；不会自动覆盖或撤销外部修改。".to_owned(),
+            None,
+            None,
+        ),
+        ExternalAgentIntegrationState::UnsupportedVersion => (
+            "external_agent_unsupported_version",
+            DiagnosticSeverity::Error,
+            format!("{} 版本不在当前兼容范围", input.display_name),
+            "HAL100不会对未经当前适配器验证的版本自动写入配置。".to_owned(),
+            None,
+            None,
+        ),
+        ExternalAgentIntegrationState::Blocked => (
+            "external_agent_configuration_blocked",
+            DiagnosticSeverity::Error,
+            format!("{} 当前不能安全配置", input.display_name),
+            "模型能力、客户端实例或配置前置条件不满足；HAL100保持只读。".to_owned(),
+            None,
+            None,
+        ),
+    };
+    findings.push(FindingDraft {
+        code,
+        component: input.component,
+        severity,
+        title,
+        summary,
+        target_id: Some(input.integration_id.to_owned()),
+        repair_kind,
+        repair_summary,
+    });
 }
 
 fn severity_rank(severity: DiagnosticSeverity) -> u8 {
@@ -370,6 +551,9 @@ fn component_rank(component: DiagnosticComponent) -> u8 {
         DiagnosticComponent::InferenceEngine => 1,
         DiagnosticComponent::ModelLibrary => 2,
         DiagnosticComponent::OpenCode => 3,
+        DiagnosticComponent::PiCodingAgent => 4,
+        DiagnosticComponent::OpenClaw => 5,
+        DiagnosticComponent::HermesAgent => 6,
     }
 }
 
@@ -392,7 +576,10 @@ mod tests {
     use hal100_protocol::{LocalModelSummary, ModelOwnership, ModelSource};
 
     use super::*;
-    use crate::{CredentialRegistry, GatewayState, OpenCodePaths, UsageWriter};
+    use crate::{
+        CredentialRegistry, ExternalModelProfileRegistry, GatewayState, HermesAgentPaths,
+        OpenClawPaths, OpenCodePaths, PiCodingAgentPaths, UsageWriter,
+    };
 
     struct TestDirectory(PathBuf);
 
@@ -431,11 +618,42 @@ mod tests {
         );
         let open_code = Arc::new(OpenCodeManager::with_gateway_base_url(
             database.clone(),
-            credentials,
+            credentials.clone(),
             open_code_paths,
             "http://127.0.0.1:10100/v1".to_owned(),
         ));
-        let diagnostics = EnvironmentDiagnostics::new(database.clone(), engine, open_code, gateway);
+        let home = directory.0.join("home");
+        let profiles = ExternalModelProfileRegistry::conservative_managed_route();
+        let pi_coding_agent = Arc::new(PiCodingAgentIntegrationAdapter::with_gateway_base_url(
+            database.clone(),
+            credentials.clone(),
+            profiles.clone(),
+            PiCodingAgentPaths::for_macos(&home, &directory.0),
+            "http://127.0.0.1:10100/v1".to_owned(),
+        ));
+        let openclaw = Arc::new(OpenClawIntegrationAdapter::with_gateway_base_url(
+            database.clone(),
+            credentials.clone(),
+            profiles.clone(),
+            OpenClawPaths::for_macos(&home, &directory.0),
+            "http://127.0.0.1:10100/v1".to_owned(),
+        ));
+        let hermes_agent = Arc::new(HermesAgentIntegrationAdapter::with_gateway_base_url(
+            database.clone(),
+            credentials,
+            profiles,
+            HermesAgentPaths::for_macos(&home, &directory.0),
+            "http://127.0.0.1:10100/v1".to_owned(),
+        ));
+        let diagnostics = EnvironmentDiagnostics::new(
+            database.clone(),
+            engine,
+            open_code,
+            pi_coding_agent,
+            openclaw,
+            hermes_agent,
+            gateway,
+        );
         (database, diagnostics)
     }
 
@@ -473,6 +691,8 @@ mod tests {
         assert_eq!(report.status, EnvironmentHealthStatus::NeedsAttention);
         assert_eq!(report.ready_model_count, 0);
         assert_eq!(report.unhealthy_model_count, 1);
+        assert_eq!(report.installed_external_agent_count, 0);
+        assert_eq!(report.configured_external_agent_count, 0);
         assert!(report.findings.len() <= MAX_FINDINGS);
         assert!(report.findings.iter().any(|finding| {
             finding.code == "engine_not_installed"
@@ -484,6 +704,48 @@ mod tests {
         }));
         let serialized = serde_json::to_string(&report).expect("serialize report");
         assert!(!serialized.contains(&missing_path.display().to_string()));
+    }
+
+    #[test]
+    fn every_supported_external_agent_can_offer_the_same_brokered_configuration_repair() {
+        let targets = [
+            ("opencode", "OpenCode", DiagnosticComponent::OpenCode),
+            (
+                "pi-coding-agent",
+                "Pi Coding Agent",
+                DiagnosticComponent::PiCodingAgent,
+            ),
+            ("openclaw", "OpenClaw", DiagnosticComponent::OpenClaw),
+            (
+                "hermes-agent",
+                "Hermes Agent",
+                DiagnosticComponent::HermesAgent,
+            ),
+        ];
+        let mut findings = Vec::new();
+        let mut counts = ExternalAgentCounts::default();
+        for (integration_id, display_name, component) in targets {
+            add_external_agent_findings(
+                &mut findings,
+                &mut counts,
+                ExternalAgentFindingInput {
+                    integration_id,
+                    display_name,
+                    component,
+                    installed: true,
+                    state: ExternalAgentIntegrationState::InstalledNotConfigured,
+                    warning_count: 0,
+                },
+            );
+        }
+
+        assert_eq!(counts.installed, 4);
+        assert_eq!(counts.attention, 4);
+        assert_eq!(findings.len(), 4);
+        assert!(findings.iter().all(|finding| {
+            finding.repair_kind == Some(DiagnosticRepairKind::ConfigureExternalAgent)
+                && finding.target_id.is_some()
+        }));
     }
 
     #[cfg(unix)]
@@ -502,9 +764,12 @@ mod tests {
 
         let report = diagnostics.run().expect("diagnostic report");
         assert!(report.open_code_installed);
+        assert_eq!(report.installed_external_agent_count, 1);
+        assert_eq!(report.attention_external_agent_count, 1);
         assert!(report.findings.iter().any(|finding| {
-            finding.code == "opencode_not_configured"
-                && finding.repair_kind == Some(DiagnosticRepairKind::ConfigureOpenCode)
+            finding.code == "external_agent_not_configured"
+                && finding.target_id.as_deref() == Some("opencode")
+                && finding.repair_kind == Some(DiagnosticRepairKind::ConfigureExternalAgent)
         }));
     }
 }

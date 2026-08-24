@@ -4,16 +4,21 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
   ENVIRONMENT_DIAGNOSTICS_TOOL,
+  EXTERNAL_AGENT_STATUS_TOOL,
   MODEL_CATALOG_SEARCH_TOOL,
   MODEL_REPOSITORY_INSPECTION_TOOL,
-  OPENCODE_STATUS_TOOL,
+  OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+  OPERATIONAL_HISTORY_TOOL,
   PLAN_DIAGNOSTIC_REPAIR_TOOL,
   PLAN_ENGINE_INSTALL_TOOL,
   PLAN_ENGINE_REMOVE_TOOL,
+  PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+  PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
+  PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+  PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
   PLAN_MODEL_DOWNLOAD_TOOL,
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_MODEL_START_TOOL,
-  PLAN_OPENCODE_CONFIGURATION_TOOL,
   RUNTIME_CATALOG_TOOL,
   SYSTEM_SUMMARY_TOOL,
   type ToolBrokerBridge,
@@ -65,11 +70,16 @@ export const AGENT_TOOL_NAMES = [
   PLAN_DIAGNOSTIC_REPAIR_TOOL,
   PLAN_ENGINE_INSTALL_TOOL,
   PLAN_ENGINE_REMOVE_TOOL,
-  OPENCODE_STATUS_TOOL,
-  PLAN_OPENCODE_CONFIGURATION_TOOL,
+  EXTERNAL_AGENT_STATUS_TOOL,
+  PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+  PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
   MODEL_CATALOG_SEARCH_TOOL,
   MODEL_REPOSITORY_INSPECTION_TOOL,
   PLAN_MODEL_DOWNLOAD_TOOL,
+  OPERATIONAL_HISTORY_TOOL,
+  OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+  PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+  PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
 ] as const;
 
 export const ACTION_PLAN_TOOLS = new Set<string>([
@@ -78,7 +88,10 @@ export const ACTION_PLAN_TOOLS = new Set<string>([
   PLAN_DIAGNOSTIC_REPAIR_TOOL,
   PLAN_ENGINE_INSTALL_TOOL,
   PLAN_ENGINE_REMOVE_TOOL,
-  PLAN_OPENCODE_CONFIGURATION_TOOL,
+  PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+  PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
+  PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+  PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
   PLAN_MODEL_DOWNLOAD_TOOL,
 ]);
 
@@ -88,7 +101,10 @@ export const TOOL_PREREQUISITES = new Map<string, readonly string[]>([
   [PLAN_DIAGNOSTIC_REPAIR_TOOL, [ENVIRONMENT_DIAGNOSTICS_TOOL]],
   [PLAN_ENGINE_INSTALL_TOOL, [RUNTIME_CATALOG_TOOL]],
   [PLAN_ENGINE_REMOVE_TOOL, [RUNTIME_CATALOG_TOOL]],
-  [PLAN_OPENCODE_CONFIGURATION_TOOL, [OPENCODE_STATUS_TOOL]],
+  [PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL, [EXTERNAL_AGENT_STATUS_TOOL]],
+  [PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, [EXTERNAL_AGENT_STATUS_TOOL]],
+  [PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL, [EXTERNAL_AGENT_STATUS_TOOL]],
+  [PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, [EXTERNAL_AGENT_STATUS_TOOL]],
   [MODEL_REPOSITORY_INSPECTION_TOOL, [MODEL_CATALOG_SEARCH_TOOL]],
   [PLAN_MODEL_DOWNLOAD_TOOL, [MODEL_REPOSITORY_INSPECTION_TOOL]],
 ]);
@@ -147,10 +163,16 @@ export async function runPiAgent(
         "再从返回结果复制精确 modelId 调用 hal100.plan_model_start；计划工具绝不代表操作已经执行，必须明确提醒用户在 HAL100 原生窗口确认。" +
         "用户要求删除或移除本地模型时，必须先读取运行环境，再从返回结果复制精确 modelId 调用 hal100.plan_model_removal；托管文件移到废纸篓，外部文件只移除索引。" +
         "用户要求全面诊断HAL100环境时，必须调用 hal100.inspect_environment_diagnostics。" +
+        "用户要求分析近期失败、错误历史或调试操作链路时，必须调用 hal100.inspect_operational_history；该工具只返回脱敏事件，不能据此猜测路径或原始日志。" +
+        "用户要求部署前检查、运行监测或稳定性观察时，必须调用 hal100.observe_operational_health；该工具只执行固定3次短时采样，不代表长期后台监控。" +
         "用户明确要求诊断并修复时，必须先读取诊断报告；只能选择报告中带 repairKind 的一项，复制精确 reportId 和 findingId 调用 hal100.plan_diagnostic_repair。每次只修复一项，无法自动修复的问题必须如实说明。" +
         "用户要求安装或卸载 llama.cpp 时，必须先读取运行环境，再分别调用 hal100.plan_engine_install 或 hal100.plan_engine_remove。" +
-        "用户要求配置 OpenCode 时，必须先调用 hal100.inspect_opencode_status，再调用 hal100.plan_opencode_configuration。" +
-        "不得为模型下载、任意其他配置写入或强制切换编造工具调用；当前没有这些工具。" +
+        "用户要求检查 OpenCode、Pi Coding Agent、OpenClaw 或 Hermes Agent 时，必须按用户点名的软件复制固定 integrationId，调用 hal100.inspect_external_agent。" +
+        "用户明确要求安装外部 Agent 时，必须先检查同一 integrationId，再调用 hal100.plan_external_agent_installation；当前只有 Pi Coding Agent 提供经过验收的 HAL100 私有部署配方，计划工具本身不安装。" +
+        "用户明确要求卸载 HAL100 私有 Pi 运行时时，必须先检查同一 integrationId，并且只在状态明确返回 managedInstallation=true 时调用 hal100.plan_managed_external_agent_removal；不得把断开配置、用户自行安装的 Pi 或含糊的卸载请求解释为私有卸载。" +
+        "用户要求配置或重新配置外部 Agent 时，必须先检查同一 integrationId，再调用 hal100.plan_external_agent_configuration。" +
+        "用户要求断开外部 Agent 时，必须先检查同一 integrationId，再调用 hal100.plan_external_agent_disconnection；只允许移除 HAL100 受管配置和专属凭据。" +
+        "不得为任意路径写入、通用Shell、桌面控制或强制切换编造工具调用；当前没有这些能力。" +
         "只能依据工具返回的结构化结果，用简洁中文解释，不得猜测路径、凭据或系统信息。",
       model: runtime.model,
       thinkingLevel: "off",

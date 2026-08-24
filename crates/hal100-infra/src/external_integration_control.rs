@@ -236,6 +236,21 @@ impl BoundedCommandRunner {
         args: &[&str],
         environment: &[(String, OsString)],
     ) -> Result<String, BoundedCommandError> {
+        self.run_utf8_with_env_in_dir(binary, args, environment, None)
+    }
+
+    /// Runs a bounded command from an explicitly selected working directory.
+    ///
+    /// Package managers and other developer tools commonly inspect configuration files in the
+    /// current project. Deployment callers use this entry point to isolate those tools inside a
+    /// HAL100-owned staging directory instead of inheriting the desktop process working tree.
+    pub fn run_utf8_with_env_in_dir(
+        &self,
+        binary: &Path,
+        args: &[&str],
+        environment: &[(String, OsString)],
+        current_directory: Option<&Path>,
+    ) -> Result<String, BoundedCommandError> {
         let mut command = Command::new(binary);
         command
             .args(args)
@@ -244,6 +259,9 @@ impl BoundedCommandRunner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        if let Some(current_directory) = current_directory {
+            command.current_dir(current_directory);
+        }
         for (name, value) in environment {
             command.env(name, value);
         }

@@ -9,13 +9,14 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 license = "MIT"
 rust-version = "1.97.1"
 
 [workspace.dependencies]
 axum = "0.8.9"
+base64 = "0.22.1"
 bytes = "1.12.1"
 futures-util = "0.3.34"
 flate2 = "1.1.9"

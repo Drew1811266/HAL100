@@ -13,6 +13,9 @@ const componentCopy: Record<EnvironmentDiagnosticReport["findings"][number]["com
     inferenceEngine: "推理引擎",
     modelLibrary: "模型库",
     openCode: "OpenCode",
+    piCodingAgent: "Pi Coding Agent",
+    openClaw: "OpenClaw",
+    hermesAgent: "Hermes Agent",
   };
 
 interface EnvironmentDiagnosticsPanelProps {
@@ -70,8 +73,13 @@ export function EnvironmentDiagnosticsPanel({
               </strong>
             </div>
             <div>
-              <span>后端</span>
-              <strong>{report.configuredBackendCount} 个已配置</strong>
+              <span>外部 Agent</span>
+              <strong>
+                {report.configuredExternalAgentCount} / {report.installedExternalAgentCount} 已接入
+                {report.attentionExternalAgentCount > 0
+                  ? ` · ${report.attentionExternalAgentCount} 待处理`
+                  : ""}
+              </strong>
             </div>
             <div>
               <span>问题</span>

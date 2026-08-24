@@ -591,8 +591,18 @@ export interface AgentStatus {
 
 export type EnvironmentHealthStatus = "healthy" | "needsAttention" | "error";
 export type DiagnosticSeverity = "info" | "warning" | "error";
-export type DiagnosticComponent = "gateway" | "inferenceEngine" | "modelLibrary" | "openCode";
-export type DiagnosticRepairKind = "installLlamaCpp" | "configureOpenCode" | "removeModelIndex";
+export type DiagnosticComponent =
+  | "gateway"
+  | "inferenceEngine"
+  | "modelLibrary"
+  | "openCode"
+  | "piCodingAgent"
+  | "openClaw"
+  | "hermesAgent";
+export type DiagnosticRepairKind =
+  | "installLlamaCpp"
+  | "configureExternalAgent"
+  | "removeModelIndex";
 
 export interface EnvironmentDiagnosticFinding {
   findingId: string;
@@ -617,6 +627,9 @@ export interface EnvironmentDiagnosticReport {
   configuredBackendCount: number;
   openCodeInstalled: boolean;
   openCodeIntegrationState: OpenCodeIntegrationState;
+  installedExternalAgentCount: number;
+  configuredExternalAgentCount: number;
+  attentionExternalAgentCount: number;
   warningCount: number;
   errorCount: number;
   omittedFindingCount: number;
@@ -701,7 +714,10 @@ export type AgentActionKind =
   | "removeModel"
   | "installLlamaCpp"
   | "removeLlamaCpp"
-  | "configureOpenCode";
+  | "installExternalAgent"
+  | "removeExternalAgent"
+  | "configureExternalAgent"
+  | "disconnectExternalAgent";
 
 export interface AgentActionPlan {
   planId: string;
@@ -728,8 +744,8 @@ export interface AgentActionResult {
 
 const developmentOverview: AppOverview = {
   appName: "HAL100",
-  version: "1.0.1",
-  phase: "迭代 18 · Hermes Agent 接入",
+  version: "1.0.2",
+  phase: "迭代 22 · 版本化受管部署配方",
   gatewayState: "运行中",
   databaseState: "已就绪",
   platform: {
@@ -975,13 +991,16 @@ const browserEnvironmentDiagnostics: EnvironmentDiagnosticReport = {
   configuredBackendCount: 1,
   openCodeInstalled: false,
   openCodeIntegrationState: "notConfigured",
+  installedExternalAgentCount: 0,
+  configuredExternalAgentCount: 0,
+  attentionExternalAgentCount: 0,
   warningCount: 0,
   errorCount: 0,
   omittedFindingCount: 0,
   findings: [
     {
       findingId: "finding-preview-1",
-      code: "opencode_not_installed",
+      code: "external_agent_not_installed",
       component: "openCode",
       severity: "info",
       title: "尚未检测到 OpenCode",

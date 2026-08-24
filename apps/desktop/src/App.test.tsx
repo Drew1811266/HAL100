@@ -9,6 +9,7 @@ describe("HAL100 application shell", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    window.history.replaceState(null, "", "/");
     document.documentElement.removeAttribute("data-theme");
   });
 
@@ -43,9 +44,18 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("HAL100 已准备就绪")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "模型库" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "接下来做什么" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "今天需要处理什么" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "核心已就绪，尚未添加模型" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "添加第一个模型" })).toBeInTheDocument();
+
+    const mainNavigation = screen.getByRole("navigation", { name: "主导航" });
+    expect(within(mainNavigation).getAllByRole("link")).toHaveLength(5);
+    for (const name of ["首页", "模型与运行", "软件接入", "Agent", "活动"]) {
+      expect(within(mainNavigation).getByRole("link", { name })).toBeInTheDocument();
+    }
+    expect(
+      within(mainNavigation).queryByRole("link", { name: "Token 统计" }),
+    ).not.toBeInTheDocument();
   });
 
   it("persists an explicit appearance choice", async () => {
@@ -53,16 +63,16 @@ describe("HAL100 application shell", () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={["/settings"]}>
           <App />
         </MemoryRouter>
       </QueryClientProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "使用深色外观" }));
+    fireEvent.click(await screen.findByRole("button", { name: "切换为深色" }));
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     expect(window.localStorage.getItem("hal100-theme")).toBe("dark");
-    expect(screen.getByRole("button", { name: "使用浅色外观" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换为浅色" })).toBeInTheDocument();
   });
 
   it("requires an explicit confirmation after showing the OpenCode semantic diff", async () => {
@@ -76,7 +86,9 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "配置 OpenCode" }));
+    fireEvent.click(await screen.findByRole("button", { name: "配置接入" }));
+    const openCodeDrawer = await screen.findByRole("dialog", { name: "OpenCode" });
+    fireEvent.click(within(openCodeDrawer).getByRole("button", { name: "配置 OpenCode" }));
     expect(await screen.findByRole("dialog", { name: "配置 OpenCode" })).toBeInTheDocument();
     expect(screen.getByText("+ provider.hal100.options.baseURL")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认并应用配置" })).toBeDisabled();
@@ -94,16 +106,18 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    expect(
-      await screen.findByRole("heading", { name: "内置 Runtime 与外部 Agent 相互独立" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("HAL100 Agent（内置）")).toBeInTheDocument();
-    expect(screen.getByText(/固定版本 Pi Agent Core/)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "了解运行边界" }));
+    expect(await screen.findByRole("dialog", { name: "内置与外部相互独立" })).toBeInTheDocument();
+    expect(await screen.findByText("HAL100 Agent（内置）")).toBeInTheDocument();
+    expect(await screen.findByText(/固定版本 Pi Agent Core/)).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Pi Coding Agent" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "OpenClaw" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Hermes Agent" })).toBeInTheDocument();
     expect(screen.queryByText("规划接入")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "配置 Hermes" })).toBeDisabled();
+    const accessButtons = screen.getAllByRole("button", { name: "查看接入方式" });
+    fireEvent.click(accessButtons[accessButtons.length - 1]);
+    const hermesDrawer = await screen.findByRole("dialog", { name: "Hermes Agent" });
+    expect(within(hermesDrawer).getByRole("button", { name: "配置 Hermes" })).toBeDisabled();
     expect(screen.getByText(/Hermes ≥ 0.18.2/)).toBeInTheDocument();
   });
 
@@ -118,7 +132,11 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("/v1/chat/completions · /v1/responses")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "管理客户端" }));
+    const clientDrawer = await screen.findByRole("dialog", { name: "其他客户端" });
+    expect(
+      within(clientDrawer).getByText("/v1/chat/completions · /v1/responses"),
+    ).toBeInTheDocument();
     expect(screen.getByText("/v1/messages")).toBeInTheDocument();
     expect(screen.getByText(/支持 x-api-key、SSE和缓存 Usage/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "OpenAI / Anthropic 客户端" })).toBeInTheDocument();
@@ -140,9 +158,12 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByRole("heading", { name: "审计记录" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "操作记录" })).toBeInTheDocument();
     expect(screen.getByText("尚无受控操作记录")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "刷新记录" })).toBeEnabled();
+    expect(screen.queryByRole("region", { name: "操作记录筛选" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "筛选" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "前往模型库" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled();
     unmount();
 
     const settingsClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -155,8 +176,11 @@ describe("HAL100 application shell", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "初始化配置中心" })).toBeInTheDocument();
-    expect(screen.getByText("基础设置已完成")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "初始化配置中心" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "下载与启动" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "HAL100" })).toBeInTheDocument();
+    expect(await screen.findByText("v1.0.2")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开 Agent 诊断" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "已关闭" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存保留策略" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "按策略清理" })).toBeDisabled();
@@ -174,14 +198,14 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByRole("heading", { name: "HAL100 已准备就绪" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "今天需要处理什么" })).toBeInTheDocument();
     expect(screen.getByText("基础设置尚未完成")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "前往设置" }));
     expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "初始化配置中心" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "模型库" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "总览" }));
-    expect(await screen.findByRole("heading", { name: "HAL100 已准备就绪" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "模型与运行" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "首页" }));
+    expect(await screen.findByRole("heading", { name: "今天需要处理什么" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "前往设置" }));
     expect(await screen.findByRole("heading", { name: "初始化配置中心" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "完成设置" })).toBeDisabled();
@@ -191,11 +215,13 @@ describe("HAL100 application shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "保持关闭" }));
     expect(screen.getByLabelText("基础设置完成 2 / 2 项")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "完成设置" }));
-    expect(await screen.findByText("HAL100 已准备就绪")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "核心已就绪，尚未添加模型" }),
+    ).toBeInTheDocument();
     expect(window.localStorage.getItem("hal100-preview-onboarding")).toBeNull();
   });
 
-  it("shows on-demand hardware data and lets the user choose a default model source", async () => {
+  it("keeps model discovery and hardware guidance inside the add-model task", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     render(
@@ -206,20 +232,20 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("Apple M1（浏览器预览）")).toBeInTheDocument();
-    expect(screen.getByText("尚未选择，HAL100 不会替你指定来源")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "模型库" })).toBeInTheDocument();
+    expect(screen.queryByText("Apple M1（浏览器预览）")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "添加模型" }));
+    const addModelDrawer = await screen.findByRole("dialog", { name: "添加模型" });
+    expect(addModelDrawer.parentElement?.parentElement).toBe(document.body);
+    expect(within(addModelDrawer).getByText("Apple M1（浏览器预览）")).toBeInTheDocument();
+    fireEvent.change(within(addModelDrawer).getByLabelText("搜索来源"), {
+      target: { value: "modelScope" },
+    });
 
-    fireEvent.click(screen.getByRole("button", { name: "ModelScope" }));
-    expect(await screen.findByText("当前默认：ModelScope")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "ModelScope" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-
-    fireEvent.change(screen.getByRole("searchbox", { name: "模型名称或仓库" }), {
+    fireEvent.change(within(addModelDrawer).getByRole("searchbox", { name: "模型名称或仓库" }), {
       target: { value: "Qwen3 GGUF" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "搜索模型" }));
+    fireEvent.click(within(addModelDrawer).getByRole("button", { name: "搜索模型" }));
     expect(await screen.findByText("Qwen3.5-2B-GGUF")).toBeInTheDocument();
     expect(screen.getByText("ModelScope 返回 1 个结果")).toBeInTheDocument();
 
@@ -236,7 +262,7 @@ describe("HAL100 application shell", () => {
     expect(within(downloadDialog).getByRole("button", { name: "确认下载并安装" })).toBeDisabled();
     fireEvent.click(within(downloadDialog).getByRole("button", { name: "关闭" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "导入 GGUF" }));
+    fireEvent.click(within(addModelDrawer).getByRole("button", { name: "选择 GGUF 文件" }));
     expect(await screen.findByRole("dialog", { name: "导入外部 GGUF" })).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -258,22 +284,24 @@ describe("HAL100 application shell", () => {
     );
 
     const repository = "unsloth/Qwen3.5-2B-GGUF";
-    fireEvent.change(await screen.findByRole("searchbox", { name: "模型名称或仓库" }), {
+    fireEvent.click(await screen.findByRole("button", { name: "添加模型" }));
+    const addModelDrawer = await screen.findByRole("dialog", { name: "添加模型" });
+    fireEvent.change(within(addModelDrawer).getByRole("searchbox", { name: "模型名称或仓库" }), {
       target: { value: repository },
     });
-    fireEvent.click(screen.getByRole("button", { name: "搜索模型" }));
+    fireEvent.click(within(addModelDrawer).getByRole("button", { name: "搜索模型" }));
 
     expect(await screen.findByText(repository)).toBeInTheDocument();
     expect(screen.getByText("Qwen3.5-2B-Q4_K_M.gguf")).toBeInTheDocument();
     expect(screen.queryByText(/返回 1 个结果/)).not.toBeInTheDocument();
   });
 
-  it("requires confirmation before installing the managed llama.cpp engine", async () => {
+  it("separates local runtime from inference-service configuration", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-    render(
+    const { unmount } = render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={["/backends"]}>
+        <MemoryRouter initialEntries={["/workspace/runtime"]}>
           <App />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -281,11 +309,12 @@ describe("HAL100 application shell", () => {
 
     expect(await screen.findByText("llama.cpp")).toBeInTheDocument();
     expect(screen.getByText("未安装")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Gateway 路由与模型别名" })).toBeInTheDocument();
-    expect(screen.getByText(/`hal100-active` 始终指向当前活动后端/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText("强制操作"));
-    expect(screen.getByRole("button", { name: "强制切换" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "强制停止" })).toBeDisabled();
+    expect(screen.getByRole("heading", { name: "运行" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Gateway 路由与模型别名" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("强制操作")).not.toBeInTheDocument();
+    expect(screen.getByText("先准备推理引擎")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "安装 llama.cpp" }));
     const dialog = await screen.findByRole("dialog", { name: "安装 llama.cpp" });
     expect(within(dialog).getByText(/ggml-org\/llama.cpp GitHub Releases/)).toBeInTheDocument();
@@ -295,18 +324,42 @@ describe("HAL100 application shell", () => {
     ).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "发现本机服务" }));
+    unmount();
+    const serviceClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={serviceClient}>
+        <MemoryRouter initialEntries={["/workspace/services"]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "推理服务" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "默认服务与模型名称映射" })).toBeInTheDocument();
+    const serviceHeading = screen.getByRole("heading", { name: "已配置后端" });
+    const routingHeading = screen.getByRole("heading", {
+      name: "默认服务与模型名称映射",
+    });
+    expect(
+      serviceHeading.compareDocumentPosition(routingHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByText(/`hal100-active` 始终指向当前活动后端/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加推理服务" }));
+    const serviceDrawer = await screen.findByRole("dialog", { name: "添加推理服务" });
+    fireEvent.click(within(serviceDrawer).getByRole("button", { name: "开始发现" }));
     const discovery = await screen.findByRole("region", { name: "本机后端发现结果" });
     expect(within(discovery).getByText("本机 Ollama（预览示例）")).toBeInTheDocument();
-    expect(within(discovery).getByText(/不扫描局域网/)).toBeInTheDocument();
+    expect(within(discovery).getByText(/不会常驻监测/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "添加外部后端" }));
+    fireEvent.click(within(serviceDrawer).getByRole("button", { name: "手动填写配置" }));
     const backendEditor = await screen.findByRole("dialog", { name: "添加外部后端" });
     expect(within(backendEditor).getByText(/API Key 只写入 macOS Keychain/)).toBeInTheDocument();
     expect(within(backendEditor).getByRole("button", { name: "保存后端" })).toBeDisabled();
   });
 
   it("renders the exact-usage dashboard without background polling", async () => {
+    window.history.replaceState(null, "", "/?preview=usage");
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     render(
@@ -317,15 +370,17 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByRole("heading", { name: "Token 统计" })).toBeInTheDocument();
-    const summary = screen.getByRole("region", { name: "Token 汇总" });
+    expect(await screen.findByRole("heading", { name: "用量" })).toBeInTheDocument();
+    const summary = screen.getByRole("region", { name: "用量摘要" });
     expect(within(summary).getByText("请求数")).toBeInTheDocument();
-    expect(within(summary).getByText(/不会按字符数估算/)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "用量趋势" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Token 构成" })).toBeInTheDocument();
+    expect(within(summary).getByRole("region", { name: "最近客户端" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "最近请求趋势" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Token 构成" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("用量构成与请求明细"));
+    expect(await screen.findByRole("heading", { name: "Token 构成" })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "累计 Token 构成环形图" })).toBeInTheDocument();
-    expect(screen.getByText("尚无 Token 用量记录")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "刷新统计" })).toBeEnabled();
+    expect(screen.getByText(/不按字符数估算/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled();
   });
 
   it("keeps the model test disabled until a real local model is running", async () => {
@@ -339,7 +394,8 @@ describe("HAL100 application shell", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByRole("heading", { name: "测试模型" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "运行" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "测试当前模型" })).toBeInTheDocument();
     expect(screen.getByText("尚未启动模型")).toBeInTheDocument();
     expect(screen.getByLabelText("内容")).toBeDisabled();
     expect(screen.getByRole("button", { name: "发送测试" })).toBeDisabled();
@@ -362,17 +418,23 @@ describe("HAL100 application shell", () => {
 
     expect(await screen.findByRole("heading", { name: "HAL100 Agent" })).toBeInTheDocument();
     expect(screen.getByText("受控执行：Pi 负责推理，Rust 负责授权")).toBeInTheDocument();
-    expect(screen.getByText("v0.84.2")).toBeInTheDocument();
-    expect(screen.getByText("Qwen3.5-2B Q4_K_M")).toBeInTheDocument();
+    expect(screen.getByText(/v0.84.2/)).toBeInTheDocument();
+    expect(screen.getByText(/Qwen3.5-2B Q4_K_M/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "环境诊断" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".agent-context-recommendations button")).toHaveLength(3);
+    fireEvent.click(screen.getByText("打开任务库"));
     expect(screen.getByRole("button", { name: "全面诊断环境" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成单项修复计划" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "分析近期失败" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务分类"), { target: { value: "models" } });
     expect(screen.getByRole("button", { name: "搜索并规划模型下载" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "模型与引擎状态" })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("更多计划模板"));
+    expect(screen.getAllByRole("button", { name: "模型与引擎状态" })).toHaveLength(2);
     expect(screen.getByRole("button", { name: "生成模型切换计划" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成引擎安装计划" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "生成 OpenCode 配置计划" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务分类"), { target: { value: "integrations" } });
+    expect(screen.getByRole("button", { name: "生成 Pi 私有安装计划" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成 Pi 私有卸载计划" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "生成 OpenCode 配置计划" })).toHaveLength(2);
     expect(
       screen.getByText(/计划不会自动执行，下载、安装、卸载、删除和配置写入仍需原生确认/),
     ).toBeInTheDocument();
@@ -387,17 +449,23 @@ describe("HAL100 application shell", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("等待一项 HAL100 管理任务")).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /当前会话使用云端/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "云端" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "生成 Pi 私有卸载计划" }));
+    expect(screen.getByLabelText("任务")).toHaveValue(
+      "检查 HAL100 私有 Pi Coding Agent 是否存在；如存在，仅为私有运行时生成移入系统废纸篓的卸载计划，保留用户安装、配置和会话。",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "环境诊断" }));
     expect(await screen.findByText("尚未检测到 OpenCode")).toBeInTheDocument();
     expect(screen.getByText(/不后台轮询/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("radio", { name: /云端单次增强/ }));
+    fireEvent.click(screen.getByRole("radio", { name: "云端" }));
+    expect(screen.getByRole("radio", { name: "仅本次任务" })).toBeChecked();
     expect(screen.getByText(/暂无可用且已配置凭据/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "前往推理后端配置" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "前往推理服务配置" })).toHaveAttribute(
       "href",
-      "/backends",
+      "/workspace/services",
     );
   });
 
@@ -445,7 +513,7 @@ describe("HAL100 application shell", () => {
     );
 
     await screen.findByRole("heading", { name: "HAL100 Agent" });
-    fireEvent.click(screen.getByRole("radio", { name: /云端单次增强/ }));
+    fireEvent.click(screen.getByRole("radio", { name: "云端" }));
     expect(screen.getByLabelText("已配置后端")).toHaveValue("cloud-openai");
     expect(screen.getByRole("option", { name: "团队 OpenAI · OpenAI" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /本机 vLLM/ })).not.toBeInTheDocument();
@@ -453,7 +521,7 @@ describe("HAL100 application shell", () => {
     fireEvent.change(screen.getByLabelText("模型 ID"), { target: { value: "gpt-test" } });
     expect(screen.getByRole("button", { name: "预览单次云端发送" })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole("radio", { name: /当前会话使用云端/ }));
+    fireEvent.click(screen.getByRole("radio", { name: "当前会话" }));
     expect(screen.getByLabelText("已配置后端")).toHaveValue("cloud-openai");
     expect(screen.getByLabelText("模型 ID")).toHaveValue("gpt-test");
     expect(screen.getByRole("button", { name: "预览会话授权" })).toBeDisabled();
@@ -486,9 +554,9 @@ describe("HAL100 application shell", () => {
       "当前会话：团队 Anthropic · claude-test",
     );
     expect(screen.getByText(/退出或重启后恢复本地默认/)).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /本地 Qwen/ })).toBeDisabled();
-    expect(screen.getByRole("radio", { name: /云端单次增强/ })).toBeDisabled();
-    expect(screen.getByRole("radio", { name: /当前会话使用云端/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "本地" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "云端" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "当前会话" })).toBeChecked();
     expect(screen.getByRole("button", { name: "退出云端会话" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "运行云端会话任务" })).toBeDisabled();
   });

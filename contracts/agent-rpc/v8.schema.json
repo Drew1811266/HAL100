@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hal100.local/contracts/agent-rpc/v8.schema.json",
+  "title": "HAL100 Agent RPC v8 Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "id", "kind", "payload"],
+  "properties": {
+    "protocolVersion": { "const": 8 },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+    },
+    "payload": {}
+  }
+}

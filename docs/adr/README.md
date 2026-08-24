@@ -17,3 +17,8 @@
 - [ADR-0013：模块化单体、应用边界与 Agent 能力架构](0013-modular-monolith-and-agent-capabilities.md)
 - [ADR-0014：Agent RPC v4 与受控模型下载能力](0014-agent-rpc-v4-model-download.md)
 - [ADR-0015：内置 Agent Runtime 与外部 Agent 集成边界](0015-built-in-runtime-and-external-agent-integrations.md)
+- [ADR-0016：Agent RPC v5 与外部 Agent 事务能力](0016-agent-rpc-v5-external-agent-transactions.md)
+- [ADR-0017：受控运维观察与用户级修复边界](0017-controlled-operations-observation.md)
+- [ADR-0018：部署就绪检查与有界短时观测](0018-bounded-deployment-readiness-observation.md)
+- [ADR-0019：版本化外部 Agent 受管部署配方](0019-versioned-managed-agent-deployment.md)
+- [ADR-0020：受管依赖闭包与可恢复卸载生命周期](0020-managed-dependency-closure-and-removal.md)

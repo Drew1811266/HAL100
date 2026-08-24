@@ -19,17 +19,22 @@ import {
 import { AGENT_RPC_VERSION } from "../src/protocol.js";
 import {
   ENVIRONMENT_DIAGNOSTICS_TOOL,
+  EXTERNAL_AGENT_STATUS_TOOL,
   MAX_TOOL_RESULT_BYTES,
   MODEL_CATALOG_SEARCH_TOOL,
   MODEL_REPOSITORY_INSPECTION_TOOL,
-  OPENCODE_STATUS_TOOL,
+  OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+  OPERATIONAL_HISTORY_TOOL,
   PLAN_DIAGNOSTIC_REPAIR_TOOL,
   PLAN_ENGINE_INSTALL_TOOL,
   PLAN_ENGINE_REMOVE_TOOL,
+  PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+  PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
+  PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+  PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
   PLAN_MODEL_DOWNLOAD_TOOL,
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_MODEL_START_TOOL,
-  PLAN_OPENCODE_CONFIGURATION_TOOL,
   RUNTIME_CATALOG_TOOL,
   SYSTEM_SUMMARY_TOOL,
   ToolBrokerBridge,
@@ -45,7 +50,7 @@ const validRequest = {
 } as const;
 
 describe("real HAL100 Agent run boundary", () => {
-  it("keeps the RPC v4 tool catalog at the thirteen compatible names", () => {
+  it("keeps the RPC v9 tool catalog at the eighteen compatible names", () => {
     const bridge = new ToolBrokerBridge(() => undefined);
     const tools = bridge.createAgentTools("run-contract");
     const registeredTools = tools.map((tool) => tool.name);
@@ -58,14 +63,19 @@ describe("real HAL100 Agent run boundary", () => {
       PLAN_DIAGNOSTIC_REPAIR_TOOL,
       PLAN_ENGINE_INSTALL_TOOL,
       PLAN_ENGINE_REMOVE_TOOL,
-      OPENCODE_STATUS_TOOL,
-      PLAN_OPENCODE_CONFIGURATION_TOOL,
+      EXTERNAL_AGENT_STATUS_TOOL,
+      PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+      PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
       MODEL_CATALOG_SEARCH_TOOL,
       MODEL_REPOSITORY_INSPECTION_TOOL,
       PLAN_MODEL_DOWNLOAD_TOOL,
+      OPERATIONAL_HISTORY_TOOL,
+      OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+      PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+      PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
     ]);
     const manifest = JSON.parse(
-      readFileSync(new URL("../../../contracts/agent-rpc/v4-tools.json", import.meta.url), "utf8"),
+      readFileSync(new URL("../../../contracts/agent-rpc/v9-tools.json", import.meta.url), "utf8"),
     ) as {
       protocolVersion: number;
       limits: {
@@ -251,7 +261,7 @@ describe("real HAL100 Agent run boundary", () => {
     ).toBeUndefined();
   });
 
-  it("orders engine and OpenCode plans behind their required Rust inspections", () => {
+  it("orders engine and external Agent plans behind their required Rust inspections", () => {
     const modelRemovalRequirements = {
       requiredTools: [RUNTIME_CATALOG_TOOL, PLAN_MODEL_REMOVAL_TOOL],
     };
@@ -268,12 +278,19 @@ describe("real HAL100 Agent run boundary", () => {
       PLAN_ENGINE_INSTALL_TOOL,
     );
 
-    const openCodeRequirements = {
-      requiredTools: [OPENCODE_STATUS_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL],
+    const externalAgentRequirements = {
+      requiredTools: [EXTERNAL_AGENT_STATUS_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL],
     };
-    expect(nextRequiredAgentTool(openCodeRequirements, [])).toBe(OPENCODE_STATUS_TOOL);
-    expect(nextRequiredAgentTool(openCodeRequirements, [OPENCODE_STATUS_TOOL])).toBe(
-      PLAN_OPENCODE_CONFIGURATION_TOOL,
+    expect(nextRequiredAgentTool(externalAgentRequirements, [])).toBe(EXTERNAL_AGENT_STATUS_TOOL);
+    expect(nextRequiredAgentTool(externalAgentRequirements, [EXTERNAL_AGENT_STATUS_TOOL])).toBe(
+      PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+    );
+
+    const disconnectionRequirements = {
+      requiredTools: [EXTERNAL_AGENT_STATUS_TOOL, PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL],
+    };
+    expect(nextRequiredAgentTool(disconnectionRequirements, [EXTERNAL_AGENT_STATUS_TOOL])).toBe(
+      PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
     );
   });
 

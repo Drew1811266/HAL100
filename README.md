@@ -20,7 +20,7 @@ HAL100 不是通用聊天客户端。它是运行在用户电脑上的本地 AI 
 内置 HAL100 Agent 使用本地小模型与 [Pi Agent Core](https://github.com/earendil-works/pi) 帮助用户诊断和配置本地推理环境；Pi 负责推理，Rust Core 始终是唯一授权与执行权威。
 
 > [!WARNING]
-> HAL100 当前版本为 `1.0.1` 早期开发版，仅用于 Apple Silicon Mac 内部开发测试。项目暂不提供签名、公证或正式安装包，也不支持 Intel Mac。Windows 10/11 目前只保留架构兼容边界，尚未实现。
+> HAL100 当前版本为 `1.0.2` 早期开发版，仅用于 Apple Silicon Mac 内部开发测试。项目暂不提供签名、公证或正式安装包，也不支持 Intel Mac。Windows 10/11 目前只保留架构兼容边界，尚未实现。
 
 ![HAL100 总览界面](docs/images/hal100-overview.png)
 
@@ -34,7 +34,7 @@ HAL100 不是通用聊天客户端。它是运行在用户电脑上的本地 AI 
 | 路由与切换 | `hal100-active` 活动模型、模型别名、安全排空切换、经原生确认的强制切换与故障关闭 |
 | 软件接入 | 专门适配 OpenCode、Pi Coding Agent、OpenClaw 与 Hermes Agent；每个客户端拥有独立配置、凭据、Usage 身份和可逆断开流程，同时支持通用 OpenAI/Anthropic 客户端 |
 | Token 统计 | 使用推理后端返回的 Usage 记录精确输入、缓存输入和输出 Token，并按客户端、模型、后端和时间归类 |
-| HAL100 Agent | 本地 Qwen 默认运行；可按用户选择使用单次云端增强或当前内存会话，支持环境诊断与受控操作计划 |
+| HAL100 Agent | 本地 Qwen 默认运行；可按用户选择使用单次云端增强或当前内存会话，支持四客户端环境诊断、脱敏运维历史、部署就绪短时观测，以及固定依赖闭包的Pi私有安装和可恢复私有卸载等受控操作计划 |
 | 后台运行 | 系统托盘、隐藏并复用主 WebView、按需启动 Sidecar/模型运行时，空闲时不轮询模型、统计或审计数据 |
 
 ## HAL100 如何工作
@@ -69,7 +69,7 @@ HAL100 Agent 只负责 HAL100、本地模型和推理环境，不作为通用聊
 - Pi Sidecar 不持有云端 API Key，不直接连接推理后端，也不能执行任意 Shell、文件或进程操作。
 - Agent 只能调用 HAL100 暴露的固定工具；Rust 会重新校验工具、参数、现实状态和请求关联。
 - 安装、卸载、删除、配置写入和强制切换始终需要 Rust 发起的原生确认。
-- 当前 Agent 可诊断环境、发现模型并生成受控的模型下载、启动、切换和单项修复计划；所有写操作仍由确定性 Rust 执行器和原生确认约束。
+- 当前 Agent 可诊断环境、发现模型并生成受控的模型下载、启动、切换、单项修复、Pi私有安装和私有卸载计划；Pi安装固定官方归档与完整npm依赖闭包，私有卸载只进入系统废纸篓且不触碰用户Pi、配置或会话。所有写操作仍由确定性 Rust 执行器和原生确认约束。
 
 详见[受控 Agent 架构决策](docs/adr/0004-controlled-agent.md)、[安全设计](docs/SECURITY.md)和[第三方 Agent 依赖登记](docs/THIRD_PARTY_AGENT_DEPENDENCIES.md)。
 
@@ -113,10 +113,10 @@ HAL100 Agent 只负责 HAL100、本地模型和推理环境，不作为通用聊
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
-pnpm tauri dev
+pnpm desktop:open
 ```
 
-`pnpm tauri dev` 会先构建 Agent Kernel Sidecar，再启动 Vite 和 Tauri 开发进程。真实模型、Keychain、SQLite、Gateway、文件选择器与原生确认只在 Tauri 开发版中工作。
+`pnpm desktop:open` 会通过 Tauri 启动完整开发链路：先构建 Agent Kernel Sidecar，再启动 Vite 和桌面进程。不要直接执行 `target/debug/hal100-desktop`，该二进制在开发模式下依赖 Vite；如果误执行且前端服务不可用，HAL100 会显示原生诊断提示并退出，不再保留空白窗口。真实模型、Keychain、SQLite、Gateway、文件选择器与原生确认只在 Tauri 开发版中工作。
 
 ### 启动浏览器预览
 

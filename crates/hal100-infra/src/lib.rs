@@ -13,6 +13,7 @@ mod hermes_agent_integration;
 mod hermes_config;
 mod jsonc_patch;
 mod logging;
+mod managed_deployment;
 mod managed_file;
 mod model_download;
 mod model_import;
@@ -54,6 +55,11 @@ pub use hermes_agent_integration::{
     HermesAgentIntegrationAdapter, HermesAgentIntegrationError, HermesAgentPaths,
 };
 pub use logging::{LoggingError, LoggingGuard, Redacted, init_structured_logging};
+pub use managed_deployment::{
+    ManagedExternalAgentDeploymentError, ManagedExternalAgentDeploymentManager,
+    ManagedExternalAgentInstallPlan, ManagedExternalAgentInstallResult,
+    ManagedExternalAgentRemovalPlan, ManagedExternalAgentRemovalResult,
+};
 pub use managed_file::{
     ManagedFileError, atomic_write as atomic_write_managed_file,
     backup_path as managed_backup_path, content_hash as managed_content_hash,

@@ -5,7 +5,7 @@ use std::sync::{
 
 use hal100_core::{
     AGENT_CAPABILITY_COUNT, AgentCapabilityEffect, AgentCapabilityId, AgentCapabilityRegistry,
-    AgentCapabilitySet,
+    AgentCapabilitySet, ExternalAgentIntegrationId, ExternalAgentIntegrationRegistry,
 };
 use hal100_protocol::{
     AGENT_RPC_MAX_ACTION_PLANS, AGENT_RPC_MAX_REQUIRED_TOOLS, AgentActionKind, AgentActionPlan,
@@ -41,6 +41,7 @@ pub(super) enum AgentCoordinationError {
 #[derive(Clone, Default)]
 pub(super) struct AgentRunRequirements {
     capabilities: AgentCapabilitySet,
+    external_agent_target: Option<ExternalAgentIntegrationId>,
 }
 
 impl AgentRunRequirements {
@@ -50,17 +51,34 @@ impl AgentRunRequirements {
         let model_removal = prompt_requires_model_removal_plan(prompt);
         let engine_install = prompt_requires_engine_install_plan(prompt);
         let engine_remove = prompt_requires_engine_remove_plan(prompt);
-        let opencode_configuration = prompt_requires_opencode_configuration_plan(prompt);
+        let external_agent_target = prompt_external_agent_target(prompt);
+        let external_agent_installation = external_agent_target.is_some()
+            && prompt_requires_external_agent_installation_plan(prompt);
+        let managed_external_agent_removal = external_agent_target.is_some()
+            && prompt_requires_managed_external_agent_removal_plan(prompt);
+        let external_agent_configuration = !external_agent_installation
+            && !managed_external_agent_removal
+            && external_agent_target.is_some()
+            && prompt_requires_external_agent_configuration_plan(prompt);
+        let external_agent_disconnection = !managed_external_agent_removal
+            && external_agent_target.is_some()
+            && prompt_requires_external_agent_disconnection_plan(prompt);
         let has_explicit_action = model_start
             || model_removal
             || engine_install
             || engine_remove
-            || opencode_configuration
+            || external_agent_configuration
+            || external_agent_disconnection
+            || external_agent_installation
+            || managed_external_agent_removal
             || model_download;
         let diagnostic_repair =
             !has_explicit_action && prompt_requires_diagnostic_repair_plan(prompt);
 
-        let mut requirements = Self::default();
+        let mut requirements = Self {
+            capabilities: AgentCapabilitySet::default(),
+            external_agent_target,
+        };
         for (required, capability) in [
             (
                 prompt_requires_system_summary(prompt),
@@ -80,12 +98,24 @@ impl AgentRunRequirements {
             (engine_install, AgentCapabilityId::PlanEngineInstall),
             (engine_remove, AgentCapabilityId::PlanEngineRemove),
             (
-                prompt_requires_opencode_status(prompt),
-                AgentCapabilityId::InspectOpenCodeStatus,
+                external_agent_target.is_some(),
+                AgentCapabilityId::InspectExternalAgent,
             ),
             (
-                opencode_configuration,
-                AgentCapabilityId::PlanOpenCodeConfiguration,
+                external_agent_configuration,
+                AgentCapabilityId::PlanExternalAgentConfiguration,
+            ),
+            (
+                external_agent_disconnection,
+                AgentCapabilityId::PlanExternalAgentDisconnection,
+            ),
+            (
+                external_agent_installation,
+                AgentCapabilityId::PlanExternalAgentInstallation,
+            ),
+            (
+                managed_external_agent_removal,
+                AgentCapabilityId::PlanManagedExternalAgentRemoval,
             ),
             (
                 prompt_requires_model_catalog_search(prompt),
@@ -96,6 +126,14 @@ impl AgentRunRequirements {
                 AgentCapabilityId::InspectModelRepository,
             ),
             (model_download, AgentCapabilityId::PlanModelDownload),
+            (
+                prompt_requires_operational_history(prompt),
+                AgentCapabilityId::InspectOperationalHistory,
+            ),
+            (
+                prompt_requires_operational_health_observation(prompt),
+                AgentCapabilityId::ObserveOperationalHealth,
+            ),
         ] {
             if required {
                 requirements.capabilities.require(capability);
@@ -115,6 +153,10 @@ impl AgentRunRequirements {
 
     pub(super) fn requires(&self, capability: AgentCapabilityId) -> bool {
         self.capabilities.contains(capability)
+    }
+
+    pub(super) fn external_agent_target(&self) -> Option<ExternalAgentIntegrationId> {
+        self.external_agent_target
     }
 
     pub(super) fn validate(&self) -> Result<(), AgentCoordinationError> {
@@ -143,7 +185,7 @@ impl AgentRunRequirements {
         self.capabilities.iter()
     }
 
-    pub(super) fn to_rpc_v4(
+    pub(super) fn to_rpc_v9(
         &self,
         prompt: &str,
         gateway_base_url: &str,
@@ -269,8 +311,14 @@ pub(super) fn validate_completion(
         Some(AgentActionKind::InstallLlamaCpp)
     } else if requirements.requires(AgentCapabilityId::PlanEngineRemove) {
         Some(AgentActionKind::RemoveLlamaCpp)
-    } else if requirements.requires(AgentCapabilityId::PlanOpenCodeConfiguration) {
-        Some(AgentActionKind::ConfigureOpenCode)
+    } else if requirements.requires(AgentCapabilityId::PlanExternalAgentConfiguration) {
+        Some(AgentActionKind::ConfigureExternalAgent)
+    } else if requirements.requires(AgentCapabilityId::PlanExternalAgentDisconnection) {
+        Some(AgentActionKind::DisconnectExternalAgent)
+    } else if requirements.requires(AgentCapabilityId::PlanExternalAgentInstallation) {
+        Some(AgentActionKind::InstallExternalAgent)
+    } else if requirements.requires(AgentCapabilityId::PlanManagedExternalAgentRemoval) {
+        Some(AgentActionKind::RemoveExternalAgent)
     } else if requirements.requires(AgentCapabilityId::PlanModelDownload) {
         Some(AgentActionKind::DownloadModel)
     } else {
@@ -280,10 +328,17 @@ pub(super) fn validate_completion(
         matches!(
             kind,
             AgentActionKind::InstallLlamaCpp
-                | AgentActionKind::ConfigureOpenCode
+                | AgentActionKind::ConfigureExternalAgent
                 | AgentActionKind::RemoveModel
         )
     };
+    let expected_external_target = (requirements
+        .requires(AgentCapabilityId::PlanExternalAgentConfiguration)
+        || requirements.requires(AgentCapabilityId::PlanExternalAgentDisconnection)
+        || requirements.requires(AgentCapabilityId::PlanExternalAgentInstallation)
+        || requirements.requires(AgentCapabilityId::PlanManagedExternalAgentRemoval))
+    .then(|| requirements.external_agent_target())
+    .flatten();
     if completed.run_id != run_id
         || completed.registered_tool_count != AGENT_CAPABILITY_COUNT
         || completed.completed_tool_calls as usize != completed.tool_names.len()
@@ -296,6 +351,12 @@ pub(super) fn validate_completion(
         || action_plans.len() > 1
         || expected_action_kind
             .is_some_and(|kind| action_plans.len() != 1 || action_plans[0].action_kind != kind)
+        || expected_external_target.is_some_and(|integration_id| {
+            action_plans.first().is_none_or(|plan| {
+                plan.target_id
+                    != ExternalAgentIntegrationRegistry::descriptor(integration_id).integration_id
+            })
+        })
         || (requirements.requires(AgentCapabilityId::PlanDiagnosticRepair)
             && diagnostic_repair_available
             && (action_plans.len() != 1
@@ -332,10 +393,49 @@ pub(super) fn validate_prompt(prompt: &str) -> Result<String, AgentCoordinationE
         return Err(AgentCoordinationError::InvalidPrompt);
     }
     let normalized = prompt.to_lowercase();
+    if external_agent_targets(prompt).len() > 1 {
+        return Err(AgentCoordinationError::InvalidPrompt);
+    }
     const DOMAIN_MARKERS: &[&str] = &[
-        "hal100", "本地", "模型", "推理", "引擎", "后端", "配置", "电脑", "mac", "硬件", "内存",
-        "cpu", "芯片", "安装", "卸载", "删除", "下载", "切换", "llama", "vllm", "opencode", "api",
+        "hal100",
+        "本地",
+        "模型",
+        "推理",
+        "引擎",
+        "后端",
+        "配置",
+        "电脑",
+        "mac",
+        "硬件",
+        "内存",
+        "cpu",
+        "芯片",
+        "安装",
+        "卸载",
+        "删除",
+        "下载",
+        "切换",
+        "llama",
+        "vllm",
+        "opencode",
+        "openclaw",
+        "open claw",
+        "hermes",
+        "pi coding",
+        "pi agent",
+        "api",
         "token",
+        "调试",
+        "故障",
+        "错误",
+        "失败",
+        "日志",
+        "运维",
+        "监测",
+        "监控",
+        "部署",
+        "就绪",
+        "稳定性",
     ];
     if !DOMAIN_MARKERS
         .iter()
@@ -403,6 +503,41 @@ pub(super) fn prompt_requires_diagnostic_repair_plan(prompt: &str) -> bool {
         "自动修复",
         "修复问题",
         "修复故障",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+pub(super) fn prompt_requires_operational_history(prompt: &str) -> bool {
+    let normalized = prompt.to_lowercase();
+    [
+        "调试",
+        "最近失败",
+        "近期失败",
+        "失败原因",
+        "错误历史",
+        "操作历史",
+        "操作记录",
+        "运行记录",
+        "运维记录",
+        "为什么失败",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+pub(super) fn prompt_requires_operational_health_observation(prompt: &str) -> bool {
+    let normalized = prompt.to_lowercase();
+    [
+        "部署前检查",
+        "部署就绪",
+        "运行监测",
+        "运行监控",
+        "短时监测",
+        "短时监控",
+        "观察运行",
+        "运行稳定性",
+        "运维检查",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
@@ -522,17 +657,54 @@ pub(super) fn prompt_requires_engine_remove_plan(prompt: &str) -> bool {
             .any(|marker| normalized.contains(marker))
 }
 
-pub(super) fn prompt_requires_opencode_status(prompt: &str) -> bool {
-    let normalized = prompt.to_lowercase();
-    normalized.contains("opencode")
-        && ["状态", "检测", "检查", "配置", "接入", "连接"]
-            .iter()
-            .any(|marker| normalized.contains(marker))
+pub(super) fn prompt_external_agent_target(prompt: &str) -> Option<ExternalAgentIntegrationId> {
+    let targets = external_agent_targets(prompt);
+    (targets.len() == 1).then(|| targets[0])
 }
 
-pub(super) fn prompt_requires_opencode_configuration_plan(prompt: &str) -> bool {
+fn external_agent_targets(prompt: &str) -> Vec<ExternalAgentIntegrationId> {
     let normalized = prompt.to_lowercase();
-    if !normalized.contains("opencode") {
+    [
+        (
+            ExternalAgentIntegrationId::OpenCode,
+            &["opencode", "open code"][..],
+        ),
+        (
+            ExternalAgentIntegrationId::PiCodingAgent,
+            &[
+                "pi coding",
+                "pi-coding",
+                "pi agent",
+                "官方 pi",
+                "私有 pi",
+                "受管 pi",
+            ][..],
+        ),
+        (
+            ExternalAgentIntegrationId::OpenClaw,
+            &["openclaw", "open claw", "open-claw", "open爪"][..],
+        ),
+        (
+            ExternalAgentIntegrationId::HermesAgent,
+            &["hermes agent", "hermes-agent", "hermes"][..],
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(integration_id, markers)| {
+        markers
+            .iter()
+            .any(|marker| normalized.contains(marker))
+            .then_some(integration_id)
+    })
+    .collect()
+}
+
+pub(super) fn prompt_requires_external_agent_configuration_plan(prompt: &str) -> bool {
+    let normalized = prompt.to_lowercase();
+    if prompt_external_agent_target(prompt).is_none()
+        || prompt_requires_external_agent_disconnection_plan(prompt)
+        || prompt_requires_managed_external_agent_removal_plan(prompt)
+    {
         return false;
     }
     let explicit_change = [
@@ -545,15 +717,69 @@ pub(super) fn prompt_requires_opencode_configuration_plan(prompt: &str) -> bool 
         "接入hal100",
         "连接到 hal100",
         "连接到hal100",
-        "设置 opencode",
-        "设置opencode",
+        "连接 hal100",
+        "连接hal100",
     ]
     .iter()
     .any(|marker| normalized.contains(marker));
     let inspection_only = ["查看", "解释", "是什么", "检查配置", "检测配置", "配置状态"]
         .iter()
         .any(|marker| normalized.contains(marker));
-    explicit_change || (!inspection_only && normalized.trim().starts_with("配置 opencode"))
+    explicit_change
+        || (!inspection_only
+            && ["配置 ", "配置", "接入 ", "接入"]
+                .iter()
+                .any(|prefix| normalized.trim().starts_with(prefix)))
+}
+
+pub(super) fn prompt_requires_managed_external_agent_removal_plan(prompt: &str) -> bool {
+    let normalized = prompt.to_lowercase();
+    let explicitly_managed = [
+        "hal100 私有",
+        "hal100私有",
+        "hal100 受管",
+        "hal100受管",
+        "私有安装",
+        "私有运行时",
+        "私有 pi",
+        "受管 pi",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker));
+    let requests_removal = ["卸载", "移除", "删除", "清理", "移入废纸篓", "移到废纸篓"]
+        .iter()
+        .any(|marker| normalized.contains(marker));
+    prompt_external_agent_target(prompt).is_some() && explicitly_managed && requests_removal
+}
+
+pub(super) fn prompt_requires_external_agent_installation_plan(prompt: &str) -> bool {
+    let normalized = prompt.to_lowercase();
+    let requests_install = normalized.contains("安装计划")
+        || normalized.trim().starts_with("安装")
+        || ["帮我安装", "请安装", "并安装", "部署", "装上"]
+            .iter()
+            .any(|marker| normalized.contains(marker));
+    prompt_external_agent_target(prompt).is_some()
+        && requests_install
+        && !["断开", "卸载", "移除", "删除"]
+            .iter()
+            .any(|marker| normalized.contains(marker))
+}
+
+pub(super) fn prompt_requires_external_agent_disconnection_plan(prompt: &str) -> bool {
+    let normalized = prompt.to_lowercase();
+    prompt_external_agent_target(prompt).is_some()
+        && [
+            "断开",
+            "取消接入",
+            "解除接入",
+            "解除连接",
+            "移除接入",
+            "删除 hal100 配置",
+            "删除hal100配置",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
 }
 
 #[cfg(test)]
@@ -594,5 +820,53 @@ mod tests {
             registry.begin("run-b".to_owned()),
             Err(AgentCoordinationError::StateUnavailable)
         ));
+    }
+
+    #[test]
+    fn operational_debugging_is_in_domain_and_requires_only_sanitized_history() {
+        assert!(validate_prompt("调试 HAL100 最近失败原因").is_ok());
+        let requirements = AgentRunRequirements::for_prompt("调试 HAL100 最近失败原因");
+        assert!(requirements.requires(AgentCapabilityId::InspectOperationalHistory));
+        assert_eq!(requirements.len(), 1);
+    }
+
+    #[test]
+    fn deployment_readiness_requires_only_the_bounded_observation() {
+        assert!(validate_prompt("执行 HAL100 部署前检查并观察运行稳定性").is_ok());
+        let requirements =
+            AgentRunRequirements::for_prompt("执行 HAL100 部署前检查并观察运行稳定性");
+        assert!(requirements.requires(AgentCapabilityId::ObserveOperationalHealth));
+        assert_eq!(requirements.len(), 1);
+    }
+
+    #[test]
+    fn pi_install_requires_inspection_and_one_private_install_plan() {
+        let requirements = AgentRunRequirements::for_prompt(
+            "检查官方 Pi Coding Agent 是否已安装；如果没有，为固定版本生成 HAL100 私有安装计划，不要修改 PATH、HOME 或用户配置。",
+        );
+        assert_eq!(
+            requirements.external_agent_target(),
+            Some(ExternalAgentIntegrationId::PiCodingAgent)
+        );
+        assert!(requirements.requires(AgentCapabilityId::InspectExternalAgent));
+        assert!(requirements.requires(AgentCapabilityId::PlanExternalAgentInstallation));
+        assert!(!requirements.requires(AgentCapabilityId::PlanExternalAgentConfiguration));
+        assert_eq!(requirements.len(), 2);
+        assert!(requirements.validate().is_ok());
+    }
+
+    #[test]
+    fn pi_private_removal_is_distinct_from_disconnect_and_user_uninstall() {
+        let requirements =
+            AgentRunRequirements::for_prompt("将 HAL100 私有 Pi Coding Agent 运行时移入废纸篓");
+        assert!(requirements.requires(AgentCapabilityId::InspectExternalAgent));
+        assert!(requirements.requires(AgentCapabilityId::PlanManagedExternalAgentRemoval));
+        assert!(!requirements.requires(AgentCapabilityId::PlanExternalAgentDisconnection));
+        assert_eq!(requirements.len(), 2);
+        assert!(requirements.validate().is_ok());
+
+        let user_owned = AgentRunRequirements::for_prompt("卸载官方 Pi Coding Agent");
+        assert!(!user_owned.requires(AgentCapabilityId::PlanManagedExternalAgentRemoval));
+        assert!(user_owned.requires(AgentCapabilityId::InspectExternalAgent));
     }
 }

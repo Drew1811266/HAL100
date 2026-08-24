@@ -19,12 +19,21 @@ use std::{
 
 #[cfg(test)]
 use hal100_core::{AGENT_CAPABILITY_COUNT, AgentCapabilityId};
+use hal100_core::{ExternalAgentIntegrationId, ExternalAgentIntegrationRegistry};
 use hal100_infra::{
     AGENT_IDLE_TIMEOUT, AgentModelRuntime, AgentRuntimeError, ClientCredentialError,
     CredentialRegistry, Database, DatabaseError, EngineManagerError, EnvironmentDiagnosticError,
-    EnvironmentDiagnostics, GatewayRouteError, GatewayState, LlamaCppManager, ModelDownloadError,
-    ModelDownloadManager, ModelRemovalError, ModelRemovalManager, OpenCodeIntegrationError,
-    OpenCodeManager, RemoteModelCatalog, RemoteModelCatalogError, stored_client_credential,
+    EnvironmentDiagnostics, GatewayRouteError, GatewayState, HermesAgentIntegrationAdapter,
+    HermesAgentIntegrationError, LlamaCppManager, ManagedExternalAgentDeploymentError,
+    ManagedExternalAgentDeploymentManager, ModelDownloadError, ModelDownloadManager,
+    ModelRemovalError, ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawIntegrationError,
+    OpenCodeIntegrationError, OpenCodeManager, PiCodingAgentIntegrationAdapter,
+    PiCodingAgentIntegrationError, RemoteModelCatalog, RemoteModelCatalogError,
+    stored_client_credential,
+};
+#[cfg(test)]
+use hal100_infra::{
+    ExternalModelProfileRegistry, HermesAgentPaths, OpenClawPaths, PiCodingAgentPaths,
 };
 use hal100_platform::{HardwareProbeError, SidecarLaunchError};
 use hal100_protocol::{
@@ -48,13 +57,15 @@ use crate::agent_coordinator::{
 };
 #[cfg(test)]
 use crate::agent_coordinator::{
-    prompt_requires_diagnostic_repair_plan, prompt_requires_engine_install_plan,
-    prompt_requires_engine_remove_plan, prompt_requires_environment_diagnostics,
-    prompt_requires_model_catalog_search, prompt_requires_model_download_plan,
-    prompt_requires_model_removal_plan, prompt_requires_model_repository_inspection,
-    prompt_requires_model_start_plan, prompt_requires_opencode_configuration_plan,
-    prompt_requires_opencode_status, prompt_requires_runtime_catalog,
-    prompt_requires_system_summary,
+    prompt_external_agent_target, prompt_requires_diagnostic_repair_plan,
+    prompt_requires_engine_install_plan, prompt_requires_engine_remove_plan,
+    prompt_requires_environment_diagnostics, prompt_requires_external_agent_configuration_plan,
+    prompt_requires_external_agent_disconnection_plan,
+    prompt_requires_external_agent_installation_plan, prompt_requires_model_catalog_search,
+    prompt_requires_model_download_plan, prompt_requires_model_removal_plan,
+    prompt_requires_model_repository_inspection, prompt_requires_model_start_plan,
+    prompt_requires_operational_health_observation, prompt_requires_operational_history,
+    prompt_requires_runtime_catalog, prompt_requires_system_summary,
 };
 use crate::agent_kernel::{AgentKernelChannel, AgentKernelError, AgentKernelRunner};
 #[cfg(test)]
@@ -65,9 +76,10 @@ use crate::agent_provider::{AgentProviderError, AgentProviderService, ResolvedAg
 use crate::agent_tools::{AgentToolExecutionError, AgentToolExecutor};
 #[cfg(test)]
 use hal100_protocol::{
-    AgentActionKind, BackendKind, ENVIRONMENT_DIAGNOSTICS_TOOL, EngineInstallState,
-    LocalModelState, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
+    AgentActionKind, BackendKind, ENVIRONMENT_DIAGNOSTICS_TOOL, EXTERNAL_AGENT_STATUS_TOOL,
+    EngineInstallState, LocalModelState, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_REMOVE_TOOL,
+    PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL, PLAN_MODEL_REMOVAL_TOOL, PLAN_MODEL_START_TOOL,
+    RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
 };
 
 const MAX_TOOL_CALLS_PER_RUN: usize = AGENT_RPC_MAX_REQUIRED_TOOLS;
@@ -129,6 +141,12 @@ pub enum AgentServiceError {
     #[error(transparent)]
     OpenCode(#[from] OpenCodeIntegrationError),
     #[error(transparent)]
+    PiCodingAgent(#[from] PiCodingAgentIntegrationError),
+    #[error(transparent)]
+    OpenClaw(#[from] OpenClawIntegrationError),
+    #[error(transparent)]
+    HermesAgent(#[from] HermesAgentIntegrationError),
+    #[error(transparent)]
     ModelRemoval(#[from] ModelRemovalError),
     #[error(transparent)]
     ModelDownload(#[from] ModelDownloadError),
@@ -136,6 +154,8 @@ pub enum AgentServiceError {
     RemoteCatalog(#[from] RemoteModelCatalogError),
     #[error(transparent)]
     Diagnostics(#[from] EnvironmentDiagnosticError),
+    #[error(transparent)]
+    ManagedDeployment(#[from] ManagedExternalAgentDeploymentError),
     #[error(transparent)]
     Credential(#[from] ClientCredentialError),
     #[error(transparent)]
@@ -184,10 +204,14 @@ impl AgentServiceError {
             Self::Runtime(_) => "model_runtime_failed",
             Self::Engine(_) => "managed_model_operation_failed",
             Self::OpenCode(_) => "opencode_configuration_failed",
+            Self::PiCodingAgent(_) => "pi_coding_agent_integration_failed",
+            Self::OpenClaw(_) => "openclaw_integration_failed",
+            Self::HermesAgent(_) => "hermes_agent_integration_failed",
             Self::ModelRemoval(_) => "model_removal_failed",
             Self::ModelDownload(error) => error.code(),
             Self::RemoteCatalog(error) => error.code(),
             Self::Diagnostics(_) => "environment_diagnostics_failed",
+            Self::ManagedDeployment(_) => "managed_external_agent_deployment_failed",
             Self::Credential(_) => "credential_failed",
             Self::Database(_) => "database_failed",
             Self::GatewayRoute(_) => "gateway_route_failed",
@@ -251,10 +275,14 @@ impl From<AgentToolExecutionError> for AgentServiceError {
             AgentToolExecutionError::Database(error) => Self::Database(error),
             AgentToolExecutionError::Engine(error) => Self::Engine(error),
             AgentToolExecutionError::OpenCode(error) => Self::OpenCode(error),
+            AgentToolExecutionError::PiCodingAgent(error) => Self::PiCodingAgent(error),
+            AgentToolExecutionError::OpenClaw(error) => Self::OpenClaw(error),
+            AgentToolExecutionError::HermesAgent(error) => Self::HermesAgent(error),
             AgentToolExecutionError::ModelRemoval(error) => Self::ModelRemoval(error),
             AgentToolExecutionError::Diagnostics(error) => Self::Diagnostics(error),
             AgentToolExecutionError::RemoteCatalog(error) => Self::RemoteCatalog(error),
             AgentToolExecutionError::ModelDownload(error) => Self::ModelDownload(error),
+            AgentToolExecutionError::ManagedDeployment(error) => Self::ManagedDeployment(error),
         }
     }
 }
@@ -281,6 +309,10 @@ pub struct AgentService {
     runtime: Arc<AgentModelRuntime>,
     engine: Arc<LlamaCppManager>,
     open_code: Arc<OpenCodeManager>,
+    pi_coding_agent: Arc<PiCodingAgentIntegrationAdapter>,
+    openclaw: Arc<OpenClawIntegrationAdapter>,
+    hermes_agent: Arc<HermesAgentIntegrationAdapter>,
+    managed_deployment: Arc<ManagedExternalAgentDeploymentManager>,
     model_removal: Arc<ModelRemovalManager>,
     diagnostics: Arc<EnvironmentDiagnostics>,
     gateway: GatewayState,
@@ -309,9 +341,13 @@ impl AgentService {
         runtime: Arc<AgentModelRuntime>,
         engine: Arc<LlamaCppManager>,
         open_code: Arc<OpenCodeManager>,
+        pi_coding_agent: Arc<PiCodingAgentIntegrationAdapter>,
+        openclaw: Arc<OpenClawIntegrationAdapter>,
+        hermes_agent: Arc<HermesAgentIntegrationAdapter>,
         model_removal: Arc<ModelRemovalManager>,
         remote_catalog: Arc<RemoteModelCatalog>,
         model_download: Arc<ModelDownloadManager>,
+        managed_deployment: Arc<ManagedExternalAgentDeploymentManager>,
         gateway: GatewayState,
         database: Arc<Database>,
         credentials: CredentialRegistry,
@@ -323,9 +359,13 @@ impl AgentService {
             runtime,
             engine,
             open_code,
+            pi_coding_agent,
+            openclaw,
+            hermes_agent,
             model_removal,
             remote_catalog,
             model_download,
+            managed_deployment,
             gateway,
             database,
             credentials,
@@ -341,9 +381,13 @@ impl AgentService {
         runtime: Arc<AgentModelRuntime>,
         engine: Arc<LlamaCppManager>,
         open_code: Arc<OpenCodeManager>,
+        pi_coding_agent: Arc<PiCodingAgentIntegrationAdapter>,
+        openclaw: Arc<OpenClawIntegrationAdapter>,
+        hermes_agent: Arc<HermesAgentIntegrationAdapter>,
         model_removal: Arc<ModelRemovalManager>,
         remote_catalog: Arc<RemoteModelCatalog>,
         model_download: Arc<ModelDownloadManager>,
+        managed_deployment: Arc<ManagedExternalAgentDeploymentManager>,
         gateway: GatewayState,
         database: Arc<Database>,
         credentials: CredentialRegistry,
@@ -357,6 +401,9 @@ impl AgentService {
             database.clone(),
             engine.clone(),
             open_code.clone(),
+            pi_coding_agent.clone(),
+            openclaw.clone(),
+            hermes_agent.clone(),
             gateway.clone(),
         ));
         let provider = AgentProviderService::new(database.clone(), gateway.clone());
@@ -366,10 +413,14 @@ impl AgentService {
             database.clone(),
             engine.clone(),
             open_code.clone(),
+            pi_coding_agent.clone(),
+            openclaw.clone(),
+            hermes_agent.clone(),
             model_removal.clone(),
             diagnostics.clone(),
             remote_catalog,
             model_download,
+            managed_deployment.clone(),
             gateway.clone(),
             action_plans.clone(),
         );
@@ -377,6 +428,10 @@ impl AgentService {
             runtime,
             engine,
             open_code,
+            pi_coding_agent,
+            openclaw,
+            hermes_agent,
+            managed_deployment,
             model_removal,
             diagnostics,
             gateway,
@@ -769,14 +824,153 @@ impl AgentService {
             } => {
                 let _ = self.model_removal.discard_plan(removal_plan_id);
             }
-            AgentActionExecutor::ConfigureOpenCode {
-                configuration_plan_id,
+            AgentActionExecutor::InstallExternalAgent {
+                deployment_plan_id, ..
             } => {
                 let _ = self
-                    .open_code
-                    .discard_configuration_plan(configuration_plan_id);
+                    .managed_deployment
+                    .discard_install_plan(deployment_plan_id);
+            }
+            AgentActionExecutor::RemoveExternalAgent {
+                deployment_plan_id, ..
+            } => {
+                let _ = self
+                    .managed_deployment
+                    .discard_removal_plan(deployment_plan_id);
+            }
+            AgentActionExecutor::ConfigureExternalAgent {
+                integration_id,
+                integration_plan_id,
+            } => self.discard_external_agent_configuration(*integration_id, integration_plan_id),
+            AgentActionExecutor::DisconnectExternalAgent {
+                integration_id,
+                integration_plan_id,
+            } => self.discard_external_agent_disconnection(*integration_id, integration_plan_id),
+        }
+    }
+
+    fn discard_external_agent_configuration(
+        &self,
+        integration_id: ExternalAgentIntegrationId,
+        plan_id: &str,
+    ) {
+        match integration_id {
+            ExternalAgentIntegrationId::OpenCode => {
+                let _ = self.open_code.discard_configuration_plan(plan_id);
+            }
+            ExternalAgentIntegrationId::PiCodingAgent => {
+                let _ = self.pi_coding_agent.discard_configuration_plan(plan_id);
+            }
+            ExternalAgentIntegrationId::OpenClaw => {
+                let _ = self.openclaw.discard_configuration_plan(plan_id);
+            }
+            ExternalAgentIntegrationId::HermesAgent => {
+                let _ = self.hermes_agent.discard_configuration_plan(plan_id);
             }
         }
+    }
+
+    fn discard_external_agent_disconnection(
+        &self,
+        integration_id: ExternalAgentIntegrationId,
+        plan_id: &str,
+    ) {
+        match integration_id {
+            ExternalAgentIntegrationId::OpenCode => {
+                let _ = self.open_code.discard_disconnection_plan(plan_id);
+            }
+            ExternalAgentIntegrationId::PiCodingAgent => {
+                let _ = self.pi_coding_agent.discard_disconnection_plan(plan_id);
+            }
+            ExternalAgentIntegrationId::OpenClaw => {
+                let _ = self.openclaw.discard_disconnection_plan(plan_id);
+            }
+            ExternalAgentIntegrationId::HermesAgent => {
+                let _ = self.hermes_agent.discard_disconnection_plan(plan_id);
+            }
+        }
+    }
+
+    async fn apply_external_agent_configuration(
+        &self,
+        integration_id: ExternalAgentIntegrationId,
+        plan_id: String,
+    ) -> Result<String, AgentServiceError> {
+        match integration_id {
+            ExternalAgentIntegrationId::OpenCode => {
+                let adapter = self.open_code.clone();
+                tauri::async_runtime::spawn_blocking(move || adapter.apply_configuration(&plan_id))
+                    .await
+                    .map_err(|_| AgentServiceError::Join)?
+                    .map_err(AgentServiceError::from)?;
+            }
+            ExternalAgentIntegrationId::PiCodingAgent => {
+                let adapter = self.pi_coding_agent.clone();
+                tauri::async_runtime::spawn_blocking(move || adapter.apply_configuration(&plan_id))
+                    .await
+                    .map_err(|_| AgentServiceError::Join)?
+                    .map_err(AgentServiceError::from)?;
+            }
+            ExternalAgentIntegrationId::OpenClaw => {
+                let adapter = self.openclaw.clone();
+                tauri::async_runtime::spawn_blocking(move || adapter.apply_configuration(&plan_id))
+                    .await
+                    .map_err(|_| AgentServiceError::Join)?
+                    .map_err(AgentServiceError::from)?;
+            }
+            ExternalAgentIntegrationId::HermesAgent => {
+                let adapter = self.hermes_agent.clone();
+                tauri::async_runtime::spawn_blocking(move || adapter.apply_configuration(&plan_id))
+                    .await
+                    .map_err(|_| AgentServiceError::Join)?
+                    .map_err(AgentServiceError::from)?;
+            }
+        }
+        let display_name =
+            ExternalAgentIntegrationRegistry::descriptor(integration_id).display_name;
+        Ok(format!("{display_name} 已通过 HAL100 Gateway 接入"))
+    }
+
+    async fn apply_external_agent_disconnection(
+        &self,
+        integration_id: ExternalAgentIntegrationId,
+        plan_id: String,
+    ) -> Result<String, AgentServiceError> {
+        match integration_id {
+            ExternalAgentIntegrationId::OpenCode => {
+                let adapter = self.open_code.clone();
+                tauri::async_runtime::spawn_blocking(move || adapter.apply_disconnection(&plan_id))
+                    .await
+                    .map_err(|_| AgentServiceError::Join)?
+                    .map_err(AgentServiceError::from)?;
+            }
+            ExternalAgentIntegrationId::PiCodingAgent => {
+                let adapter = self.pi_coding_agent.clone();
+                tauri::async_runtime::spawn_blocking(move || adapter.apply_disconnection(&plan_id))
+                    .await
+                    .map_err(|_| AgentServiceError::Join)?
+                    .map_err(AgentServiceError::from)?;
+            }
+            ExternalAgentIntegrationId::OpenClaw => {
+                let adapter = self.openclaw.clone();
+                tauri::async_runtime::spawn_blocking(move || adapter.apply_disconnection(&plan_id))
+                    .await
+                    .map_err(|_| AgentServiceError::Join)?
+                    .map_err(AgentServiceError::from)?;
+            }
+            ExternalAgentIntegrationId::HermesAgent => {
+                let adapter = self.hermes_agent.clone();
+                tauri::async_runtime::spawn_blocking(move || adapter.apply_disconnection(&plan_id))
+                    .await
+                    .map_err(|_| AgentServiceError::Join)?
+                    .map_err(AgentServiceError::from)?;
+            }
+        }
+        let display_name =
+            ExternalAgentIntegrationRegistry::descriptor(integration_id).display_name;
+        Ok(format!(
+            "{display_name} 已与 HAL100 断开；用户配置和非 HAL100 凭据保持不变"
+        ))
     }
 
     pub async fn apply_action_plan(
@@ -851,18 +1045,65 @@ impl AgentService {
                         (summary.to_owned(), None)
                     })
             }
-            AgentActionExecutor::ConfigureOpenCode {
-                configuration_plan_id,
+            AgentActionExecutor::InstallExternalAgent {
+                integration_id,
+                deployment_plan_id,
             } => {
-                let open_code = self.open_code.clone();
+                let manager = self.managed_deployment.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    open_code.apply_configuration(&configuration_plan_id)
+                    manager.apply_install(&deployment_plan_id)
                 })
                 .await
                 .map_err(|_| AgentServiceError::Join)
                 .and_then(|result| result.map_err(AgentServiceError::from))
-                .map(|_| ("OpenCode 已通过 HAL100 Gateway 接入".to_owned(), None))
+                .map(|result| {
+                    let display_name =
+                        ExternalAgentIntegrationRegistry::descriptor(integration_id).display_name;
+                    (
+                        format!(
+                            "{display_name} {} 已安装到 HAL100 私有目录；用户安装、PATH 和配置未改动",
+                            result.package_version
+                        ),
+                        None,
+                    )
+                })
             }
+            AgentActionExecutor::RemoveExternalAgent {
+                integration_id,
+                deployment_plan_id,
+            } => {
+                let manager = self.managed_deployment.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    manager.apply_removal(&deployment_plan_id)
+                })
+                .await
+                .map_err(|_| AgentServiceError::Join)
+                .and_then(|result| result.map_err(AgentServiceError::from))
+                .map(|_| {
+                    let display_name =
+                        ExternalAgentIntegrationRegistry::descriptor(integration_id).display_name;
+                    (
+                        format!(
+                            "HAL100 私有 {display_name} 已移入系统废纸篓；用户安装、配置和会话未改动"
+                        ),
+                        None,
+                    )
+                })
+            }
+            AgentActionExecutor::ConfigureExternalAgent {
+                integration_id,
+                integration_plan_id,
+            } => self
+                .apply_external_agent_configuration(integration_id, integration_plan_id)
+                .await
+                .map(|summary| (summary, None)),
+            AgentActionExecutor::DisconnectExternalAgent {
+                integration_id,
+                integration_plan_id,
+            } => self
+                .apply_external_agent_disconnection(integration_id, integration_plan_id)
+                .await
+                .map(|summary| (summary, None)),
         };
         let (outcome_summary, runtime_state) = match execution {
             Ok(result) => result,
@@ -1053,7 +1294,7 @@ fn exchange_with_sidecar(
         return Err(AgentServiceError::InvalidProtocol);
     }
 
-    let payload = input.requirements.to_rpc_v4(
+    let payload = input.requirements.to_rpc_v9(
         &input.prompt,
         &input.gateway_base_url,
         &input.api_key,
@@ -1069,6 +1310,7 @@ fn exchange_with_sidecar(
 
     let mut tool_run = input.tools.start_run(
         input.run_id.clone(),
+        input.requirements.external_agent_target(),
         input.runtime_handle.clone(),
         input.cancellation.clone(),
     );
@@ -1197,6 +1439,43 @@ mod tests {
         (catalog, downloads)
     }
 
+    fn external_agent_adapters(
+        database: Arc<Database>,
+        credentials: CredentialRegistry,
+        home: &Path,
+        data_dir: &Path,
+        gateway_base_url: &str,
+    ) -> (
+        Arc<PiCodingAgentIntegrationAdapter>,
+        Arc<OpenClawIntegrationAdapter>,
+        Arc<HermesAgentIntegrationAdapter>,
+    ) {
+        let profiles = ExternalModelProfileRegistry::conservative_managed_route();
+        (
+            Arc::new(PiCodingAgentIntegrationAdapter::with_gateway_base_url(
+                database.clone(),
+                credentials.clone(),
+                profiles.clone(),
+                PiCodingAgentPaths::for_macos(home, data_dir),
+                gateway_base_url.to_owned(),
+            )),
+            Arc::new(OpenClawIntegrationAdapter::with_gateway_base_url(
+                database.clone(),
+                credentials.clone(),
+                profiles.clone(),
+                OpenClawPaths::for_macos(home, data_dir),
+                gateway_base_url.to_owned(),
+            )),
+            Arc::new(HermesAgentIntegrationAdapter::with_gateway_base_url(
+                database,
+                credentials,
+                profiles,
+                HermesAgentPaths::for_macos(home, data_dir),
+                gateway_base_url.to_owned(),
+            )),
+        )
+    }
+
     fn action_plan_fixture(expires_at_ms: i64) -> PendingAgentAction {
         PendingAgentAction {
             executor: AgentActionExecutor::StartOrSwitchModel {
@@ -1220,6 +1499,10 @@ mod tests {
     #[test]
     fn accepts_only_agent_domain_prompts() {
         assert!(validate_prompt("检测这台 Mac 并给出本地模型建议").is_ok());
+        assert!(matches!(
+            validate_prompt("同时配置 Pi Coding Agent 和 OpenClaw"),
+            Err(AgentCoordinationError::InvalidPrompt)
+        ));
         assert!(matches!(
             validate_prompt("给我写一首关于春天的诗"),
             Err(AgentCoordinationError::OutsideDomain)
@@ -1295,6 +1578,13 @@ mod tests {
             hal100_infra::OpenCodePaths::for_macos(&data_dir.join("home"), &data_dir),
             "http://127.0.0.1:10100/v1".to_owned(),
         ));
+        let (pi_coding_agent, openclaw, hermes_agent) = external_agent_adapters(
+            database.clone(),
+            credentials.clone(),
+            &data_dir.join("home"),
+            &data_dir,
+            "http://127.0.0.1:10100/v1",
+        );
         let model_storage_path = data_dir.join("models");
         let (remote_catalog, model_download) =
             model_download_fixture(database.clone(), model_storage_path.clone());
@@ -1302,12 +1592,20 @@ mod tests {
             runtime,
             engine,
             open_code,
+            pi_coding_agent,
+            openclaw,
+            hermes_agent,
             Arc::new(ModelRemovalManager::new(
                 database.clone(),
                 model_storage_path.clone(),
             )),
             remote_catalog,
             model_download,
+            Arc::new(ManagedExternalAgentDeploymentManager::new(
+                database.clone(),
+                data_dir.join("external-agents"),
+                Vec::new(),
+            )),
             gateway,
             database,
             credentials,
@@ -1479,9 +1777,13 @@ mod tests {
             service.runtime.clone(),
             service.engine.clone(),
             service.open_code.clone(),
+            service.pi_coding_agent.clone(),
+            service.openclaw.clone(),
+            service.hermes_agent.clone(),
             service.model_removal.clone(),
             remote_catalog,
             model_download,
+            service.managed_deployment.clone(),
             service.gateway.clone(),
             service.database.clone(),
             service.credentials.clone(),
@@ -1706,6 +2008,13 @@ mod tests {
             hal100_infra::OpenCodePaths::for_macos(&data_dir.join("home"), &data_dir),
             format!("http://{gateway_address}/v1"),
         ));
+        let (pi_coding_agent, openclaw, hermes_agent) = external_agent_adapters(
+            database.clone(),
+            credentials.clone(),
+            &data_dir.join("home"),
+            &data_dir,
+            &format!("http://{gateway_address}/v1"),
+        );
         let model_storage_path = data_dir.join("models");
         let (remote_catalog, model_download) =
             model_download_fixture(database.clone(), model_storage_path.clone());
@@ -1714,12 +2023,20 @@ mod tests {
                 runtime,
                 engine,
                 open_code,
+                pi_coding_agent,
+                openclaw,
+                hermes_agent,
                 Arc::new(ModelRemovalManager::new(
                     database.clone(),
                     model_storage_path.clone(),
                 )),
                 remote_catalog,
                 model_download,
+                Arc::new(ManagedExternalAgentDeploymentManager::new(
+                    database.clone(),
+                    data_dir.join("external-agents"),
+                    Vec::new(),
+                )),
                 gateway.clone(),
                 database.clone(),
                 credentials.clone(),
@@ -1838,19 +2155,39 @@ mod tests {
     }
 
     #[test]
-    fn classifies_only_explicit_engine_and_opencode_mutation_intents() {
+    fn classifies_only_explicit_engine_and_external_agent_mutation_intents() {
         assert!(prompt_requires_engine_install_plan(
             "检查状态并生成安装 llama.cpp 的计划"
         ));
         assert!(prompt_requires_engine_remove_plan("卸载本地推理引擎"));
         assert!(!prompt_requires_engine_install_plan("帮我安装一个本地模型"));
-        assert!(prompt_requires_opencode_status("检查 OpenCode 配置状态"));
-        assert!(!prompt_requires_opencode_configuration_plan(
+        assert_eq!(
+            prompt_external_agent_target("检查 OpenCode 配置状态"),
+            Some(ExternalAgentIntegrationId::OpenCode)
+        );
+        assert!(!prompt_requires_external_agent_configuration_plan(
             "检查 OpenCode 配置状态"
         ));
-        assert!(prompt_requires_opencode_configuration_plan(
+        assert!(prompt_requires_external_agent_configuration_plan(
             "检查 OpenCode 状态，并生成接入 HAL100 Gateway 的配置计划"
         ));
+        assert!(prompt_requires_external_agent_disconnection_plan(
+            "断开 Hermes Agent 与 HAL100 的接入"
+        ));
+        assert!(prompt_requires_external_agent_installation_plan(
+            "安装官方 Pi Coding Agent，但不要修改用户配置"
+        ));
+        assert!(!prompt_requires_external_agent_installation_plan(
+            "检查官方 Pi Coding Agent 安装状态"
+        ));
+        assert_eq!(
+            prompt_external_agent_target("配置官方 Pi Coding Agent"),
+            Some(ExternalAgentIntegrationId::PiCodingAgent)
+        );
+        assert_eq!(
+            prompt_external_agent_target("检查 OpenClaw 状态"),
+            Some(ExternalAgentIntegrationId::OpenClaw)
+        );
     }
 
     #[test]
@@ -1870,6 +2207,18 @@ mod tests {
         assert!(!prompt_requires_environment_diagnostics(
             "检查 OpenCode 配置状态"
         ));
+        assert!(prompt_requires_operational_history(
+            "调试 HAL100 最近一次配置失败原因"
+        ));
+        assert!(!prompt_requires_operational_history(
+            "检查 HAL100 当前模型状态"
+        ));
+        assert!(prompt_requires_operational_health_observation(
+            "执行 HAL100 部署前检查并观察运行稳定性"
+        ));
+        assert!(!prompt_requires_operational_health_observation(
+            "长期后台监控所有系统日志"
+        ));
     }
 
     #[test]
@@ -1882,8 +2231,12 @@ mod tests {
         let opencode = AgentRunRequirements::for_prompt(
             "检查 OpenCode 状态，并生成接入 HAL100 Gateway 的配置计划",
         );
-        assert!(opencode.requires(AgentCapabilityId::PlanOpenCodeConfiguration));
-        assert!(opencode.requires(AgentCapabilityId::InspectOpenCodeStatus));
+        assert!(opencode.requires(AgentCapabilityId::PlanExternalAgentConfiguration));
+        assert!(opencode.requires(AgentCapabilityId::InspectExternalAgent));
+        assert_eq!(
+            opencode.external_agent_target(),
+            Some(ExternalAgentIntegrationId::OpenCode)
+        );
         assert_eq!(opencode.len(), 2);
 
         let download =
@@ -1893,6 +2246,15 @@ mod tests {
         assert!(download.requires(AgentCapabilityId::PlanModelDownload));
         assert!(!download.requires(AgentCapabilityId::PlanModelStart));
         assert_eq!(download.len(), 3);
+
+        let debug = AgentRunRequirements::for_prompt("调试 HAL100 最近失败原因");
+        assert!(debug.requires(AgentCapabilityId::InspectOperationalHistory));
+        assert_eq!(debug.len(), 1);
+
+        let observation =
+            AgentRunRequirements::for_prompt("执行 HAL100 部署前检查并观察运行稳定性");
+        assert!(observation.requires(AgentCapabilityId::ObserveOperationalHealth));
+        assert_eq!(observation.len(), 1);
 
         let repair_with_explicit_action =
             AgentRunRequirements::for_prompt("诊断并修复问题，同时卸载本地推理引擎");
@@ -1908,12 +2270,12 @@ mod tests {
     }
 
     #[test]
-    fn capability_requirements_adapt_to_rpc_v4_capability_set() {
+    fn capability_requirements_adapt_to_rpc_v9_capability_set() {
         let payload = AgentRunRequirements::requiring([
             AgentCapabilityId::PlanModelRemoval,
             AgentCapabilityId::InspectSystemSummary,
         ])
-        .to_rpc_v4(
+        .to_rpc_v9(
             "移除模型并报告硬件",
             "http://127.0.0.1:39000/v1",
             "temporary-key",
@@ -2047,6 +2409,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rejects_an_external_agent_plan_for_a_different_prompt_target() {
+        let requirements = AgentRunRequirements::for_prompt("配置 Pi Coding Agent 接入 HAL100");
+        let completed = AgentRunCompletedPayload {
+            run_id: "run-external".to_owned(),
+            answer: "已生成配置计划，尚未执行。".to_owned(),
+            registered_tool_count: AGENT_CAPABILITY_COUNT,
+            completed_tool_calls: 2,
+            tool_names: vec![
+                EXTERNAL_AGENT_STATUS_TOOL.to_owned(),
+                PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL.to_owned(),
+            ],
+        };
+        let events = vec![
+            AgentToolEvent {
+                tool_call_id: "tool-status".to_owned(),
+                tool_name: EXTERNAL_AGENT_STATUS_TOOL.to_owned(),
+                label: "检查外部 Agent".to_owned(),
+                status: "completed".to_owned(),
+                summary: "已检查".to_owned(),
+            },
+            AgentToolEvent {
+                tool_call_id: "tool-plan".to_owned(),
+                tool_name: PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL.to_owned(),
+                label: "配置计划".to_owned(),
+                status: "awaiting_confirmation".to_owned(),
+                summary: "尚未执行".to_owned(),
+            },
+        ];
+        let mut plan = action_plan_fixture(200).plan;
+        plan.run_id = "run-external".to_owned();
+        plan.action_kind = AgentActionKind::ConfigureExternalAgent;
+        plan.target_id = "openclaw".to_owned();
+        assert_eq!(
+            validate_completion(
+                "run-external",
+                &requirements,
+                false,
+                &completed,
+                &events,
+                &[plan],
+            ),
+            Err(AgentCoordinationError::InvalidProtocol)
+        );
+    }
+
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     struct LiveAgentFixture {
         service: Arc<AgentService>,
@@ -2102,6 +2510,13 @@ mod tests {
             hal100_infra::OpenCodePaths::for_macos(&home, &data_dir),
             format!("http://{gateway_address}/v1"),
         ));
+        let (pi_coding_agent, openclaw, hermes_agent) = external_agent_adapters(
+            database.clone(),
+            credentials.clone(),
+            &home,
+            &data_dir,
+            &format!("http://{gateway_address}/v1"),
+        );
         let model_storage_path = data_dir.join("models");
         let (remote_catalog, model_download) =
             model_download_fixture(database.clone(), model_storage_path.clone());
@@ -2110,12 +2525,20 @@ mod tests {
                 runtime,
                 engine.clone(),
                 open_code,
+                pi_coding_agent,
+                openclaw,
+                hermes_agent,
                 Arc::new(ModelRemovalManager::new(
                     database.clone(),
                     model_storage_path.clone(),
                 )),
                 remote_catalog,
                 model_download,
+                Arc::new(ManagedExternalAgentDeploymentManager::new(
+                    database.clone(),
+                    data_dir.join("external-agents"),
+                    Vec::new(),
+                )),
                 gateway,
                 database,
                 credentials,

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{BackendKind, EngineInstallState, EngineRuntimeState, EnvironmentDiagnosticReport};
+use crate::{
+    BackendKind, EngineInstallState, EngineRuntimeState, EnvironmentDiagnosticReport,
+    ExternalAgentGatewayProtocol, ExternalAgentIntegrationState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,7 +131,79 @@ pub enum AgentActionKind {
     RemoveModel,
     InstallLlamaCpp,
     RemoveLlamaCpp,
-    ConfigureOpenCode,
+    InstallExternalAgent,
+    RemoveExternalAgent,
+    ConfigureExternalAgent,
+    DisconnectExternalAgent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentExternalIntegrationStatus {
+    pub integration_id: String,
+    pub display_name: String,
+    pub installed: bool,
+    pub managed_installation: bool,
+    pub version: Option<String>,
+    pub integration_state: ExternalAgentIntegrationState,
+    pub configured_protocol: Option<ExternalAgentGatewayProtocol>,
+    pub warning_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOperationalEvent {
+    pub event_type: String,
+    pub target_type: String,
+    pub occurred_at_ms: i64,
+    pub error_code: Option<String>,
+    pub action: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOperationalHistory {
+    pub generated_at_ms: i64,
+    pub total_event_count: u64,
+    pub returned_event_count: u32,
+    pub events: Vec<AgentOperationalEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentOperationalHealthStatus {
+    Ready,
+    NeedsAttention,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOperationalHealthSample {
+    pub observed_at_ms: i64,
+    pub engine_runtime_state: EngineRuntimeState,
+    pub active_route: bool,
+    pub registered_backend_count: u32,
+    pub open_circuit_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOperationalHealthObservation {
+    pub generated_at_ms: i64,
+    pub window_ms: u32,
+    pub sample_count: u32,
+    pub stable: bool,
+    pub status: AgentOperationalHealthStatus,
+    pub engine_install_state: EngineInstallState,
+    pub ready_model_count: u32,
+    pub configured_backend_count: u32,
+    pub installed_external_agent_count: u32,
+    pub configured_external_agent_count: u32,
+    pub attention_external_agent_count: u32,
+    pub blocking_codes: Vec<String>,
+    pub samples: Vec<AgentOperationalHealthSample>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

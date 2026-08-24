@@ -135,6 +135,12 @@ hal100-core
 
 迭代12开始按业务上下文渐进组织React：根`App`只负责应用壳、全局设置和路由，首条`features/agent`切片拥有Agent页面与环境诊断展示；`lib/desktop-api`继续作为Tauri和只读浏览器预览的单一适配入口。该组织以职责和变化原因划分，不设置文件行数上限，也不要求一次性迁移其他成熟页面或全局样式。
 
+迭代24进一步把路由外壳和纯展示职责从根组件分离：`components/layout/AppShell`拥有五入口导航与窗口布局，`components/ui`拥有页面标题、状态摘要和按需详情，`presentation/status`把`AppOverview`映射为稳定的`UiStatus`与用户动作。展示模型只能组合非敏感状态和导航建议，不能持有命令、一次性计划或权限判断；模型、运行、推理服务、软件接入、Agent、Usage和Audit继续复用各自既有领域查询与Rust所有者。
+
+迭代25—27完成页面领域切片和路由分包：根`App.tsx`只保留主题、基础设置查询、`AppShell`与路由；`features/home`、`features/workspace`、`features/integrations`、`features/agent`、`features/activity`和`features/settings`由`React.lazy`按路由加载。模型搜索和导入只存在于模型页面chunk，后端编辑器只存在于运行/服务chunk，Agent和Usage图表也不会进入首页页面chunk。`ActivityPageShell`只共享页签和布局，Usage与Audit仍拥有独立query key、DTO、保留策略和数据库查询。折叠详情只有展开后才挂载，抽屉统一负责模态语义、焦点循环、Escape退出和焦点恢复；这些展示行为不持有写授权。
+
+最小启动链继续独立于页面chunk：`bootstrap.ts`先安装启动超时恢复，`ApplicationErrorBoundary`承接React渲染异常，Rust在开发版创建业务状态前验证dev URL确实返回HAL100 bootstrap文档。任一环节失败都显示带固定诊断码和重新加载动作的本地错误页，不再以空白WebView作为故障状态。失败视图不提供Tauri命令、文件或网络权限。
+
 迭代4模型管理能力已经沿这些边界落地：`hal100-platform`按需读取固定 Apple Silicon系统字段；`hal100-protocol`定义硬件画像、远端目录、下载、引擎、测试与 Usage DTO；`hal100-infra`实现 Hugging Face/ModelScope官方 API适配、可恢复下载、GGUF校验、SQLite schema v5目录以及固定供应链的`LlamaCppManager`。迭代5把Usage来源语义迁移到schema v6，并在同一Gateway数据面加入Responses与Messages协议解析；schema v7增加非敏感后端和模型别名，平台凭据抽象由macOS Keychain实现。路由活动对象持有可旋转的请求代次取消令牌，使强制切换无需轮询即可中断旧代。迭代6在既有通用`settings`和审计表之上增加类型化桌面设置、可恢复向导、登录项状态、保留策略和通用客户端生命周期，不需要增加schema版本。每个通用客户端明文Key只在创建命令的单次响应中出现，运行时注册表与SQLite只保存摘要；撤销时数据库与运行时注册表以补偿事务保持一致。数据保留不会运行后台清理任务，只有用户查看精确数量并通过Rust原生确认后才按固定截止时间删除过期记录。审计DTO只返回固定安全字段白名单。协议、路由与桌面设置扩展没有新增常驻轮询或计时器。目录 API的运营方与模型仓库发布者是两层独立信任边界，确认计划保留实际仓库、修订、许可证和文件哈希。Tauri只暴露窄命令：只读查询、一次性计划、受控生命周期、桌面设置、通用客户端和脱敏审计操作。Dialog插件与登录项插件只从Rust调用，WebView capability不含通用对话框、自动启动或文件权限。硬件、数据库、Keychain、安装和进程操作不会进入每个Gateway请求的热路径；页面隐藏后没有探测、统计或审计定时器。
 
 ## 6. 网关请求生命周期
@@ -152,7 +158,7 @@ hal100-core
 
 同协议转发应尽量直接传递响应字节，不缓存完整正文。跨协议转换只解析完成转换所必需的字段。
 
-迭代2已实现第一条OpenAI兼容纵向闭环：桌面后台绑定`127.0.0.1:10100`，Models与Chat入口先使用本地Key摘要认证，再以独立后端凭据转发。非流式响应有16 MiB上限；SSE由下游轮询驱动上游读取，Drop下游响应即可取消上游。最终Usage经容量1024的专用单写入线程进入SQLite schema v2，每个请求最多写一条。当前后端和Key使用明确标记为开发期的进程配置，正式配置界面及系统凭据存储在后续迭代接入。详见[Gateway开发说明](GATEWAY_DEVELOPMENT.md)。
+迭代2实现了第一条OpenAI兼容纵向闭环：桌面后台绑定`127.0.0.1:10100`，Models与Chat入口先使用本地Key摘要认证，再以独立后端凭据转发。非流式响应有16 MiB上限；SSE由下游轮询驱动上游读取，Drop下游响应即可取消上游。最终Usage经容量1024的专用单写入线程进入SQLite schema v2，每个请求最多写一条。该迭代当时使用开发期进程配置；现行实现已经迁移到SQLite非秘密元数据、macOS Keychain独立凭据、软件接入配置界面和可逆事务。详见[Gateway开发说明](GATEWAY_DEVELOPMENT.md)及后续架构段落。
 
 迭代4把 Gateway后端改为共享动态配置：托管`llama-server`通过健康检查后，`hal100-active`被路由到当前会话随机选择且独立认证的回环端口；停止或切换时恢复/替换该配置。内置模型测试使用只存在于当前桌面进程内的随机客户端Key，响应体按数据块限制为2 MiB，提示词和回答不落库。Usage统计读取聚合总数和最近50条请求，没有前端轮询。
 
@@ -281,11 +287,13 @@ Agent由六层组成：
 
 Pi的执行前后钩子只能作为额外防线，不能替代 Rust复验。Sidecar内不存在可绕过 Tool Broker的通用执行工具。
 
-迭代1先用确定性 Faux模型完成模拟边界验证。迭代7已将同一协议升级为真实产品链，迭代10升级为RPC v2，迭代11再升级为RPC v3；迭代12把桌面Agent拆为稳定外观与五个变化边界：`agent_coordinator`负责能力需求、完成校验和任务取消生命周期，`agent_kernel`负责固定Node/Sidecar与RPC传输，`agent_tools`负责工具授权和确定性计划编排，`agent_action`负责一次性待确认计划状态，`agent_provider`负责本地/云端Provider与内存会话。迭代13将私有协议升级为RPC v4，`agent.run.start.requiredTools`直接承载由能力注册表生成的规范有序能力集合，不再为每项工具扩展布尔字段。`AgentService`继续负责运行互斥、临时凭据/路由装配、原生确认后的确定性执行、审计和错误兼容。Sidecar通过临时客户端Key向Gateway请求内部保留模型别名`hal100-agent`。独立`AgentModelRuntime`复用已校验的Qwen3.5-2B Q4_K_M权重，但使用单独的llama-server、随机回环端口、临时后端Key、内部后端和模型路由，不修改用户活动后端。运行时使用6144上下文、最多768输出Token、parallel 1和reasoning off；空闲2分钟后通过一次性generation timer停止，没有轮询。
+迭代1先用确定性 Faux模型完成模拟边界验证。迭代7已将同一协议升级为真实产品链，迭代10升级为RPC v2，迭代11再升级为RPC v3；迭代12把桌面Agent拆为稳定外观与五个变化边界：`agent_coordinator`负责能力需求、完成校验和任务取消生命周期，`agent_kernel`负责固定Node/Sidecar与RPC传输，`agent_tools`负责工具授权和确定性计划编排，`agent_action`负责一次性待确认计划状态，`agent_provider`负责本地/云端Provider与内存会话。迭代13将私有协议升级为RPC v4；迭代19升级为RPC v5，将外部Agent检测、配置和断开收敛为注册表驱动的通用能力；迭代20升级为RPC v6，把全面诊断扩展到四类客户端并增加脱敏运维事件读取；迭代21升级为RPC v7，增加部署就绪与有界短时观测；迭代22升级为RPC v8，新增外部Agent受管安装计划和独立部署配方执行器；迭代23升级为RPC v9，为受管Pi补齐完整npm依赖闭包指纹与可恢复卸载生命周期。`AgentService`继续负责运行互斥、临时凭据/路由装配、原生确认后的确定性执行、审计和错误兼容。Sidecar通过临时客户端Key向Gateway请求内部保留模型别名`hal100-agent`。独立`AgentModelRuntime`复用已校验的Qwen3.5-2B Q4_K_M权重，但使用单独的llama-server、随机回环端口、临时后端Key、内部后端和模型路由，不修改用户活动后端。运行时使用6144上下文、最多768输出Token、parallel 1和reasoning off；空闲2分钟后通过一次性generation timer停止，没有轮询。
 
-产品Sidecar当前注册13个HAL100代理工具：既有10项工具保持语义，新增公开模型目录搜索、仓库GGUF检查和下载计划。搜索使用数据库中的用户默认来源并只返回最多8个公开仓库；仓库工具只能引用同任务搜索结果并返回最多12个带可信SHA-256的GGUF；下载工具只能引用该快照中的精确相对路径。`ModelDownloadManager`仍是远端复验、空间、重复项、目标路径、底层计划、下载、哈希/GGUF校验和原子安装的唯一事实状态源，Agent不实现第二套下载逻辑。模型与引擎计划必须先完成运行目录读取；OpenCode配置计划必须先完成OpenCode状态检查；诊断修复必须先在同一任务取得Rust报告并复制精确`reportId/findingId`。每个模型回合只暴露`requiredTools`中的唯一下一工具并使用`required`；如果模型提前给文字答案，Pi会话最多追加三次固定纠偏提示，Provider固定错误立即失败。Rust Tool Broker复验工具名、精确参数、run ID、tool call ID、唯一性、规范顺序、前置闭包和RPC v4当前每任务最多4次调用；每项任务最多产生一个可写计划。共享工具策略还固定读/计划效果、前置关系、原生确认、参数正反例和128 KiB结果预算，Rust与TypeScript分别验证。4项是协议版本的单任务预算而非软件规模上限。Sidecar筛选只提高小模型可靠性，不是权限边界。完成结果如果缺少必需工具、工具关联不匹配、回答/结果过长、协议异常或进程超时，整个任务失败关闭。通用聊天由Rust领域门禁在模型启动前拒绝。
+产品Sidecar当前注册18个HAL100代理工具。外部Agent使用检测、配置、断开和受管安装四项通用能力，Pi另有只针对HAL100私有运行时的卸载能力；目标只能是注册表中的四个固定ID，并绑定用户提示目标。检测结果用`managedInstallation`区分HAL100私有运行时和用户安装，卸载意图还必须明确包含HAL100私有/受管语义，不能与断开配置或用户自行卸载混用。受管安装和卸载当前只有Pi Coding Agent配方，其他ID故障关闭。专用适配器仍分别拥有配置格式、版本、协议、受管资源和回滚策略。`inspect_environment_diagnostics`聚合Gateway、引擎、模型库和四客户端状态，`inspect_operational_history`读取数据库中最多24条已脱敏事件并再次删除目标ID；`observe_operational_health`复用诊断并在约200毫秒固定窗口内完成3次引擎、用户路由、后端数量和熔断计数采样。模型只看到脱敏状态和外层计划，不看到后端ID、路径、配置内容、告警原文、日志正文、凭据或内部计划ID。Rust Tool Broker复验工具名、精确参数、目标、run ID、tool call ID、唯一性、规范顺序、前置闭包和RPC v9当前每任务最多4次调用；每项任务最多产生一个可写计划。共享工具策略固定读/计划效果、前置关系、原生确认、参数正反例和128 KiB结果预算。4项是协议版本的单任务预算而非软件规模上限。Sidecar筛选只提高小模型可靠性，不是权限边界；任何缺失、错配、过长、协议异常或进程超时都故障关闭。
 
-`EnvironmentDiagnostics`属于Infra层的同步按需服务：只刷新模型文件存在性/廉价快照，读取引擎状态、Gateway路由与熔断快照、OpenCode检测结果，不读原始日志、不做完整模型哈希、发现数量上限64。直接桌面诊断不启动Pi或Qwen；Agent诊断只把脱敏DTO交给模型。当前只有引擎未安装、OpenCode已安装但未配置、非内置模型文件缺失三类发现带`repairKind`。修复工具不信任旧报告：Rust在计划生成前重新检查引擎安装态、OpenCode所有权或模型仍为`Missing`，再复用既有确定性计划。用户原生确认执行成功后运行一次新的诊断并返回界面；复检失败只写固定错误码，不泄漏底层路径，也不把已成功操作改判为失败。
+`ManagedExternalAgentDeploymentManager`拥有Pi私有运行时的安装与卸载生命周期，但不承担`~/.pi`配置事务。安装在HAL100 owner-only UUID暂存目录中执行，npm进程使用固定绝对身份、清空环境、只包含npm同目录Node的最小PATH和私有工作目录；顶层归档SHA-512通过后生成lockfile v3，Rust将全部非根包的版本、来源、完整性和依赖语义规范化为固定SHA-256。闭包验证发生在任何Pi代码执行之前。卸载只接受固定`runtime`规范路径，预览与确认后均复验闭包和入口，再原子隔离并移入系统废纸篓；失败时恢复原目录。用户Pi候选始终优先，且不属于这个生命周期的所有权范围。
+
+`EnvironmentDiagnostics`属于Infra层的同步按需服务：只刷新模型文件存在性/廉价快照，读取引擎状态、Gateway路由与熔断快照以及四类外部Agent检测结果，不读原始日志、不做完整模型哈希、发现数量上限64。直接桌面诊断不启动Pi或Qwen；Agent诊断只把脱敏DTO交给模型。当前只有引擎未安装、已安装但未配置或需要刷新的外部Agent、非内置模型文件缺失三类发现带`repairKind`。修复工具不信任旧报告：Rust在计划生成前重新检查引擎安装态、外部Agent所有权或模型仍为`Missing`，再复用既有确定性计划。用户原生确认执行成功后运行一次新的诊断并返回界面；复检失败只写固定错误码，不泄漏底层路径，也不把已成功操作改判为失败。短时观测在任务内按固定次数等待并响应取消，结束后不保留timer或后台状态。
 
 Agent计划是Rust内存中的一次性能力对象：绑定生成任务、精确目标、当前状态、内部确定性管理器计划、5分钟到期时间和`requires_native_confirmation`，且只保留最新一项；底层管理器计划ID不发送给Pi。新任务、取消、失败或用户取消原生确认会同时废弃外层与底层计划；伪造、超长、过期、已消费或缺少原生确认标记的ID均拒绝。WebView只能请求Rust显示原生确认；确认后Rust再次取走并校验同一计划，再调用确定性管理器。模型移除还在引擎生命周期锁内复核活动模型，托管文件只能进入系统废纸篓，外部文件只能移除索引，内置Agent模型直接拒绝。因此“模型说已执行”、Pi工具成功或聊天中的同意都不是授权。
 
@@ -325,8 +333,17 @@ OpenCode检测和配置只由界面或Agent受控工具按需触发，不存在�
 
 Pi适配器只管理`~/.pi/agent/models.json`中的`providers.hal100`。该文件按官方契约使用严格
 JSON；HAL100不读取或修改`settings.json`、`auth.json`、会话、扩展、Skills、Prompt模板或
-项目`.pi`资源。用户独立安装和升级官方`pi`，HAL100不运行安装器，也不把全局Pi模块加入
-内置Sidecar解析路径。
+项目`.pi`资源。HAL100优先使用用户独立安装和升级的官方`pi`；当未检测到用户安装时，可在
+原生确认后使用固定部署配方安装HAL100私有副本。私有副本位于应用数据目录，不加入PATH；
+安装过程不读取或修改用户HOME和配置，也不进入内置Sidecar解析路径。后续接入Gateway仍是
+独立配置事务，并明确管理外部Pi的标准用户配置位置。
+
+部署配方固定官方包`@earendil-works/pi-coding-agent@0.84.2`、npm Registry和顶层SRI。执行前后
+都复核Registry元数据；确认后先以`--ignore-scripts`打包并校验归档SRI，再从本地归档安装到
+`0700`暂存目录，验证`package.json`、入口和CLI版本后原子启用。失败只清理本次受控暂存目录。
+用户候选路径始终排在私有副本之前；检测到任何现有Pi时拒绝安装。迭代23进一步固定
+lockfile v3的136项非根包语义闭包，版本、来源、SRI、依赖、可选依赖、Peer、平台、引擎与
+入口规范化指纹必须完全匹配；闭包漂移会在执行任何Pi代码前故障关闭。
 
 Pi Provider使用`openai-completions`和版本化`hal100-active`模型描述。专属Gateway Key位于
 HAL100应用数据目录的`0600`文件，`models.json`只保存经过Shell单引号转义的固定

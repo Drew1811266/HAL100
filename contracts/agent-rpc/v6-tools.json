@@ -1,0 +1,149 @@
+{
+  "protocolVersion": 6,
+  "limits": {
+    "maxRequiredTools": 4,
+    "maxActionPlans": 1,
+    "maxToolResultBytes": 131072
+  },
+  "tools": [
+    {
+      "name": "hal100.inspect_system_summary",
+      "effect": "readOnly",
+      "prerequisites": [],
+      "requiresNativeConfirmation": false,
+      "validArguments": { "detail": "summary" },
+      "invalidArguments": [{ "detail": "full" }, { "detail": "summary", "path": "/" }]
+    },
+    {
+      "name": "hal100.inspect_runtime_catalog",
+      "effect": "readOnly",
+      "prerequisites": [],
+      "requiresNativeConfirmation": false,
+      "validArguments": { "detail": "summary" },
+      "invalidArguments": [{}, { "detail": "summary", "extra": true }]
+    },
+    {
+      "name": "hal100.plan_model_start",
+      "effect": "actionPlan",
+      "prerequisites": ["hal100.inspect_runtime_catalog"],
+      "requiresNativeConfirmation": true,
+      "validArguments": { "modelId": "managed-model-1" },
+      "invalidArguments": [{ "modelId": "" }, { "modelId": "managed-model-1", "force": true }]
+    },
+    {
+      "name": "hal100.plan_model_removal",
+      "effect": "actionPlan",
+      "prerequisites": ["hal100.inspect_runtime_catalog"],
+      "requiresNativeConfirmation": true,
+      "validArguments": { "modelId": "managed-model-1" },
+      "invalidArguments": [{}, { "modelId": "managed-model-1", "deleteSource": true }]
+    },
+    {
+      "name": "hal100.inspect_environment_diagnostics",
+      "effect": "readOnly",
+      "prerequisites": [],
+      "requiresNativeConfirmation": false,
+      "validArguments": { "target": "full" },
+      "invalidArguments": [{ "target": "summary" }, { "target": "full", "paths": true }]
+    },
+    {
+      "name": "hal100.plan_diagnostic_repair",
+      "effect": "actionPlan",
+      "prerequisites": ["hal100.inspect_environment_diagnostics"],
+      "requiresNativeConfirmation": true,
+      "validArguments": { "reportId": "diagnostic-1", "findingId": "finding-1" },
+      "invalidArguments": [
+        { "reportId": "diagnostic-1" },
+        { "reportId": "diagnostic-1", "findingId": "", "force": true }
+      ]
+    },
+    {
+      "name": "hal100.plan_engine_install",
+      "effect": "actionPlan",
+      "prerequisites": ["hal100.inspect_runtime_catalog"],
+      "requiresNativeConfirmation": true,
+      "validArguments": { "target": "llama.cpp" },
+      "invalidArguments": [{ "target": "other" }, { "target": "llama.cpp", "version": "latest" }]
+    },
+    {
+      "name": "hal100.plan_engine_remove",
+      "effect": "actionPlan",
+      "prerequisites": ["hal100.inspect_runtime_catalog"],
+      "requiresNativeConfirmation": true,
+      "validArguments": { "target": "llama.cpp" },
+      "invalidArguments": [{}, { "target": "llama.cpp", "force": true }]
+    },
+    {
+      "name": "hal100.inspect_external_agent",
+      "effect": "readOnly",
+      "prerequisites": [],
+      "requiresNativeConfirmation": false,
+      "validArguments": { "integrationId": "pi-coding-agent" },
+      "invalidArguments": [
+        { "integrationId": "unknown-agent" },
+        { "integrationId": "pi-coding-agent", "includeConfig": true }
+      ]
+    },
+    {
+      "name": "hal100.plan_external_agent_configuration",
+      "effect": "actionPlan",
+      "prerequisites": ["hal100.inspect_external_agent"],
+      "requiresNativeConfirmation": true,
+      "validArguments": { "integrationId": "pi-coding-agent" },
+      "invalidArguments": [{}, { "integrationId": "pi-coding-agent", "overwrite": true }]
+    },
+    {
+      "name": "hal100.plan_external_agent_disconnection",
+      "effect": "actionPlan",
+      "prerequisites": ["hal100.inspect_external_agent"],
+      "requiresNativeConfirmation": true,
+      "validArguments": { "integrationId": "pi-coding-agent" },
+      "invalidArguments": [
+        { "integrationId": "unknown-agent" },
+        { "integrationId": "pi-coding-agent", "deleteUserConfig": true }
+      ]
+    },
+    {
+      "name": "hal100.search_model_catalog",
+      "effect": "readOnly",
+      "prerequisites": [],
+      "requiresNativeConfirmation": false,
+      "validArguments": { "query": "Qwen GGUF" },
+      "invalidArguments": [{ "query": "Q" }, { "query": "Qwen", "source": "huggingFace" }]
+    },
+    {
+      "name": "hal100.inspect_model_repository",
+      "effect": "readOnly",
+      "prerequisites": ["hal100.search_model_catalog"],
+      "requiresNativeConfirmation": false,
+      "validArguments": { "repository": "acme/model" },
+      "invalidArguments": [
+        { "repository": "../model" },
+        { "repository": "acme/model", "revision": "main" }
+      ]
+    },
+    {
+      "name": "hal100.plan_model_download",
+      "effect": "actionPlan",
+      "prerequisites": ["hal100.inspect_model_repository"],
+      "requiresNativeConfirmation": true,
+      "validArguments": { "remotePath": "model-Q4_K_M.gguf" },
+      "invalidArguments": [
+        { "remotePath": "../model.gguf" },
+        { "remotePath": "model.gguf", "destination": "/tmp" }
+      ]
+    },
+    {
+      "name": "hal100.inspect_operational_history",
+      "effect": "readOnly",
+      "prerequisites": [],
+      "requiresNativeConfirmation": false,
+      "validArguments": { "target": "recent" },
+      "invalidArguments": [
+        { "target": "all" },
+        { "target": "recent", "includePrompts": true },
+        { "target": "recent", "includePaths": true }
+      ]
+    }
+  ]
+}

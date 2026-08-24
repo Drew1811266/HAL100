@@ -60,6 +60,8 @@ impl PiCodingAgentPaths {
                 home_directory.join(".npm-global/bin/pi"),
                 PathBuf::from("/opt/homebrew/bin/pi"),
                 PathBuf::from("/usr/local/bin/pi"),
+                app_data_directory
+                    .join("external-agents/pi-coding-agent/runtime/node_modules/.bin/pi"),
             ],
         }
     }
@@ -981,6 +983,25 @@ fn stable_version_triplet(version: &str) -> Option<(u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_pi_candidates_always_precede_the_hal100_private_runtime() {
+        let paths = PiCodingAgentPaths::for_macos(
+            Path::new("/Users/example"),
+            Path::new("/Users/example/Library/Application Support/HAL100"),
+        );
+        assert_eq!(
+            paths.binary_candidates.last(),
+            Some(&PathBuf::from(
+                "/Users/example/Library/Application Support/HAL100/external-agents/pi-coding-agent/runtime/node_modules/.bin/pi"
+            ))
+        );
+        assert!(
+            paths.binary_candidates[..paths.binary_candidates.len() - 1]
+                .iter()
+                .all(|candidate| !candidate.to_string_lossy().contains("external-agents"))
+        );
+    }
 
     struct TestDirectory(PathBuf);
 

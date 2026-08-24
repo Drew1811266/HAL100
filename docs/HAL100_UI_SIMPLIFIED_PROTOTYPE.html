@@ -1,0 +1,2648 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="HAL100 信息精简方案的单文件交互界面原型"
+    />
+    <title>HAL100 · 精简界面原型</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #e8e5de;
+        --app: #f8f6f1;
+        --sidebar: #efede7;
+        --surface: #fffdf9;
+        --surface-strong: #ffffff;
+        --surface-soft: #f4f1ea;
+        --surface-accent: #f7e8e3;
+        --line: #ddd8ce;
+        --line-strong: #cec7bb;
+        --text: #292824;
+        --muted: #77736b;
+        --faint: #9c978e;
+        --accent: #b34f42;
+        --accent-deep: #943f35;
+        --accent-soft: #f1d8d2;
+        --green: #527561;
+        --green-soft: #e6eee8;
+        --amber: #9a6a2c;
+        --amber-soft: #f4ead8;
+        --danger: #a4423a;
+        --danger-soft: #f6e2df;
+        --shadow: 0 22px 70px rgba(47, 42, 34, 0.14);
+        --shadow-soft: 0 10px 28px rgba(47, 42, 34, 0.07);
+        --radius-xl: 22px;
+        --radius-lg: 16px;
+        --radius-md: 12px;
+        --radius-sm: 9px;
+        --sidebar-width: 226px;
+      }
+
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #151513;
+        --app: #1d1c19;
+        --sidebar: #22211e;
+        --surface: #282722;
+        --surface-strong: #2d2c27;
+        --surface-soft: #23221f;
+        --surface-accent: #3a2925;
+        --line: #3b3933;
+        --line-strong: #4b4840;
+        --text: #f2efe8;
+        --muted: #b3aea4;
+        --faint: #8d887f;
+        --accent: #d57162;
+        --accent-deep: #e58b7d;
+        --accent-soft: #4a302b;
+        --green: #85ad91;
+        --green-soft: #27372d;
+        --amber: #d4a760;
+        --amber-soft: #3d3323;
+        --danger: #e37d72;
+        --danger-soft: #442a27;
+        --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+        --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.2);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        min-width: 320px;
+        background: var(--bg);
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 86% 4%, rgba(179, 79, 66, 0.08), transparent 27%),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei",
+          sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button,
+      input,
+      textarea,
+      select {
+        color: inherit;
+        font: inherit;
+      }
+
+      button,
+      select {
+        cursor: pointer;
+      }
+
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible,
+      select:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 3px solid color-mix(in srgb, var(--accent) 28%, transparent);
+        outline-offset: 2px;
+      }
+
+      .prototype-note {
+        position: fixed;
+        z-index: 100;
+        right: 18px;
+        bottom: 16px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 11px;
+        border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--surface) 92%, transparent);
+        box-shadow: var(--shadow-soft);
+        color: var(--muted);
+        font-size: 11px;
+        backdrop-filter: blur(14px);
+      }
+
+      .prototype-note::before {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        content: "";
+      }
+
+      .app-window {
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+        width: 100vw;
+        height: 100vh;
+        min-height: 620px;
+        overflow: hidden;
+        background: var(--app);
+      }
+
+      .sidebar {
+        position: relative;
+        z-index: 4;
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        border-right: 1px solid var(--line);
+        background: var(--sidebar);
+      }
+
+      .window-controls {
+        display: flex;
+        height: 54px;
+        align-items: center;
+        gap: 8px;
+        padding: 0 17px;
+      }
+
+      .window-controls i {
+        width: 11px;
+        height: 11px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 50%;
+      }
+
+      .window-controls i:nth-child(1) {
+        background: #ff605c;
+      }
+
+      .window-controls i:nth-child(2) {
+        background: #ffbd44;
+      }
+
+      .window-controls i:nth-child(3) {
+        background: #00ca4e;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 5px 19px 28px;
+      }
+
+      .brand-logo {
+        position: relative;
+        display: grid;
+        width: 38px;
+        height: 38px;
+        flex: 0 0 38px;
+        place-items: center;
+        border-radius: 12px;
+        background: linear-gradient(145deg, #c45e50, #a74238);
+        box-shadow: inset 0 1px rgba(255, 255, 255, 0.28);
+      }
+
+      .brand-face {
+        position: relative;
+        width: 22px;
+        height: 15px;
+        border: 2px solid #fff8ee;
+        border-radius: 7px;
+      }
+
+      .brand-face::before,
+      .brand-face::after {
+        position: absolute;
+        top: 4px;
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: #fff8ee;
+        content: "";
+      }
+
+      .brand-face::before {
+        left: 4px;
+      }
+
+      .brand-face::after {
+        right: 4px;
+      }
+
+      .brand-logo::before {
+        position: absolute;
+        top: 8px;
+        width: 2px;
+        height: 5px;
+        border-radius: 2px;
+        background: #fff8ee;
+        content: "";
+        transform: translateY(-5px);
+      }
+
+      .brand-logo::after {
+        position: absolute;
+        bottom: 7px;
+        width: 14px;
+        height: 2px;
+        border-radius: 2px;
+        background: #fff8ee;
+        content: "";
+      }
+
+      .brand-copy strong,
+      .brand-copy span {
+        display: block;
+      }
+
+      .brand-copy strong {
+        letter-spacing: 0.02em;
+        font-size: 16px;
+      }
+
+      .brand-copy span {
+        margin-top: 1px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .nav {
+        display: grid;
+        gap: 6px;
+        padding: 0 12px;
+      }
+
+      .nav-button,
+      .sidebar-settings {
+        display: flex;
+        width: 100%;
+        height: 43px;
+        align-items: center;
+        gap: 11px;
+        padding: 0 12px;
+        border: 1px solid transparent;
+        border-radius: 11px;
+        background: transparent;
+        color: var(--muted);
+        text-align: left;
+        transition: 150ms ease;
+      }
+
+      .nav-button:hover,
+      .sidebar-settings:hover {
+        background: color-mix(in srgb, var(--surface) 48%, transparent);
+        color: var(--text);
+      }
+
+      .nav-button.active,
+      .sidebar-settings.active {
+        border-color: var(--line);
+        background: var(--surface);
+        box-shadow: 0 5px 16px rgba(47, 42, 34, 0.05);
+        color: var(--text);
+      }
+
+      .nav-button.active::before,
+      .sidebar-settings.active::before {
+        position: absolute;
+        left: 12px;
+        width: 3px;
+        height: 19px;
+        border-radius: 3px;
+        background: var(--accent);
+        content: "";
+      }
+
+      .nav-icon {
+        display: grid;
+        width: 21px;
+        height: 21px;
+        flex: 0 0 21px;
+        place-items: center;
+        color: currentColor;
+        font-size: 16px;
+        line-height: 1;
+      }
+
+      .nav-label {
+        flex: 1;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .nav-count {
+        display: grid;
+        min-width: 19px;
+        height: 19px;
+        place-items: center;
+        border-radius: 999px;
+        background: var(--amber-soft);
+        color: var(--amber);
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .sidebar-footer {
+        display: grid;
+        gap: 10px;
+        margin-top: auto;
+        padding: 13px 12px 18px;
+        border-top: 1px solid var(--line);
+      }
+
+      .sidebar-footnote {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 10px;
+        color: var(--faint);
+        font-size: 10px;
+      }
+
+      .sidebar-footnote i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 4px var(--green-soft);
+      }
+
+      .main {
+        position: relative;
+        min-width: 0;
+        overflow: auto;
+        overscroll-behavior: contain;
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--app) 94%, white) 0, var(--app) 180px);
+      }
+
+      .page {
+        width: min(1120px, calc(100% - 64px));
+        min-height: 100%;
+        margin: 0 auto;
+        padding: 42px 0 64px;
+        animation: page-in 180ms ease-out;
+      }
+
+      .page[hidden],
+      .subpage[hidden],
+      .activity-panel[hidden],
+      .agent-result[hidden] {
+        display: none;
+      }
+
+      @keyframes page-in {
+        from {
+          opacity: 0;
+          transform: translateY(3px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .page-header {
+        display: flex;
+        min-height: 60px;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 28px;
+      }
+
+      .page-header h1 {
+        margin: 0;
+        letter-spacing: -0.035em;
+        font-size: clamp(27px, 2.5vw, 34px);
+        line-height: 1.15;
+      }
+
+      .page-header p {
+        max-width: 680px;
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .header-actions {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 9px;
+      }
+
+      .button {
+        display: inline-flex;
+        min-height: 38px;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 0 15px;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        background: var(--surface);
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+        text-decoration: none;
+        transition: 150ms ease;
+      }
+
+      .button:hover {
+        border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+        transform: translateY(-1px);
+      }
+
+      .button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        box-shadow: 0 7px 16px color-mix(in srgb, var(--accent) 22%, transparent);
+        color: #fff;
+      }
+
+      .button.primary:hover {
+        border-color: var(--accent-deep);
+        background: var(--accent-deep);
+      }
+
+      .button.danger {
+        border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+
+      .button.ghost {
+        border-color: transparent;
+        background: transparent;
+        color: var(--muted);
+      }
+
+      .button.compact {
+        min-height: 32px;
+        padding: 0 11px;
+        font-size: 11px;
+      }
+
+      .button:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
+        transform: none;
+      }
+
+      .icon-button {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface);
+        color: var(--muted);
+        font-size: 17px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: var(--surface);
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .small {
+        font-size: 11px;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        min-height: 24px;
+        align-items: center;
+        gap: 6px;
+        padding: 0 9px;
+        border-radius: 999px;
+        background: var(--surface-soft);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .status-pill::before {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        content: "";
+      }
+
+      .status-pill.ready {
+        background: var(--green-soft);
+        color: var(--green);
+      }
+
+      .status-pill.attention {
+        background: var(--amber-soft);
+        color: var(--amber);
+      }
+
+      .status-pill.danger {
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+
+      .overall-status {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 18px;
+        padding: 21px 22px;
+        border-color: color-mix(in srgb, var(--green) 25%, var(--line));
+        background:
+          linear-gradient(105deg, var(--green-soft), color-mix(in srgb, var(--surface) 96%, transparent));
+      }
+
+      .status-orb {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border-radius: 13px;
+        background: var(--surface);
+        box-shadow: var(--shadow-soft);
+        color: var(--green);
+        font-size: 19px;
+        font-weight: 800;
+      }
+
+      .overall-status h2,
+      .section-heading h2,
+      .workspace-card h2 {
+        margin: 0;
+        letter-spacing: -0.02em;
+        font-size: 17px;
+      }
+
+      .overall-status p {
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .home-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.8fr);
+        gap: 18px;
+        margin-top: 18px;
+      }
+
+      .next-action {
+        display: flex;
+        min-height: 230px;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 25px;
+        background:
+          radial-gradient(circle at 94% 0, var(--accent-soft), transparent 40%), var(--surface);
+      }
+
+      .section-kicker {
+        margin-bottom: 17px;
+        color: var(--accent);
+        font-size: 10px;
+        font-weight: 750;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .next-action h2 {
+        max-width: 540px;
+        margin: 0;
+        letter-spacing: -0.035em;
+        font-size: 27px;
+        line-height: 1.25;
+      }
+
+      .next-action p {
+        max-width: 570px;
+        margin: 10px 0 24px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .summary-list {
+        display: grid;
+        align-content: start;
+        overflow: hidden;
+      }
+
+      .summary-row {
+        display: grid;
+        grid-template-columns: 36px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+        min-height: 74px;
+        padding: 0 17px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .summary-row:last-child {
+        border-bottom: 0;
+      }
+
+      .summary-icon,
+      .row-icon {
+        display: grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border-radius: 10px;
+        background: var(--surface-soft);
+        color: var(--accent);
+        font-size: 14px;
+        font-weight: 750;
+      }
+
+      .summary-row strong,
+      .summary-row small {
+        display: block;
+      }
+
+      .summary-row strong {
+        font-size: 12px;
+      }
+
+      .summary-row small {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .text-link {
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .recent-strip {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 18px;
+        padding: 13px 16px;
+        border: 1px dashed var(--line-strong);
+        border-radius: var(--radius-md);
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .recent-strip strong {
+        color: var(--text);
+      }
+
+      .recent-strip span:last-child {
+        margin-left: auto;
+        color: var(--faint);
+      }
+
+      .segmented-tabs {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface-soft);
+      }
+
+      .segmented-tabs button {
+        min-width: 94px;
+        height: 32px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .segmented-tabs button.active {
+        background: var(--surface-strong);
+        box-shadow: 0 3px 10px rgba(47, 42, 34, 0.08);
+        color: var(--text);
+      }
+
+      .workspace-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin-bottom: 16px;
+      }
+
+      .workspace-toolbar p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .list-card {
+        overflow: hidden;
+      }
+
+      .list-header,
+      .model-row {
+        display: grid;
+        grid-template-columns: minmax(250px, 1.5fr) 0.65fr 0.65fr minmax(155px, 0.7fr);
+        align-items: center;
+        gap: 16px;
+        padding: 0 18px;
+      }
+
+      .list-header {
+        min-height: 40px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface-soft);
+        color: var(--faint);
+        font-size: 9px;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .model-row {
+        min-height: 73px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .model-row:last-child {
+        border-bottom: 0;
+      }
+
+      .model-main {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .model-main > div:last-child {
+        min-width: 0;
+      }
+
+      .model-main strong,
+      .model-main small {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .model-main strong {
+        font-size: 12px;
+      }
+
+      .model-main small {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .row-value {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .row-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 7px;
+      }
+
+      .workspace-card {
+        padding: 22px;
+      }
+
+      .runtime-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr);
+        gap: 17px;
+      }
+
+      .runtime-hero {
+        min-height: 290px;
+        padding: 26px;
+        background:
+          radial-gradient(circle at 92% 6%, var(--accent-soft), transparent 38%), var(--surface);
+      }
+
+      .runtime-label {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      .runtime-model {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin: 24px 0;
+      }
+
+      .runtime-model .row-icon {
+        width: 48px;
+        height: 48px;
+        flex: 0 0 48px;
+        border-radius: 14px;
+        font-size: 17px;
+      }
+
+      .runtime-model h2 {
+        margin: 0;
+        letter-spacing: -0.025em;
+        font-size: 21px;
+      }
+
+      .runtime-model p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .runtime-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .runtime-facts {
+        display: grid;
+        gap: 0;
+        padding: 6px 20px;
+      }
+
+      .fact-row {
+        display: flex;
+        min-height: 58px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .fact-row:last-child {
+        border-bottom: 0;
+      }
+
+      .fact-row span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .fact-row strong {
+        font-size: 11px;
+        text-align: right;
+      }
+
+      .service-list,
+      .integration-list,
+      .operation-list {
+        display: grid;
+        overflow: hidden;
+      }
+
+      .service-row,
+      .integration-row,
+      .operation-row {
+        display: grid;
+        min-height: 76px;
+        align-items: center;
+        gap: 15px;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .service-row:last-child,
+      .integration-row:last-child,
+      .operation-row:last-child {
+        border-bottom: 0;
+      }
+
+      .service-row {
+        grid-template-columns: 38px minmax(0, 1fr) auto auto;
+      }
+
+      .integration-row {
+        grid-template-columns: 42px minmax(0, 1fr) auto minmax(120px, auto);
+      }
+
+      .operation-row {
+        grid-template-columns: 86px minmax(160px, 0.8fr) minmax(220px, 1.2fr) auto 24px;
+        width: 100%;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        background: transparent;
+        color: inherit;
+        text-align: left;
+      }
+
+      .operation-row:hover {
+        background: var(--surface-soft);
+      }
+
+      .service-copy strong,
+      .service-copy small,
+      .integration-copy strong,
+      .integration-copy small {
+        display: block;
+      }
+
+      .service-copy strong,
+      .integration-copy strong {
+        font-size: 12px;
+      }
+
+      .service-copy small,
+      .integration-copy small {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .integration-logo {
+        display: grid;
+        width: 39px;
+        height: 39px;
+        place-items: center;
+        border-radius: 12px;
+        background: var(--surface-soft);
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+
+      .integration-logo.accent {
+        background: var(--accent-soft);
+        color: var(--accent-deep);
+      }
+
+      .integration-logo.green {
+        background: var(--green-soft);
+        color: var(--green);
+      }
+
+      .page-help {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .page-help button {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        font-size: inherit;
+        font-weight: 700;
+      }
+
+      .agent-layout {
+        display: grid;
+        grid-template-columns: minmax(340px, 0.8fr) minmax(420px, 1.2fr);
+        gap: 18px;
+        min-height: 590px;
+      }
+
+      .agent-composer,
+      .agent-output {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        padding: 20px;
+      }
+
+      .agent-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 18px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .agent-status i {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 4px var(--green-soft);
+      }
+
+      .agent-status button {
+        margin-left: auto;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .provider-toggle {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3px;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface-soft);
+      }
+
+      .provider-toggle legend {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+
+      .provider-toggle button {
+        height: 35px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .provider-toggle button.active {
+        background: var(--surface-strong);
+        box-shadow: 0 3px 9px rgba(47, 42, 34, 0.07);
+        color: var(--text);
+      }
+
+      .privacy-note {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: 9px 1px 17px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .privacy-note::before {
+        color: var(--green);
+        content: "◆";
+        font-size: 8px;
+      }
+
+      .cloud-options {
+        display: none;
+        grid-template-columns: 1fr 1fr;
+        gap: 9px;
+        margin-bottom: 15px;
+      }
+
+      .cloud-options.visible {
+        display: grid;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field > span,
+      .field > label {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      input,
+      textarea,
+      select {
+        width: 100%;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        outline: none;
+        background: var(--surface-strong);
+      }
+
+      input,
+      select {
+        height: 39px;
+        padding: 0 11px;
+        font-size: 11px;
+      }
+
+      textarea {
+        min-height: 135px;
+        resize: vertical;
+        padding: 12px;
+        font-size: 12px;
+        line-height: 1.65;
+      }
+
+      input:focus,
+      textarea:focus,
+      select:focus {
+        border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+      }
+
+      .task-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 0 1px 6px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      .task-label span:last-child {
+        color: var(--faint);
+        font-weight: 500;
+      }
+
+      .suggestion-block {
+        margin-top: 16px;
+      }
+
+      .suggestion-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .suggestion-heading button {
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .suggestions {
+        display: grid;
+        gap: 7px;
+      }
+
+      .suggestion {
+        display: flex;
+        min-height: 40px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 0 11px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--surface-soft);
+        color: var(--muted);
+        text-align: left;
+        font-size: 10px;
+        font-weight: 600;
+      }
+
+      .suggestion:hover {
+        border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+        background: var(--surface-accent);
+        color: var(--text);
+      }
+
+      .agent-submit {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: auto;
+        padding-top: 18px;
+      }
+
+      .agent-submit small {
+        color: var(--faint);
+        font-size: 9px;
+      }
+
+      .output-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 15px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .output-heading h2 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .output-heading span {
+        color: var(--faint);
+        font-size: 9px;
+      }
+
+      .agent-empty {
+        display: grid;
+        flex: 1;
+        place-items: center;
+        text-align: center;
+      }
+
+      .agent-empty > div {
+        max-width: 290px;
+      }
+
+      .empty-symbol {
+        display: grid;
+        width: 46px;
+        height: 46px;
+        margin: 0 auto 14px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 15px;
+        background: var(--surface-soft);
+        color: var(--accent);
+        font-size: 18px;
+      }
+
+      .agent-empty strong,
+      .agent-empty span {
+        display: block;
+      }
+
+      .agent-empty strong {
+        font-size: 13px;
+      }
+
+      .agent-empty span {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .agent-result {
+        display: grid;
+        gap: 14px;
+        padding-top: 16px;
+      }
+
+      .action-plan {
+        padding: 16px;
+        border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+        border-radius: 12px;
+        background: var(--surface-accent);
+      }
+
+      .action-plan-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .action-plan-head .row-icon {
+        width: 31px;
+        height: 31px;
+        flex: 0 0 31px;
+        background: var(--surface);
+      }
+
+      .action-plan-head strong,
+      .action-plan-head small {
+        display: block;
+      }
+
+      .action-plan-head strong {
+        font-size: 11px;
+      }
+
+      .action-plan-head small {
+        margin-top: 1px;
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .action-plan p {
+        margin: 12px 0;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .agent-answer {
+        padding: 17px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface-soft);
+        font-size: 11px;
+        line-height: 1.75;
+      }
+
+      details.tech-trace {
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      details.tech-trace summary {
+        padding: 12px 0 0;
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      details.tech-trace ol {
+        margin: 10px 0 0;
+        padding-left: 18px;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: minmax(250px, 1.15fr) repeat(2, minmax(145px, 0.55fr));
+        gap: 14px;
+        margin-bottom: 16px;
+      }
+
+      .metric {
+        min-height: 104px;
+        padding: 17px;
+      }
+
+      .metric.primary {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 20px;
+        background:
+          radial-gradient(circle at 96% 5%, var(--accent-soft), transparent 42%), var(--surface);
+      }
+
+      .metric span,
+      .metric small,
+      .metric strong {
+        display: block;
+      }
+
+      .metric span {
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .metric strong {
+        margin-top: 10px;
+        letter-spacing: -0.04em;
+        font-size: 25px;
+      }
+
+      .metric.primary strong {
+        font-size: 31px;
+      }
+
+      .metric small {
+        margin-top: 3px;
+        color: var(--faint);
+        font-size: 9px;
+      }
+
+      .metric-badge {
+        color: var(--green);
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .activity-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.6fr);
+        gap: 16px;
+      }
+
+      .chart-card,
+      .client-card {
+        min-height: 264px;
+        padding: 19px;
+      }
+
+      .section-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      .section-heading p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .bar-chart {
+        display: flex;
+        height: 155px;
+        align-items: flex-end;
+        gap: 8px;
+        padding: 16px 4px 0;
+        border-bottom: 1px solid var(--line);
+        background: repeating-linear-gradient(
+          to top,
+          transparent 0,
+          transparent 38px,
+          color-mix(in srgb, var(--line) 45%, transparent) 39px
+        );
+      }
+
+      .bar {
+        flex: 1;
+        min-width: 8px;
+        border-radius: 5px 5px 1px 1px;
+        background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 45%, var(--accent-soft)));
+        opacity: 0.88;
+        transition: 150ms ease;
+      }
+
+      .bar:hover {
+        opacity: 1;
+        transform: scaleY(1.03);
+        transform-origin: bottom;
+      }
+
+      .chart-labels {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 8px;
+        color: var(--faint);
+        font-size: 8px;
+      }
+
+      .client-list {
+        display: grid;
+        gap: 14px;
+      }
+
+      .client-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 7px 12px;
+        align-items: center;
+      }
+
+      .client-item strong,
+      .client-item span {
+        font-size: 10px;
+      }
+
+      .client-item span {
+        color: var(--muted);
+      }
+
+      .client-track {
+        grid-column: 1 / -1;
+        height: 5px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: var(--surface-soft);
+      }
+
+      .client-track i {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+      }
+
+      .activity-note {
+        margin-top: 15px;
+        color: var(--faint);
+        font-size: 9px;
+      }
+
+      .operation-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 13px;
+      }
+
+      .operation-toolbar span {
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .operation-row time,
+      .operation-row span,
+      .operation-row strong {
+        font-size: 10px;
+      }
+
+      .operation-row time,
+      .operation-row span {
+        color: var(--muted);
+      }
+
+      .settings-grid {
+        display: grid;
+        gap: 15px;
+      }
+
+      .settings-section {
+        overflow: hidden;
+      }
+
+      .settings-section-head {
+        display: flex;
+        min-height: 55px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .settings-section-head h2 {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .settings-section-head span {
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .setting-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(170px, auto);
+        min-height: 72px;
+        align-items: center;
+        gap: 18px;
+        padding: 11px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .setting-row:last-child {
+        border-bottom: 0;
+      }
+
+      .setting-copy strong,
+      .setting-copy small {
+        display: block;
+      }
+
+      .setting-copy strong {
+        font-size: 11px;
+      }
+
+      .setting-copy small {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .setting-control {
+        justify-self: end;
+      }
+
+      .setting-control select {
+        min-width: 170px;
+      }
+
+      .toggle {
+        position: relative;
+        width: 43px;
+        height: 25px;
+        border: 0;
+        border-radius: 999px;
+        background: var(--line-strong);
+      }
+
+      .toggle::after {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 19px;
+        height: 19px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+        content: "";
+        transition: 170ms ease;
+      }
+
+      .toggle.on {
+        background: var(--accent);
+      }
+
+      .toggle.on::after {
+        transform: translateX(18px);
+      }
+
+      .drawer-backdrop,
+      .confirm-backdrop {
+        position: fixed;
+        z-index: 50;
+        inset: 0;
+        display: flex;
+        justify-content: flex-end;
+        background: rgba(25, 23, 20, 0.28);
+        opacity: 0;
+        pointer-events: none;
+        transition: 180ms ease;
+        backdrop-filter: blur(3px);
+      }
+
+      .drawer-backdrop.open,
+      .confirm-backdrop.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .drawer {
+        display: flex;
+        width: min(520px, calc(100vw - 40px));
+        height: 100%;
+        flex-direction: column;
+        border-left: 1px solid var(--line);
+        background: var(--app);
+        box-shadow: -24px 0 70px rgba(30, 27, 22, 0.2);
+        transform: translateX(26px);
+        transition: 210ms ease;
+      }
+
+      .drawer-backdrop.open .drawer {
+        transform: translateX(0);
+      }
+
+      .drawer-header {
+        display: flex;
+        min-height: 72px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 0 22px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+      }
+
+      .drawer-header h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .drawer-header p {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .drawer-content {
+        flex: 1;
+        overflow: auto;
+        padding: 22px;
+      }
+
+      .drawer-section {
+        margin-bottom: 20px;
+      }
+
+      .drawer-section h3 {
+        margin: 0 0 10px;
+        font-size: 12px;
+      }
+
+      .drawer-section > p {
+        margin: 0 0 12px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .choice-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .choice-card {
+        min-height: 90px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface);
+        text-align: left;
+      }
+
+      .choice-card.active,
+      .choice-card:hover {
+        border-color: color-mix(in srgb, var(--accent) 46%, var(--line));
+        background: var(--surface-accent);
+      }
+
+      .choice-card strong,
+      .choice-card span {
+        display: block;
+      }
+
+      .choice-card strong {
+        font-size: 11px;
+      }
+
+      .choice-card span {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .search-row {
+        display: grid;
+        grid-template-columns: 125px minmax(0, 1fr) auto;
+        gap: 8px;
+      }
+
+      .candidate-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .candidate {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface);
+      }
+
+      .candidate strong,
+      .candidate small {
+        display: block;
+      }
+
+      .candidate strong {
+        font-size: 10px;
+      }
+
+      .candidate small {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 8px;
+      }
+
+      .detail-list {
+        display: grid;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface);
+      }
+
+      .detail-row {
+        display: grid;
+        grid-template-columns: 135px minmax(0, 1fr);
+        gap: 12px;
+        padding: 11px 13px;
+        border-bottom: 1px solid var(--line);
+        font-size: 9px;
+      }
+
+      .detail-row:last-child {
+        border-bottom: 0;
+      }
+
+      .detail-row dt {
+        color: var(--muted);
+      }
+
+      .detail-row dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+        font-weight: 650;
+      }
+
+      .drawer-footer {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        min-height: 68px;
+        padding: 0 22px;
+        border-top: 1px solid var(--line);
+        background: var(--surface);
+      }
+
+      .task-library {
+        display: grid;
+        gap: 17px;
+      }
+
+      .task-group h3 {
+        margin: 0 0 8px;
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.05em;
+      }
+
+      .task-group-list {
+        display: grid;
+        gap: 7px;
+      }
+
+      .task-group-list button {
+        display: flex;
+        min-height: 42px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--text);
+        text-align: left;
+        font-size: 10px;
+      }
+
+      .task-group-list button:hover {
+        border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+      }
+
+      .confirm-backdrop {
+        z-index: 60;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .confirm-dialog {
+        width: min(440px, calc(100vw - 36px));
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 17px;
+        background: var(--surface-strong);
+        box-shadow: var(--shadow);
+        transform: translateY(8px) scale(0.985);
+        transition: 180ms ease;
+      }
+
+      .confirm-backdrop.open .confirm-dialog {
+        transform: translateY(0) scale(1);
+      }
+
+      .confirm-symbol {
+        display: grid;
+        width: 40px;
+        height: 40px;
+        margin-bottom: 14px;
+        place-items: center;
+        border-radius: 12px;
+        background: var(--danger-soft);
+        color: var(--danger);
+        font-size: 18px;
+        font-weight: 800;
+      }
+
+      .confirm-dialog h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .confirm-dialog > p {
+        margin: 7px 0 16px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .impact-box {
+        display: grid;
+        gap: 9px;
+        padding: 13px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface-soft);
+      }
+
+      .impact-box div {
+        display: grid;
+        grid-template-columns: 80px minmax(0, 1fr);
+        gap: 10px;
+        font-size: 9px;
+      }
+
+      .impact-box span {
+        color: var(--muted);
+      }
+
+      .confirm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 18px;
+      }
+
+      .toast {
+        position: fixed;
+        z-index: 90;
+        left: calc(var(--sidebar-width) + (100vw - var(--sidebar-width)) / 2);
+        bottom: 24px;
+        min-width: 250px;
+        padding: 11px 14px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface-strong);
+        box-shadow: var(--shadow);
+        color: var(--text);
+        font-size: 10px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, 12px);
+        transition: 180ms ease;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+
+      @media (max-width: 1050px) {
+        :root {
+          --sidebar-width: 196px;
+        }
+
+        .page {
+          width: calc(100% - 42px);
+          padding-top: 32px;
+        }
+
+        .home-grid,
+        .runtime-layout,
+        .activity-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .agent-layout {
+          grid-template-columns: minmax(310px, 0.9fr) minmax(360px, 1.1fr);
+        }
+
+        .integration-row {
+          grid-template-columns: 42px minmax(0, 1fr) auto;
+        }
+
+        .integration-row .row-actions {
+          grid-column: 2 / -1;
+          justify-content: flex-start;
+          margin-top: -4px;
+        }
+      }
+
+      @media (max-width: 780px) {
+        body {
+          overflow: auto;
+        }
+
+        .app-window {
+          grid-template-columns: 74px minmax(0, 1fr);
+        }
+
+        .sidebar {
+          position: sticky;
+          top: 0;
+          height: 100vh;
+        }
+
+        .brand {
+          justify-content: center;
+          padding-inline: 0;
+        }
+
+        .brand-copy,
+        .nav-label,
+        .nav-count,
+        .sidebar-footnote,
+        .sidebar-settings .nav-label {
+          display: none;
+        }
+
+        .nav-button,
+        .sidebar-settings {
+          justify-content: center;
+          padding: 0;
+        }
+
+        .nav-button.active::before,
+        .sidebar-settings.active::before {
+          left: 8px;
+        }
+
+        .page {
+          width: calc(100% - 30px);
+          padding: 24px 0 50px;
+        }
+
+        .page-header {
+          align-items: flex-start;
+        }
+
+        .page-header p {
+          display: none;
+        }
+
+        .overall-status,
+        .service-row,
+        .integration-row,
+        .operation-row {
+          grid-template-columns: auto minmax(0, 1fr);
+        }
+
+        .overall-status .button,
+        .service-row > .status-pill,
+        .service-row > .row-actions,
+        .integration-row > .status-pill,
+        .integration-row > .row-actions,
+        .operation-row > :nth-child(n + 3) {
+          grid-column: 2;
+          justify-self: start;
+        }
+
+        .agent-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .agent-output {
+          min-height: 430px;
+        }
+
+        .metrics {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .metric.primary {
+          grid-column: 1 / -1;
+        }
+
+        .list-header {
+          display: none;
+        }
+
+        .model-row {
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 8px;
+          padding: 14px;
+        }
+
+        .model-row .row-value {
+          display: none;
+        }
+
+        .setting-row {
+          grid-template-columns: 1fr;
+        }
+
+        .setting-control {
+          justify-self: stretch;
+        }
+
+        .setting-control select {
+          width: 100%;
+        }
+
+        .prototype-note {
+          display: none;
+        }
+
+        .toast {
+          left: calc(74px + (100vw - 74px) / 2);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto;
+          transition-duration: 0.01ms;
+          animation-duration: 0.01ms;
+          animation-iteration-count: 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-window" id="app" data-theme="light">
+      <aside class="sidebar" aria-label="HAL100 主导航">
+        <div class="window-controls" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="brand">
+          <div class="brand-logo" aria-hidden="true"><span class="brand-face"></span></div>
+          <div class="brand-copy"><strong>HAL100</strong><span>本地 AI 控制中心</span></div>
+        </div>
+
+        <nav class="nav">
+          <button class="nav-button active" data-route="home" type="button">
+            <span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">首页</span>
+          </button>
+          <button class="nav-button" data-route="workspace" type="button">
+            <span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">模型与运行</span>
+          </button>
+          <button class="nav-button" data-route="integrations" type="button">
+            <span class="nav-icon" aria-hidden="true">⌁</span><span class="nav-label">软件接入</span>
+            <span class="nav-count" title="一个问题">1</span>
+          </button>
+          <button class="nav-button" data-route="agent" type="button">
+            <span class="nav-icon" aria-hidden="true">✦</span><span class="nav-label">Agent</span>
+          </button>
+          <button class="nav-button" data-route="activity" type="button">
+            <span class="nav-icon" aria-hidden="true">◴</span><span class="nav-label">活动</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-footnote"><i></i><span>HAL100 运行正常</span></div>
+          <button class="sidebar-settings" data-route="settings" type="button">
+            <span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">设置</span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main" id="main-content">
+        <section class="page" data-page="home">
+          <header class="page-header">
+            <div><h1>你好，HAL100 已准备就绪</h1><p>模型、推理和软件连接都在本机受控运行。</p></div>
+          </header>
+
+          <section class="card overall-status" aria-label="整体状态">
+            <span class="status-orb" aria-hidden="true">✓</span>
+            <div><h2>一切正常</h2><p>当前没有需要处理的问题，所有核心能力都可以使用。</p></div>
+            <button class="button compact" onclick="openDrawer('system-details', '系统状态')" type="button">查看详情</button>
+          </section>
+
+          <div class="home-grid">
+            <section class="card next-action">
+              <div>
+                <div class="section-kicker">推荐下一步</div>
+                <h2>让 Agent 检查当前部署状态</h2>
+                <p>用一次受控任务确认模型、推理服务和外部软件都可以正常协作。</p>
+              </div>
+              <div><button class="button primary" onclick="goTo('agent'); setAgentPrompt('检查 HAL100 当前部署状态，并只报告需要我处理的问题。')" type="button">开始检查 <span aria-hidden="true">→</span></button></div>
+            </section>
+
+            <section class="card summary-list" aria-label="当前工作状态">
+              <div class="summary-row">
+                <span class="summary-icon" aria-hidden="true">AI</span>
+                <div><strong>Qwen3.5-2B</strong><small>正在本机运行</small></div>
+                <button class="text-link" onclick="goWorkspace('runtime')" type="button">管理</button>
+              </div>
+              <div class="summary-row">
+                <span class="summary-icon" aria-hidden="true">↗</span>
+                <div><strong>3 个软件已接入</strong><small>OpenCode、Pi、其他客户端</small></div>
+                <button class="text-link" onclick="goTo('integrations')" type="button">查看</button>
+              </div>
+              <div class="summary-row">
+                <span class="summary-icon" aria-hidden="true">Σ</span>
+                <div><strong>42.8K Token</strong><small>今天共 86 个请求</small></div>
+                <button class="text-link" onclick="goActivity('usage')" type="button">用量</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="recent-strip"><strong>最近活动</strong><span>OpenCode 完成一次模型调用 · 1,248 Token</span><span>2 分钟前</span></div>
+        </section>
+
+        <section class="page" data-page="workspace" hidden>
+          <header class="page-header">
+            <div><h1>模型与运行</h1><p>添加模型、控制当前运行状态，并管理本地或外部推理服务。</p></div>
+            <div class="header-actions" id="workspace-primary-action">
+              <button class="button primary" onclick="openDrawer('add-model', '添加模型')" type="button">＋ 添加模型</button>
+            </div>
+          </header>
+
+          <div class="workspace-toolbar">
+            <div class="segmented-tabs" role="tablist" aria-label="模型与运行页面">
+              <button class="active" data-workspace-tab="models" type="button">模型</button>
+              <button data-workspace-tab="runtime" type="button">运行</button>
+              <button data-workspace-tab="services" type="button">推理服务</button>
+            </div>
+            <p id="workspace-summary">3 个模型 · 4.7 GB</p>
+          </div>
+
+          <div class="subpage" data-workspace-panel="models">
+            <section class="card list-card" aria-label="本地模型">
+              <div class="list-header"><span>模型</span><span>大小</span><span>状态</span><span>操作</span></div>
+              <div class="model-row">
+                <div class="model-main"><span class="row-icon">Q3</span><div><strong>Qwen3.5-2B Q4_K_M</strong><small>HAL100 管理 · 适合当前设备</small></div></div>
+                <span class="row-value">1.19 GB</span><span class="status-pill ready">正在运行</span>
+                <div class="row-actions"><button class="button compact" onclick="goWorkspace('runtime')" type="button">查看运行</button><button class="icon-button" onclick="openDrawer('model-detail', '模型详情')" aria-label="查看模型详情" type="button">⋯</button></div>
+              </div>
+              <div class="model-row">
+                <div class="model-main"><span class="row-icon">L3</span><div><strong>Llama 3.2 3B Instruct</strong><small>外部导入 · 源文件保留</small></div></div>
+                <span class="row-value">2.08 GB</span><span class="status-pill ready">可用</span>
+                <div class="row-actions"><button class="button compact" onclick="showToast('已选择 Llama 3.2 3B，可在“运行”页启动。')" type="button">选择</button><button class="icon-button" onclick="openDrawer('model-detail-external', '模型详情')" aria-label="查看模型详情" type="button">⋯</button></div>
+              </div>
+              <div class="model-row">
+                <div class="model-main"><span class="row-icon">M7</span><div><strong>Mistral 7B Instruct</strong><small>HAL100 管理 · 完整性已验证</small></div></div>
+                <span class="row-value">4.11 GB</span><span class="status-pill">未加载</span>
+                <div class="row-actions"><button class="button compact" onclick="showToast('当前设备建议一次只运行一个主要模型。')" type="button">选择</button><button class="icon-button" onclick="openDrawer('model-detail-large', '模型详情')" aria-label="查看模型详情" type="button">⋯</button></div>
+              </div>
+            </section>
+          </div>
+
+          <div class="subpage" data-workspace-panel="runtime" hidden>
+            <div class="runtime-layout">
+              <section class="card runtime-hero">
+                <div class="runtime-label">当前正在运行</div>
+                <div class="runtime-model"><span class="row-icon">Q3</span><div><h2>Qwen3.5-2B Q4_K_M</h2><p>本地处理 · 已连接 HAL100 本地服务</p></div></div>
+                <div class="runtime-actions"><button class="button primary" onclick="showToast('原型：模型将保持运行。')" type="button">正在运行</button><button class="button" onclick="openDrawer('model-test', '测试当前模型')" type="button">测试模型</button><button class="button ghost" onclick="openConfirm('stop-model')" type="button">停止</button></div>
+              </section>
+              <section class="card runtime-facts">
+                <div class="fact-row"><span>运行状态</span><strong class="status-pill ready">正常</strong></div>
+                <div class="fact-row"><span>已运行</span><strong>38 分钟</strong></div>
+                <div class="fact-row"><span>最近请求</span><strong>刚刚</strong></div>
+                <div class="fact-row"><span>运行环境</span><button class="text-link" onclick="openDrawer('runtime-details', '运行技术详情')" type="button">查看技术详情</button></div>
+              </section>
+            </div>
+          </div>
+
+          <div class="subpage" data-workspace-panel="services" hidden>
+            <section class="card service-list" aria-label="推理服务">
+              <div class="service-row"><span class="row-icon">H</span><div class="service-copy"><strong>HAL100 本地推理</strong><small>当前模型由 HAL100 管理</small></div><span class="status-pill ready">当前使用</span><div class="row-actions"><button class="button compact" onclick="openDrawer('runtime-details', '本地推理详情')" type="button">详情</button></div></div>
+              <div class="service-row"><span class="row-icon">V</span><div class="service-copy"><strong>工作站 vLLM</strong><small>外部 OpenAI 兼容服务</small></div><span class="status-pill ready">可用</span><div class="row-actions"><button class="button compact" onclick="showToast('工作站 vLLM 已通过连接测试。')" type="button">测试连接</button><button class="icon-button" aria-label="更多服务操作" type="button">⋯</button></div></div>
+              <div class="service-row"><span class="row-icon">O</span><div class="service-copy"><strong>本机 Ollama</strong><small>已发现，尚未添加</small></div><span class="status-pill">未配置</span><div class="row-actions"><button class="button compact" onclick="showToast('已将本机 Ollama 填入添加流程。')" type="button">添加</button></div></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" data-page="integrations" hidden>
+          <header class="page-header">
+            <div><h1>软件接入</h1><p>让外部 AI 软件通过独立身份安全使用 HAL100 的模型。</p></div>
+            <div class="header-actions"><button class="button" onclick="showToast('已重新检测全部软件，状态没有变化。')" type="button">重新检测</button></div>
+          </header>
+
+          <div class="page-help"><span>内置 Agent 与用户安装的软件始终相互独立。</span><button onclick="openDrawer('integration-boundary', '运行边界')" type="button">了解运行边界</button></div>
+
+          <section class="card integration-list" aria-label="外部软件" style="margin-top: 15px">
+            <div class="integration-row"><span class="integration-logo">OC</span><div class="integration-copy"><strong>OpenCode</strong><small>已接入，调用将单独归集用量</small></div><span class="status-pill ready">已接入</span><div class="row-actions"><button class="button compact" onclick="openDrawer('integration-opencode', 'OpenCode')" type="button">查看详情</button></div></div>
+            <div class="integration-row"><span class="integration-logo accent">PI</span><div class="integration-copy"><strong>Pi Coding Agent</strong><small>已检测到官方安装，可以接入 HAL100</small></div><span class="status-pill attention">待接入</span><div class="row-actions"><button class="button primary compact" onclick="openDrawer('integration-pi', 'Pi Coding Agent')" type="button">配置接入</button></div></div>
+            <div class="integration-row"><span class="integration-logo">CL</span><div class="integration-copy"><strong>OpenClaw</strong><small>未在常用位置检测到软件</small></div><span class="status-pill">未检测到</span><div class="row-actions"><button class="button compact" onclick="openDrawer('integration-openclaw', 'OpenClaw')" type="button">查看接入方式</button></div></div>
+            <div class="integration-row"><span class="integration-logo green">HE</span><div class="integration-copy"><strong>Hermes Agent</strong><small>配置被外部修改，需要重新检查</small></div><span class="status-pill danger">需要处理</span><div class="row-actions"><button class="button compact" onclick="openDrawer('integration-hermes', 'Hermes Agent')" type="button">解决问题</button></div></div>
+            <div class="integration-row"><span class="integration-logo">＋</span><div class="integration-copy"><strong>其他客户端</strong><small>2 个独立客户端凭据正在使用</small></div><span class="status-pill ready">2 个已连接</span><div class="row-actions"><button class="button compact" onclick="openDrawer('integration-generic', '其他客户端')" type="button">管理</button></div></div>
+          </section>
+        </section>
+
+        <section class="page" data-page="agent" hidden>
+          <header class="page-header">
+            <div><h1>HAL100 Agent</h1><p>用自然语言诊断、部署和配置；任何系统变更都需要你再次确认。</p></div>
+          </header>
+
+          <div class="agent-layout">
+            <section class="card agent-composer">
+              <div class="agent-status"><i></i><span>Agent 已就绪</span><button onclick="openDrawer('agent-details', 'Agent 技术详情')" type="button">技术详情</button></div>
+
+              <fieldset class="provider-toggle"><legend>处理位置</legend><button class="active" data-agent-mode="local" type="button">本地处理</button><button data-agent-mode="cloud" type="button">云端处理</button></fieldset>
+              <div class="privacy-note" id="privacy-note">任务内容不会离开这台 Mac</div>
+
+              <div class="cloud-options" id="cloud-options">
+                <label class="field"><span>使用范围</span><select><option>仅本次任务</option><option>当前会话</option></select></label>
+                <label class="field"><span>云端模型</span><select><option>工作站 API · gpt-4.1-mini</option><option>团队 Anthropic · sonnet</option></select></label>
+              </div>
+
+              <div class="task-label"><label for="agent-prompt">任务</label><span id="agent-count">0 / 4096</span></div>
+              <textarea id="agent-prompt" maxlength="4096" placeholder="描述你希望 HAL100 检查、配置或部署的事情…"></textarea>
+
+              <div class="suggestion-block">
+                <div class="suggestion-heading"><span>根据当前状态推荐</span><button onclick="openDrawer('task-library', 'Agent 任务库')" type="button">全部任务</button></div>
+                <div class="suggestions">
+                  <button class="suggestion" data-agent-prompt="检查 HAL100 当前部署状态，并只报告需要我处理的问题。" type="button"><span>检查部署状态</span><span>→</span></button>
+                  <button class="suggestion" data-agent-prompt="分析 Hermes Agent 配置被外部修改的原因，并给出安全修复计划。" type="button"><span>解决 Hermes 配置问题</span><span>→</span></button>
+                  <button class="suggestion" data-agent-prompt="检查所有已接入软件最近的调用是否正常，不要执行修改。" type="button"><span>检查软件连接</span><span>→</span></button>
+                </div>
+              </div>
+
+              <div class="agent-submit"><small>计划不等于授权</small><button class="button primary" id="agent-run" onclick="runAgentDemo()" type="button">运行任务 <span aria-hidden="true">→</span></button></div>
+            </section>
+
+            <section class="card agent-output" aria-live="polite">
+              <div class="output-heading"><h2>结果</h2><span id="agent-elapsed">等待任务</span></div>
+              <div class="agent-empty" id="agent-empty"><div><span class="empty-symbol">✦</span><strong>等待一项任务</strong><span>回答、受控计划和必要的确认会显示在这里。</span></div></div>
+              <div class="agent-result" id="agent-result" hidden>
+                <section class="action-plan">
+                  <div class="action-plan-head"><span class="row-icon">✓</span><div><strong>建议操作：修复 Hermes Agent 接入</strong><small>只修改 HAL100 管理的配置片段</small></div></div>
+                  <p>将重新生成 Hermes 的 HAL100 Provider 配置；保留用户默认模型、其他 Provider、凭据和会话。</p>
+                  <button class="button primary compact" onclick="openConfirm('agent-plan')" type="button">查看并确认计划</button>
+                </section>
+                <div class="agent-answer"><strong>检查完成。</strong><br />本地模型与推理服务运行正常。OpenCode 和 Pi 的连接状态正常；Hermes Agent 的 HAL100 配置片段在外部被修改，因此当前不会继续写入。建议使用上方受控计划重新建立配置，其他用户内容不会被覆盖。</div>
+                <details class="tech-trace"><summary>查看工具轨迹</summary><ol><li>读取部署状态摘要</li><li>检查外部软件接入</li><li>生成单项修复计划</li></ol></details>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" data-page="activity" hidden>
+          <header class="page-header">
+            <div><h1>活动</h1><p>查看模型用量和受控操作记录；内容仅保存在本机。</p></div>
+          </header>
+
+          <div class="workspace-toolbar">
+            <div class="segmented-tabs" role="tablist" aria-label="活动页面"><button class="active" data-activity-tab="usage" type="button">用量</button><button data-activity-tab="operations" type="button">操作记录</button></div>
+            <p id="activity-summary">累计精确用量</p>
+          </div>
+
+          <div class="activity-panel" data-activity-panel="usage">
+            <section class="metrics" aria-label="用量摘要">
+              <article class="card metric primary"><div><span>总 Token</span><strong>1,284,620</strong><small>2,846 个请求</small></div><span class="metric-badge">本周 +12.4%</span></article>
+              <article class="card metric"><span>今天</span><strong>42.8K</strong><small>86 个请求</small></article>
+              <article class="card metric"><span>最近 7 天</span><strong>311K</strong><small>主要来自 OpenCode</small></article>
+            </section>
+            <div class="activity-grid">
+              <section class="card chart-card"><div class="section-heading"><div><h2>最近 14 天</h2><p>总 Token 趋势</p></div><button class="text-link" onclick="openDrawer('usage-details', '用量详情')" type="button">查看构成</button></div><div class="bar-chart" aria-label="最近十四天 Token 柱状图" role="img"><i class="bar" style="height: 32%"></i><i class="bar" style="height: 45%"></i><i class="bar" style="height: 41%"></i><i class="bar" style="height: 55%"></i><i class="bar" style="height: 38%"></i><i class="bar" style="height: 68%"></i><i class="bar" style="height: 63%"></i><i class="bar" style="height: 76%"></i><i class="bar" style="height: 58%"></i><i class="bar" style="height: 72%"></i><i class="bar" style="height: 84%"></i><i class="bar" style="height: 66%"></i><i class="bar" style="height: 92%"></i><i class="bar" style="height: 78%"></i></div><div class="chart-labels"><span>8 月 8 日</span><span>今天</span></div></section>
+              <section class="card client-card"><div class="section-heading"><div><h2>最近客户端</h2><p>按总 Token</p></div></div><div class="client-list"><div class="client-item"><strong>OpenCode</strong><span>46%</span><div class="client-track"><i style="width: 46%"></i></div></div><div class="client-item"><strong>HAL100 Agent</strong><span>31%</span><div class="client-track"><i style="width: 31%"></i></div></div><div class="client-item"><strong>Pi Coding Agent</strong><span>16%</span><div class="client-track"><i style="width: 16%"></i></div></div><div class="client-item"><strong>其他客户端</strong><span>7%</span><div class="client-track"><i style="width: 7%"></i></div></div></div><p class="activity-note">请求明细和输入／缓存／输出构成按需查看。</p></section>
+            </div>
+          </div>
+
+          <div class="activity-panel" data-activity-panel="operations" hidden>
+            <div class="operation-toolbar"><span>最近受控操作</span><button class="button compact" onclick="openDrawer('operation-filter', '筛选操作记录')" type="button">筛选</button></div>
+            <section class="card operation-list" aria-label="操作记录">
+              <button class="operation-row" onclick="openDrawer('operation-detail', '操作详情')" type="button"><time>今天 14:32</time><strong>软件配置已更新</strong><span>OpenCode</span><span class="status-pill ready">成功</span><span>›</span></button>
+              <button class="operation-row" onclick="openDrawer('operation-detail-model', '操作详情')" type="button"><time>今天 11:08</time><strong>模型已启动</strong><span>Qwen3.5-2B Q4_K_M</span><span class="status-pill ready">成功</span><span>›</span></button>
+              <button class="operation-row" onclick="openDrawer('operation-detail-hermes', '操作详情')" type="button"><time>昨天 18:46</time><strong>外部配置发生变化</strong><span>Hermes Agent</span><span class="status-pill attention">需处理</span><span>›</span></button>
+              <button class="operation-row" onclick="openDrawer('operation-detail-download', '操作详情')" type="button"><time>昨天 16:21</time><strong>模型下载完成</strong><span>Llama 3.2 3B Instruct</span><span class="status-pill ready">成功</span><span>›</span></button>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" data-page="settings" hidden>
+          <header class="page-header"><div><h1>设置</h1><p>管理少量全局偏好、数据保留和产品信息。</p></div><span class="status-pill ready">基础设置已完成</span></header>
+          <div class="settings-grid">
+            <section class="card settings-section"><div class="settings-section-head"><h2>通用</h2><span>外观与启动</span></div><div class="setting-row"><div class="setting-copy"><strong>深色外观</strong><small>只影响 HAL100 界面，不改变系统设置。</small></div><div class="setting-control"><button class="toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="切换深色外观" aria-pressed="false" type="button"></button></div></div><div class="setting-row"><div class="setting-copy"><strong>随系统登录启动</strong><small>默认关闭；需要时可以随时开启。</small></div><div class="setting-control"><button class="toggle" onclick="toggleSwitch(this)" aria-label="切换登录启动" aria-pressed="false" type="button"></button></div></div></section>
+            <section class="card settings-section"><div class="settings-section-head"><h2>模型来源</h2><span>唯一长期入口</span></div><div class="setting-row"><div class="setting-copy"><strong>默认下载源</strong><small>添加模型时仍可以临时切换。</small></div><div class="setting-control"><select aria-label="默认下载源"><option>Hugging Face</option><option>ModelScope</option></select></div></div></section>
+            <section class="card settings-section"><div class="settings-section-head"><h2>数据保留</h2><span>仅保存在本机</span></div><div class="setting-row"><div class="setting-copy"><strong>Token 请求记录</strong><small>保存精确用量和脱敏请求摘要。</small></div><div class="setting-control"><select aria-label="Token 请求保留时间"><option>90 天</option><option>30 天</option><option>180 天</option><option>365 天</option><option>永久保留</option></select></div></div><div class="setting-row"><div class="setting-copy"><strong>操作记录</strong><small>不保存提示词、回答或 API Key。</small></div><div class="setting-control"><select aria-label="操作记录保留时间"><option>365 天</option><option>90 天</option><option>180 天</option><option>永久保留</option></select></div></div><div class="setting-row"><div class="setting-copy"><strong>按当前策略清理</strong><small>预计可清理 24 条过期记录；执行前会再次确认。</small></div><div class="setting-control"><button class="button danger compact" onclick="openConfirm('cleanup')" type="button">预览并清理</button></div></div></section>
+            <section class="card settings-section"><div class="settings-section-head"><h2>关于</h2><span>HAL100 1.0.2 开发版</span></div><div class="setting-row"><div class="setting-copy"><strong>窗口与后台行为</strong><small>关闭主窗口时 HAL100 继续在菜单栏运行。</small></div><div class="setting-control"><button class="button compact" onclick="openDrawer('about', '关于 HAL100')" type="button">产品详情</button></div></div></section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="prototype-note">交互设计原型 · 不执行真实操作</div>
+
+    <div class="drawer-backdrop" id="drawer-backdrop" role="presentation">
+      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+        <header class="drawer-header"><div><h2 id="drawer-title">详情</h2><p>按需展示，不占用页面首屏</p></div><button class="icon-button" id="drawer-close" aria-label="关闭详情" type="button">×</button></header>
+        <div class="drawer-content" id="drawer-content"></div>
+        <footer class="drawer-footer" id="drawer-footer"><button class="button" onclick="closeDrawer()" type="button">完成</button></footer>
+      </aside>
+    </div>
+
+    <div class="confirm-backdrop" id="confirm-backdrop" role="presentation">
+      <section class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+        <span class="confirm-symbol" id="confirm-symbol">!</span><h2 id="confirm-title">确认操作</h2><p id="confirm-description"></p><div class="impact-box" id="confirm-impact"></div><div class="confirm-actions"><button class="button" onclick="closeConfirm()" type="button">取消</button><button class="button danger" id="confirm-action" type="button">确认</button></div>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <template id="system-details">
+      <section class="drawer-section"><h3>用户状态</h3><p>正常状态只在首页汇总。以下技术细节仅在主动查看时加载。</p><dl class="detail-list"><div class="detail-row"><dt>HAL100</dt><dd>运行正常</dd></div><div class="detail-row"><dt>本地服务</dt><dd>可用</dd></div><div class="detail-row"><dt>本机数据</dt><dd>可用</dd></div><div class="detail-row"><dt>待处理问题</dt><dd>0</dd></div></dl></section><section class="drawer-section"><h3>技术详情</h3><dl class="detail-list"><div class="detail-row"><dt>版本</dt><dd>1.0.2 开发版</dd></div><div class="detail-row"><dt>Gateway</dt><dd>127.0.0.1:10100</dd></div><div class="detail-row"><dt>数据位置</dt><dd>HAL100 应用数据目录</dd></div></dl></section>
+    </template>
+
+    <template id="add-model">
+      <section class="drawer-section"><h3>选择添加方式</h3><div class="choice-grid"><button class="choice-card active" type="button"><strong>在线获取</strong><span>搜索公开 GGUF 并在确认后下载</span></button><button class="choice-card" onclick="showToast('原型：将打开系统文件选择器。')" type="button"><strong>导入 GGUF</strong><span>只建立索引，不移动外部源文件</span></button></div></section><section class="drawer-section"><h3>查找模型</h3><p>硬件建议会在选择模型时出现，不长期占用模型页面。</p><div class="search-row"><select aria-label="模型来源"><option>Hugging Face</option><option>ModelScope</option></select><input value="Qwen GGUF" aria-label="模型搜索" /><button class="button primary compact" onclick="showToast('已找到 3 个适合当前设备的公开模型。')" type="button">搜索</button></div><div class="candidate-list"><article class="candidate"><div><strong>Qwen3.5-2B Q4_K_M</strong><small>1.19 GB · 推荐 · Apache-2.0</small></div><button class="button compact" onclick="openConfirm('download-model')" type="button">选择</button></article><article class="candidate"><div><strong>Qwen3 4B Q4_K_M</strong><small>2.64 GB · 当前设备可运行</small></div><button class="button compact" onclick="openConfirm('download-model-large')" type="button">选择</button></article></div></section>
+    </template>
+
+    <template id="model-detail"><section class="drawer-section"><h3>Qwen3.5-2B Q4_K_M</h3><p>这是当前正在运行的 HAL100 管理模型。</p><dl class="detail-list"><div class="detail-row"><dt>状态</dt><dd>正在运行</dd></div><div class="detail-row"><dt>大小</dt><dd>1.19 GB</dd></div><div class="detail-row"><dt>量化</dt><dd>Q4_K_M</dd></div><div class="detail-row"><dt>所有权</dt><dd>HAL100 管理</dd></div><div class="detail-row"><dt>完整性</dt><dd>已验证</dd></div></dl></section><section class="drawer-section"><h3>低频操作</h3><button class="button danger compact" onclick="openConfirm('remove-model')" type="button">移到系统废纸篓</button></section></template>
+    <template id="model-detail-external"><section class="drawer-section"><h3>Llama 3.2 3B Instruct</h3><p>外部导入模型只由 HAL100 建立索引。</p><dl class="detail-list"><div class="detail-row"><dt>状态</dt><dd>可用</dd></div><div class="detail-row"><dt>大小</dt><dd>2.08 GB</dd></div><div class="detail-row"><dt>所有权</dt><dd>外部文件</dd></div><div class="detail-row"><dt>移除行为</dt><dd>只移除索引，保留源文件</dd></div></dl></section></template>
+    <template id="model-detail-large"><section class="drawer-section"><h3>Mistral 7B Instruct</h3><p>技术参数按需展示，默认模型列表只保留状态和主要操作。</p><dl class="detail-list"><div class="detail-row"><dt>状态</dt><dd>未加载</dd></div><div class="detail-row"><dt>大小</dt><dd>4.11 GB</dd></div><div class="detail-row"><dt>设备建议</dt><dd>可运行，建议关闭其他主要模型</dd></div><div class="detail-row"><dt>完整性</dt><dd>已验证</dd></div></dl></section></template>
+
+    <template id="model-test"><section class="drawer-section"><h3>发送一次测试</h3><p>测试当前模型是否能够正常响应。详细 Token 构成在结果后按需展开。</p><div class="field"><span>测试内容</span><textarea>请用一句话说明你当前正在本机运行。</textarea></div><button class="button primary" style="margin-top: 10px" onclick="showTestResult()" type="button">发送测试</button></section><section class="drawer-section" id="test-result" hidden><h3>模型响应 · 684 ms</h3><div class="agent-answer">我正在通过 HAL100 的本地推理环境运行，当前请求没有发送到云端。</div><dl class="detail-list" style="margin-top: 10px"><div class="detail-row"><dt>总 Token</dt><dd>38</dd></div><div class="detail-row"><dt>查看构成</dt><dd>输入 24 · 输出 14</dd></div></dl></section></template>
+
+    <template id="runtime-details"><section class="drawer-section"><h3>本地推理技术详情</h3><p>这些内容用于排查问题，不在运行页首屏常驻。</p><dl class="detail-list"><div class="detail-row"><dt>引擎</dt><dd>llama.cpp · 固定版本</dd></div><div class="detail-row"><dt>进程状态</dt><dd>运行中</dd></div><div class="detail-row"><dt>监听地址</dt><dd>127.0.0.1 · 随机内部端口</dd></div><div class="detail-row"><dt>Gateway</dt><dd>已连接</dd></div><div class="detail-row"><dt>空闲策略</dt><dd>15 分钟后卸载主要模型</dd></div></dl></section><section class="drawer-section"><h3>危险操作</h3><p>只有普通停止或切换无法完成时才使用。</p><button class="button danger compact" onclick="openConfirm('force-stop')" type="button">强制停止</button></section></template>
+
+    <template id="integration-boundary"><section class="drawer-section"><h3>两套独立运行环境</h3><p>HAL100 内置 Agent 只在 HAL100 私有环境运行。用户安装的 OpenCode、Pi、OpenClaw 和 Hermes 拥有各自的程序、配置、会话和升级生命周期。</p><dl class="detail-list"><div class="detail-row"><dt>HAL100 管理</dt><dd>明确预览过的配置片段、独立 Key、私有 runtime</dd></div><div class="detail-row"><dt>用户管理</dt><dd>软件安装、其他配置、默认模型、会话和升级</dd></div><div class="detail-row"><dt>不会发生</dt><dd>替换用户软件、读取会话、共享内置 Agent HOME</dd></div></dl></section></template>
+    <template id="integration-opencode"><section class="drawer-section"><h3>连接正常</h3><p>OpenCode 正在通过独立身份使用 HAL100。</p><dl class="detail-list"><div class="detail-row"><dt>版本</dt><dd>1.18.11</dd></div><div class="detail-row"><dt>服务地址</dt><dd>HAL100 本地服务</dd></div><div class="detail-row"><dt>凭据</dt><dd>安全存储，独立归集用量</dd></div><div class="detail-row"><dt>配置状态</dt><dd>HAL100 管理片段未被修改</dd></div></dl></section><section class="drawer-section"><h3>连接操作</h3><button class="button danger compact" onclick="openConfirm('disconnect-opencode')" type="button">断开接入</button></section></template>
+    <template id="integration-pi"><section class="drawer-section"><h3>准备接入</h3><p>检测到用户安装的官方 Pi Coding Agent。HAL100 只会添加独立 Provider 和凭据引用。</p><dl class="detail-list"><div class="detail-row"><dt>软件</dt><dd>用户安装的官方 Pi</dd></div><div class="detail-row"><dt>用户默认模型</dt><dd>保留</dd></div><div class="detail-row"><dt>用户会话</dt><dd>不读取、不修改</dd></div><div class="detail-row"><dt>HAL100 Key</dt><dd>单独创建并安全存储</dd></div></dl></section><section class="drawer-section"><button class="button primary" onclick="openConfirm('configure-pi')" type="button">预览配置并继续</button></section></template>
+    <template id="integration-openclaw"><section class="drawer-section"><h3>尚未检测到 OpenClaw</h3><p>HAL100 不会自动安装未经验证的外部软件。安装后可以重新检测并生成专用配置。</p><dl class="detail-list"><div class="detail-row"><dt>支持协议</dt><dd>Chat Completions · Responses · Anthropic Messages</dd></div><div class="detail-row"><dt>当前动作</dt><dd>查看官方安装方式或稍后重新检测</dd></div></dl></section></template>
+    <template id="integration-hermes"><section class="drawer-section"><h3>发现外部修改</h3><p>Hermes 的 HAL100 配置片段与上次确认内容不同。为避免覆盖用户内容，HAL100 已停止自动写入。</p><dl class="detail-list"><div class="detail-row"><dt>影响</dt><dd>HAL100 Provider 暂不可用</dd></div><div class="detail-row"><dt>其他 Provider</dt><dd>不受影响</dd></div><div class="detail-row"><dt>推荐处理</dt><dd>由 Agent 分析后生成单项修复计划</dd></div></dl></section><button class="button primary" onclick="closeDrawer(); goTo('agent'); setAgentPrompt('分析 Hermes Agent 配置被外部修改的原因，并给出安全修复计划。')" type="button">交给 Agent 处理</button></template>
+    <template id="integration-generic"><section class="drawer-section"><h3>其他客户端</h3><p>每个软件使用独立 Key，明文只在创建时显示一次。</p><div class="candidate-list"><article class="candidate"><div><strong>Raycast AI</strong><small>OpenAI 兼容 · 最近使用 3 小时前</small></div><button class="button compact" onclick="openConfirm('revoke-key')" type="button">撤销</button></article><article class="candidate"><div><strong>内部工具</strong><small>Anthropic 兼容 · 最近使用 昨天</small></div><button class="button compact" onclick="openConfirm('revoke-key')" type="button">撤销</button></article></div></section><button class="button primary" onclick="showToast('原型：将创建一个新的独立客户端 Key。')" type="button">创建客户端</button></template>
+
+    <template id="agent-details"><section class="drawer-section"><h3>Agent 技术详情</h3><p>正常情况下只显示“Agent 已就绪”。版本和运行策略在这里按需查看。</p><dl class="detail-list"><div class="detail-row"><dt>编排内核</dt><dd>Pi Agent Core 0.84.2</dd></div><div class="detail-row"><dt>本地模型</dt><dd>Qwen3.5-2B Q4_K_M</dd></div><div class="detail-row"><dt>权限权威</dt><dd>Rust Policy Engine</dd></div><div class="detail-row"><dt>空闲策略</dt><dd>2 分钟后退出</dd></div><div class="detail-row"><dt>可用工具</dt><dd>18 个固定工具</dd></div></dl></section></template>
+    <template id="task-library"><div class="task-library"><section class="task-group"><h3>诊断</h3><div class="task-group-list"><button onclick="chooseLibraryTask('全面诊断 HAL100 当前运行环境，只报告真实问题。')" type="button"><span>全面诊断环境</span><span>→</span></button><button onclick="chooseLibraryTask('分析最近失败的最可能原因，不要执行修复。')" type="button"><span>分析近期失败</span><span>→</span></button><button onclick="chooseLibraryTask('执行部署前检查，并报告未就绪项目。')" type="button"><span>部署前检查</span><span>→</span></button></div></section><section class="task-group"><h3>模型与运行</h3><div class="task-group-list"><button onclick="chooseLibraryTask('根据当前硬件推荐合适的本地模型。')" type="button"><span>硬件与模型建议</span><span>→</span></button><button onclick="chooseLibraryTask('搜索合适的公开 GGUF，并生成下载计划。')" type="button"><span>搜索并规划模型下载</span><span>→</span></button><button onclick="chooseLibraryTask('检查当前模型和引擎状态，并生成安全切换计划。')" type="button"><span>模型与引擎状态</span><span>→</span></button></div></section><section class="task-group"><h3>软件接入</h3><div class="task-group-list"><button onclick="chooseLibraryTask('检查 OpenCode 状态，并生成接入 HAL100 的配置计划。')" type="button"><span>配置 OpenCode</span><span>→</span></button><button onclick="chooseLibraryTask('检查官方 Pi 是否已安装，并生成 HAL100 私有安装计划。')" type="button"><span>安装 HAL100 私有 Pi</span><span>→</span></button><button onclick="chooseLibraryTask('仅为 HAL100 私有 Pi runtime 生成可恢复卸载计划。')" type="button"><span>卸载 HAL100 私有 Pi</span><span>→</span></button></div></section></div></template>
+
+    <template id="usage-details"><section class="drawer-section"><h3>Token 构成</h3><p>主页面只展示总量和趋势，分析数据在这里按需读取。</p><dl class="detail-list"><div class="detail-row"><dt>输入</dt><dd>814,220</dd></div><div class="detail-row"><dt>缓存输入</dt><dd>286,410</dd></div><div class="detail-row"><dt>输出</dt><dd>183,990</dd></div><div class="detail-row"><dt>请求数</dt><dd>2,846</dd></div></dl></section><section class="drawer-section"><h3>最近请求</h3><div class="candidate-list"><article class="candidate"><div><strong>OpenCode · Qwen3.5-2B</strong><small>1,248 Token · 2 分钟前</small></div><span class="status-pill ready">完成</span></article><article class="candidate"><div><strong>HAL100 Agent · 本地</strong><small>684 Token · 18 分钟前</small></div><span class="status-pill ready">完成</span></article></div></section></template>
+    <template id="operation-filter"><section class="drawer-section"><h3>筛选记录</h3><div class="field"><span>操作类型</span><select><option>全部操作</option><option>模型</option><option>推理服务</option><option>软件接入</option><option>Agent 计划</option><option>数据清理</option></select></div><div class="field" style="margin-top: 10px"><span>结果</span><select><option>全部结果</option><option>成功</option><option>失败</option><option>需要处理</option></select></div></section></template>
+    <template id="operation-detail"><section class="drawer-section"><h3>软件配置已更新</h3><dl class="detail-list"><div class="detail-row"><dt>时间</dt><dd>今天 14:32</dd></div><div class="detail-row"><dt>对象</dt><dd>OpenCode</dd></div><div class="detail-row"><dt>结果</dt><dd>成功</dd></div><div class="detail-row"><dt>影响</dt><dd>HAL100 Provider 已更新</dd></div><div class="detail-row"><dt>凭据</dt><dd>独立 Key 已安全存储</dd></div></dl></section><section class="drawer-section"><h3>技术详情</h3><p>内部事件 ID 和白名单字段只在这里显示，不进入活动列表。</p></section></template>
+    <template id="operation-detail-model"><section class="drawer-section"><h3>模型已启动</h3><dl class="detail-list"><div class="detail-row"><dt>对象</dt><dd>Qwen3.5-2B Q4_K_M</dd></div><div class="detail-row"><dt>结果</dt><dd>成功</dd></div><div class="detail-row"><dt>当前状态</dt><dd>正在运行</dd></div></dl></section></template>
+    <template id="operation-detail-hermes"><section class="drawer-section"><h3>外部配置发生变化</h3><p>HAL100 已故障关闭，没有覆盖 Hermes 的用户配置。</p><dl class="detail-list"><div class="detail-row"><dt>对象</dt><dd>Hermes Agent</dd></div><div class="detail-row"><dt>结果</dt><dd>需要处理</dd></div><div class="detail-row"><dt>用户内容</dt><dd>保持不变</dd></div></dl></section></template>
+    <template id="operation-detail-download"><section class="drawer-section"><h3>模型下载完成</h3><dl class="detail-list"><div class="detail-row"><dt>模型</dt><dd>Llama 3.2 3B Instruct</dd></div><div class="detail-row"><dt>结果</dt><dd>完整性验证通过</dd></div><div class="detail-row"><dt>大小</dt><dd>2.08 GB</dd></div></dl></section></template>
+    <template id="about"><section class="drawer-section"><h3>HAL100</h3><p>本地 AI 模型、推理环境和外部 Agent 的统一控制中心。</p><dl class="detail-list"><div class="detail-row"><dt>版本</dt><dd>1.0.2 开发版</dd></div><div class="detail-row"><dt>平台</dt><dd>macOS Apple Silicon</dd></div><div class="detail-row"><dt>数据</dt><dd>默认只保存在本机</dd></div><div class="detail-row"><dt>窗口行为</dt><dd>关闭后继续在菜单栏运行</dd></div></dl></section></template>
+
+    <script>
+      const app = document.getElementById("app");
+      const pages = [...document.querySelectorAll("[data-page]")];
+      const routeButtons = [...document.querySelectorAll("[data-route]")];
+      const workspaceButtons = [...document.querySelectorAll("[data-workspace-tab]")];
+      const activityButtons = [...document.querySelectorAll("[data-activity-tab]")];
+      const drawerBackdrop = document.getElementById("drawer-backdrop");
+      const drawerContent = document.getElementById("drawer-content");
+      const drawerTitle = document.getElementById("drawer-title");
+      const confirmBackdrop = document.getElementById("confirm-backdrop");
+      const toast = document.getElementById("toast");
+      let toastTimer;
+
+      const workspaceCopy = {
+        models: { summary: "3 个模型 · 4.7 GB", action: '<button class="button primary" onclick="openDrawer(\'add-model\', \'添加模型\')" type="button">＋ 添加模型</button>' },
+        runtime: { summary: "Qwen3.5-2B 正在运行", action: '<button class="button" onclick="openDrawer(\'model-test\', \'测试当前模型\')" type="button">测试当前模型</button>' },
+        services: { summary: "2 个服务可用", action: '<button class="button primary" onclick="openDrawer(\'service-add\', \'添加推理服务\')" type="button">＋ 添加推理服务</button>' }
+      };
+
+      const confirmations = {
+        "stop-model": { title: "停止当前模型？", description: "正在进行的请求会先等待完成。停止后，已接入软件暂时无法使用这个本地模型。", action: "停止模型", impact: [["目标", "Qwen3.5-2B Q4_K_M"], ["数据", "模型文件和用量记录保留"], ["恢复", "可以随时重新启动"]] },
+        "force-stop": { title: "强制停止运行环境？", description: "只有普通停止无法完成时才使用。未完成请求会被取消。", action: "强制停止", impact: [["目标", "HAL100 本地推理进程"], ["请求", "未完成请求将取消"], ["模型文件", "保持不变"]] },
+        "download-model": { title: "下载并安装模型？", description: "HAL100 将从固定来源下载文件，验证完整性后再加入模型库。", action: "确认下载", impact: [["模型", "Qwen3.5-2B Q4_K_M"], ["大小", "1.19 GB"], ["空间", "当前可用 42.6 GB"], ["来源", "Hugging Face · 固定修订"]] },
+        "download-model-large": { title: "下载这个模型？", description: "该模型可以在当前设备运行，但会使用更多统一内存。", action: "确认下载", impact: [["模型", "Qwen3 4B Q4_K_M"], ["大小", "2.64 GB"], ["建议", "运行时关闭其他主要模型"]] },
+        "remove-model": { title: "将模型移到废纸篓？", description: "只移动 HAL100 管理的模型文件，不影响外部模型和用量记录。", action: "移到废纸篓", impact: [["目标", "Qwen3.5-2B Q4_K_M"], ["方式", "移入系统废纸篓"], ["可恢复", "可以从废纸篓恢复"]] },
+        "disconnect-opencode": { title: "断开 OpenCode 接入？", description: "只移除 HAL100 管理的 Provider 片段并吊销专属 Key。", action: "断开接入", impact: [["用户配置", "其他 Provider 和默认模型保留"], ["凭据", "只吊销 OpenCode 专属 Key"], ["软件", "不会卸载 OpenCode"]] },
+        "configure-pi": { title: "配置 Pi 接入？", description: "将向 Pi 添加独立的 HAL100 Provider。执行前仍会由原生窗口确认。", action: "确认配置", impact: [["配置", "只添加 providers.hal100"], ["默认模型", "保留"], ["会话", "不读取、不修改"], ["Key", "独立创建"]] },
+        "agent-plan": { title: "执行 Hermes 修复计划？", description: "这是一次受控配置写入。HAL100 会在写入前重新检查文件是否发生变化。", action: "确认并执行", impact: [["目标", "Hermes 的 HAL100 Provider"], ["其他配置", "保持不变"], ["失败", "验证失败时自动回滚"], ["授权", "本次确认只使用一次"]] },
+        cleanup: { title: "清理过期记录？", description: "只删除超过当前保留期限的 Token 请求摘要和操作记录。", action: "确认清理", impact: [["Token 请求", "预计 18 条"], ["操作记录", "预计 6 条"], ["模型与配置", "不受影响"], ["恢复", "删除后不可恢复"]] },
+        "revoke-key": { title: "撤销客户端 Key？", description: "该客户端将立即无法继续访问 HAL100。", action: "撤销 Key", impact: [["目标", "选中的独立客户端"], ["其他客户端", "不受影响"], ["历史用量", "继续保留"]] }
+      };
+
+      function goTo(route, updateHash = true) {
+        pages.forEach((page) => { page.hidden = page.dataset.page !== route; });
+        routeButtons.forEach((button) => {
+          button.classList.toggle("active", button.dataset.route === route);
+        });
+        document.querySelector(".main").scrollTo({ top: 0, behavior: "smooth" });
+        if (updateHash) history.replaceState(null, "", `#${route}`);
+      }
+
+      function switchWorkspace(tab) {
+        document.querySelectorAll("[data-workspace-panel]").forEach((panel) => { panel.hidden = panel.dataset.workspacePanel !== tab; });
+        workspaceButtons.forEach((button) => {
+          button.classList.toggle("active", button.dataset.workspaceTab === tab);
+        });
+        document.getElementById("workspace-summary").textContent = workspaceCopy[tab].summary;
+        document.getElementById("workspace-primary-action").innerHTML = workspaceCopy[tab].action;
+        history.replaceState(null, "", `#workspace/${tab}`);
+      }
+
+      function goWorkspace(tab) { goTo("workspace", false); switchWorkspace(tab); }
+
+      function switchActivity(tab) {
+        document.querySelectorAll("[data-activity-panel]").forEach((panel) => { panel.hidden = panel.dataset.activityPanel !== tab; });
+        activityButtons.forEach((button) => {
+          button.classList.toggle("active", button.dataset.activityTab === tab);
+        });
+        document.getElementById("activity-summary").textContent = tab === "usage" ? "累计精确用量" : "最近受控操作";
+        history.replaceState(null, "", `#activity/${tab}`);
+      }
+
+      function goActivity(tab) { goTo("activity", false); switchActivity(tab); }
+
+      routeButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          if (button.dataset.route === "workspace") goWorkspace("models");
+          else if (button.dataset.route === "activity") goActivity("usage");
+          else goTo(button.dataset.route);
+        });
+      });
+      workspaceButtons.forEach((button) => {
+        button.addEventListener("click", () => switchWorkspace(button.dataset.workspaceTab));
+      });
+      activityButtons.forEach((button) => {
+        button.addEventListener("click", () => switchActivity(button.dataset.activityTab));
+      });
+
+      window.openDrawer = (templateId, title) => {
+        const template = document.getElementById(templateId);
+        if (!template) {
+          if (templateId === "service-add") {
+            drawerContent.innerHTML = '<section class="drawer-section"><h3>添加推理服务</h3><p>先发现本机常见服务，也可以手动填写一个兼容地址。</p><div class="choice-grid"><button class="choice-card active" onclick="showToast(\'发现 1 个本机 Ollama 候选。\')" type="button"><strong>发现本机服务</strong><span>只检查固定回环地址，不扫描局域网</span></button><button class="choice-card" type="button"><strong>手动添加</strong><span>OpenAI、Anthropic、Ollama、vLLM 或 llama.cpp</span></button></div></section><section class="drawer-section"><div class="field"><span>服务地址</span><input value="http://127.0.0.1:11434/v1/" /></div><button class="button primary" style="margin-top:10px" onclick="showToast(\'原型：服务配置将在确认后保存。\')" type="button">继续</button></section>';
+          }
+        } else {
+          drawerContent.replaceChildren(template.content.cloneNode(true));
+        }
+        drawerTitle.textContent = title;
+        drawerBackdrop.classList.add("open");
+        document.body.style.overflow = "hidden";
+        document.getElementById("drawer-close").focus();
+      };
+
+      function closeDrawer() { drawerBackdrop.classList.remove("open"); document.body.style.overflow = ""; }
+      document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+      drawerBackdrop.addEventListener("click", (event) => { if (event.target === drawerBackdrop) closeDrawer(); });
+
+      window.openConfirm = (kind) => {
+        const data = confirmations[kind];
+        if (!data) return;
+        document.getElementById("confirm-title").textContent = data.title;
+        document.getElementById("confirm-description").textContent = data.description;
+        document.getElementById("confirm-impact").innerHTML = data.impact.map(([key, value]) => `<div><span>${key}</span><strong>${value}</strong></div>`).join("");
+        const action = document.getElementById("confirm-action");
+        action.textContent = data.action;
+        action.onclick = () => { closeConfirm(); showToast(`原型演示：已确认“${data.action}”，不会执行真实操作。`); };
+        confirmBackdrop.classList.add("open");
+        action.focus();
+      };
+
+      function closeConfirm() { confirmBackdrop.classList.remove("open"); }
+      confirmBackdrop.addEventListener("click", (event) => { if (event.target === confirmBackdrop) closeConfirm(); });
+
+      function showToast(message) {
+        window.clearTimeout(toastTimer);
+        toast.textContent = message;
+        toast.classList.add("show");
+        toastTimer = window.setTimeout(() => toast.classList.remove("show"), 2600);
+      }
+
+      window.toggleTheme = () => {
+        const dark = app.dataset.theme !== "dark";
+        app.dataset.theme = dark ? "dark" : "light";
+        const toggle = document.getElementById("theme-toggle");
+        toggle.classList.toggle("on", dark);
+        toggle.setAttribute("aria-pressed", String(dark));
+      };
+
+      window.toggleSwitch = (button) => {
+        const active = !button.classList.contains("on");
+        button.classList.toggle("on", active);
+        button.setAttribute("aria-pressed", String(active));
+        showToast(active ? "已在原型中开启该设置。" : "已在原型中关闭该设置。");
+      };
+
+      const agentPrompt = document.getElementById("agent-prompt");
+      function setAgentPrompt(value) { agentPrompt.value = value; document.getElementById("agent-count").textContent = `${value.length} / 4096`; }
+      agentPrompt.addEventListener("input", () => setAgentPrompt(agentPrompt.value));
+      document.querySelectorAll("[data-agent-prompt]").forEach((button) => {
+        button.addEventListener("click", () => setAgentPrompt(button.dataset.agentPrompt));
+      });
+      document.querySelectorAll("[data-agent-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll("[data-agent-mode]").forEach((item) => {
+            item.classList.toggle("active", item === button);
+          });
+          const cloud = button.dataset.agentMode === "cloud";
+          document.getElementById("cloud-options").classList.toggle("visible", cloud);
+          document.getElementById("privacy-note").textContent = cloud ? "发送范围将在运行前预览，并由原生窗口确认" : "任务内容不会离开这台 Mac";
+        });
+      });
+
+      window.chooseLibraryTask = (prompt) => { closeDrawer(); setAgentPrompt(prompt); agentPrompt.focus(); };
+
+      window.runAgentDemo = () => {
+        if (!agentPrompt.value.trim()) setAgentPrompt("检查 HAL100 当前部署状态，并只报告需要我处理的问题。");
+        const button = document.getElementById("agent-run");
+        button.disabled = true;
+        button.textContent = "正在检查…";
+        document.getElementById("agent-elapsed").textContent = "处理中";
+        document.getElementById("agent-empty").innerHTML = '<div><span class="empty-symbol">↻</span><strong>正在调用受控工具</strong><span>Agent 无法绕过 Rust 授权边界。</span></div>';
+        window.setTimeout(() => {
+          document.getElementById("agent-empty").hidden = true;
+          document.getElementById("agent-result").hidden = false;
+          document.getElementById("agent-elapsed").textContent = "完成 · 4.2 秒";
+          button.disabled = false;
+          button.innerHTML = '再次运行 <span aria-hidden="true">→</span>';
+        }, 650);
+      };
+
+      window.showTestResult = () => {
+        const result = drawerContent.querySelector("#test-result");
+        if (result) result.hidden = false;
+        showToast("原型：模型测试完成。未发送真实请求。");
+      };
+
+      function handleInitialRoute() {
+        const hash = location.hash.replace(/^#/, "");
+        const [route, child] = hash.split("/");
+        if (route === "workspace") goWorkspace(child || "models");
+        else if (route === "activity") goActivity(child || "usage");
+        else if (["home", "integrations", "agent", "settings"].includes(route)) goTo(route, false);
+        else goTo("home", false);
+      }
+
+      window.addEventListener("hashchange", handleInitialRoute);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          if (confirmBackdrop.classList.contains("open")) closeConfirm();
+          else if (drawerBackdrop.classList.contains("open")) closeDrawer();
+        }
+      });
+
+      handleInitialRoute();
+    </script>
+  </body>
+</html>

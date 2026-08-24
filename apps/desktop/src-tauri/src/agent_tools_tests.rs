@@ -16,15 +16,21 @@ use axum::{
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
     routing::get,
 };
+use hal100_core::ExternalAgentIntegrationId;
 use hal100_infra::{
-    CredentialRegistry, Database, EnvironmentDiagnostics, GatewayState, LlamaCppManager,
-    ModelDownloadError, ModelDownloadManager, ModelRemovalManager, OpenCodeManager, OpenCodePaths,
-    RemoteModelCatalog, RemoteModelCatalogError, UsageWriter,
+    CredentialRegistry, Database, EnvironmentDiagnostics, ExternalModelProfileRegistry,
+    GatewayState, HermesAgentIntegrationAdapter, HermesAgentPaths, LlamaCppManager,
+    ManagedExternalAgentDeploymentManager, ModelDownloadError, ModelDownloadManager,
+    ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawPaths, OpenCodeManager, OpenCodePaths,
+    PiCodingAgentIntegrationAdapter, PiCodingAgentPaths, RemoteModelCatalog,
+    RemoteModelCatalogError, UsageWriter,
 };
 use hal100_protocol::{
-    AGENT_RPC_MAX_TOOL_RESULT_BYTES, DownloadSource, MODEL_CATALOG_SEARCH_TOOL,
-    MODEL_REPOSITORY_INSPECTION_TOOL, ModelDownloadState, PLAN_MODEL_DOWNLOAD_TOOL,
-    ToolCallRequestPayload, ToolCallResultStatus,
+    AGENT_RPC_MAX_TOOL_RESULT_BYTES, DownloadSource, EXTERNAL_AGENT_STATUS_TOOL,
+    MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL, ModelDownloadState,
+    OPERATIONAL_HEALTH_OBSERVATION_TOOL, OPERATIONAL_HISTORY_TOOL,
+    PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+    PLAN_MODEL_DOWNLOAD_TOOL, ToolCallRequestPayload, ToolCallResultStatus,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -117,6 +123,257 @@ fn remote_failures_keep_safe_actionable_codes() {
     );
 }
 
+#[test]
+fn external_agent_tools_bind_the_prompt_target_and_never_return_local_paths() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    let temp = TestDirectory::new();
+    let home = temp.0.join("home");
+    let model_storage_path = temp.0.join("models");
+    fs::create_dir_all(&model_storage_path).expect("model storage");
+    let database = Arc::new(Database::open(temp.0.join("hal100.sqlite")).expect("database"));
+    let credentials = CredentialRegistry::new(Vec::new());
+    let gateway = GatewayState::new(
+        None,
+        credentials.clone(),
+        UsageWriter::start(database.clone()),
+    )
+    .expect("gateway");
+    let engine = Arc::new(
+        LlamaCppManager::new(
+            database.clone(),
+            gateway.clone(),
+            temp.0.join("engines/llama.cpp"),
+        )
+        .expect("engine"),
+    );
+    let mut open_code_paths = OpenCodePaths::for_macos(&home, &temp.0);
+    open_code_paths.binary_candidates.clear();
+    let open_code = Arc::new(OpenCodeManager::with_gateway_base_url(
+        database.clone(),
+        credentials.clone(),
+        open_code_paths,
+        "http://127.0.0.1:10100/v1".to_owned(),
+    ));
+    let profiles = ExternalModelProfileRegistry::conservative_managed_route();
+    let mut pi_paths = PiCodingAgentPaths::for_macos(&home, &temp.0);
+    pi_paths.binary_candidates.clear();
+    let pi_coding_agent = Arc::new(PiCodingAgentIntegrationAdapter::with_gateway_base_url(
+        database.clone(),
+        credentials.clone(),
+        profiles.clone(),
+        pi_paths,
+        "http://127.0.0.1:10100/v1".to_owned(),
+    ));
+    let mut openclaw_paths = OpenClawPaths::for_macos(&home, &temp.0);
+    openclaw_paths.binary_candidates.clear();
+    let openclaw = Arc::new(OpenClawIntegrationAdapter::with_gateway_base_url(
+        database.clone(),
+        credentials.clone(),
+        profiles.clone(),
+        openclaw_paths,
+        "http://127.0.0.1:10100/v1".to_owned(),
+    ));
+    let mut hermes_paths = HermesAgentPaths::for_macos(&home, &temp.0);
+    hermes_paths.binary_candidates.clear();
+    let hermes_agent = Arc::new(HermesAgentIntegrationAdapter::with_gateway_base_url(
+        database.clone(),
+        credentials,
+        profiles,
+        hermes_paths,
+        "http://127.0.0.1:10100/v1".to_owned(),
+    ));
+    let removals = Arc::new(ModelRemovalManager::new(
+        database.clone(),
+        model_storage_path.clone(),
+    ));
+    let diagnostics = Arc::new(EnvironmentDiagnostics::new(
+        database.clone(),
+        engine.clone(),
+        open_code.clone(),
+        pi_coding_agent.clone(),
+        openclaw.clone(),
+        hermes_agent.clone(),
+        gateway.clone(),
+    ));
+    let catalog = Arc::new(RemoteModelCatalog::new().expect("remote catalog"));
+    let downloads = Arc::new(
+        ModelDownloadManager::new(
+            database.clone(),
+            catalog.clone(),
+            model_storage_path.clone(),
+        )
+        .expect("download manager"),
+    );
+    database
+        .insert_audit_event(
+            "agent_action_failed",
+            "agent_action_plan",
+            "/Users/private/secret-target",
+            &json!({
+                "errorCode": "configuration_validation_failed",
+                "action": "configure_external_agent",
+                "reason": "adapter_rejected",
+                "prompt": "secret prompt must not escape"
+            })
+            .to_string(),
+            now_ms(),
+        )
+        .expect("audit fixture");
+    let fake_npm = temp.0.join("bin/npm");
+    fs::create_dir_all(fake_npm.parent().expect("fake npm parent")).expect("fake npm directory");
+    fs::write(
+        &fake_npm,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '11.5.2\n'
+  exit 0
+fi
+if [ "$1" = "view" ]; then
+  printf '%s\n' '{"name":"@earendil-works/pi-coding-agent","version":"0.84.2","bin":{"pi":"dist/cli.js"},"dist":{"integrity":"sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA=="}}'
+  exit 0
+fi
+exit 9
+"#,
+    )
+    .expect("fake npm");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&fake_npm, fs::Permissions::from_mode(0o700))
+            .expect("fake npm executable");
+    }
+    let managed_deployment = Arc::new(ManagedExternalAgentDeploymentManager::new(
+        database.clone(),
+        temp.0.join("managed-external-agents"),
+        vec![fake_npm],
+    ));
+    let executor = AgentToolExecutor::new(
+        model_storage_path,
+        database.clone(),
+        engine,
+        open_code,
+        pi_coding_agent,
+        openclaw,
+        hermes_agent,
+        removals,
+        diagnostics,
+        catalog,
+        downloads,
+        managed_deployment,
+        gateway,
+        AgentActionPlanStore::new(),
+    );
+    let mut run = executor.start_run(
+        "agent-model-download-run".to_owned(),
+        Some(ExternalAgentIntegrationId::PiCodingAgent),
+        runtime.handle().clone(),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    let status = run
+        .handle(&request(
+            "tool-external-status",
+            EXTERNAL_AGENT_STATUS_TOOL,
+            json!({ "integrationId": "pi-coding-agent" }),
+        ))
+        .expect("status execution");
+    assert_eq!(status.status, ToolCallResultStatus::Success);
+    let output = status.output.expect("sanitized status");
+    assert_eq!(output["integrationId"], "pi-coding-agent");
+    assert_eq!(output["installed"], false);
+    assert!(output.get("binaryPath").is_none());
+    assert!(output.get("configPath").is_none());
+    assert!(output.get("warnings").is_none());
+    assert!(
+        !output
+            .to_string()
+            .contains(temp.0.to_string_lossy().as_ref())
+    );
+
+    let mismatch = run
+        .handle(&request(
+            "tool-external-mismatch",
+            EXTERNAL_AGENT_STATUS_TOOL,
+            json!({ "integrationId": "openclaw" }),
+        ))
+        .expect("mismatch response");
+    assert_eq!(mismatch.status, ToolCallResultStatus::Error);
+    assert_eq!(
+        mismatch.error.expect("mismatch error").code,
+        "external_agent_target_mismatch"
+    );
+
+    let unavailable = run
+        .handle(&request(
+            "tool-external-plan",
+            PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+            json!({ "integrationId": "pi-coding-agent" }),
+        ))
+        .expect("plan response");
+    assert_eq!(unavailable.status, ToolCallResultStatus::Error);
+    assert!(run.action_plans().is_empty());
+
+    let history = run
+        .handle(&request(
+            "tool-operational-history",
+            OPERATIONAL_HISTORY_TOOL,
+            json!({ "target": "recent" }),
+        ))
+        .expect("operational history");
+    assert_eq!(history.status, ToolCallResultStatus::Success);
+    let history = history.output.expect("sanitized operational history");
+    assert_eq!(history["returnedEventCount"], 1);
+    assert_eq!(
+        history["events"][0]["errorCode"],
+        "configuration_validation_failed"
+    );
+    let serialized = history.to_string();
+    assert!(!serialized.contains("secret-target"));
+    assert!(!serialized.contains("secret prompt"));
+    assert!(!serialized.contains("targetId"));
+
+    let observation = run
+        .handle(&request(
+            "tool-operational-observation",
+            OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+            json!({ "target": "deployment", "sampleCount": 3 }),
+        ))
+        .expect("bounded operational observation");
+    assert_eq!(observation.status, ToolCallResultStatus::Success);
+    let observation = observation.output.expect("sanitized observation");
+    assert_eq!(observation["sampleCount"], 3);
+    assert_eq!(observation["samples"].as_array().map(Vec::len), Some(3));
+    assert_eq!(observation["stable"], true);
+    assert!(
+        observation["windowMs"]
+            .as_u64()
+            .is_some_and(|value| value >= 100)
+    );
+    let serialized = observation.to_string();
+    assert!(!serialized.contains("backendId"));
+    assert!(!serialized.contains("binaryPath"));
+    assert!(!serialized.contains("configPath"));
+    assert!(!serialized.contains(temp.0.to_string_lossy().as_ref()));
+
+    let install = run
+        .handle(&request(
+            "tool-external-install",
+            PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+            json!({ "integrationId": "pi-coding-agent" }),
+        ))
+        .expect("private installation plan");
+    assert_eq!(install.status, ToolCallResultStatus::Success);
+    let plan = install.output.expect("sanitized installation plan");
+    assert_eq!(plan["actionKind"], "installExternalAgent");
+    assert_eq!(plan["targetId"], "pi-coding-agent");
+    assert!(!plan.to_string().contains(temp.0.to_string_lossy().as_ref()));
+    assert_eq!(run.action_plans().len(), 1);
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 fn agent_model_discovery_plan_and_confirm_use_one_deterministic_download_manager() {
@@ -171,8 +428,30 @@ fn agent_model_discovery_plan_and_confirm_use_one_deterministic_download_manager
     );
     let open_code = Arc::new(OpenCodeManager::with_gateway_base_url(
         database.clone(),
-        credentials,
+        credentials.clone(),
         OpenCodePaths::for_macos(&temp.0.join("home"), &temp.0),
+        "http://127.0.0.1:10100/v1".to_owned(),
+    ));
+    let profiles = ExternalModelProfileRegistry::conservative_managed_route();
+    let pi_coding_agent = Arc::new(PiCodingAgentIntegrationAdapter::with_gateway_base_url(
+        database.clone(),
+        credentials.clone(),
+        profiles.clone(),
+        PiCodingAgentPaths::for_macos(&temp.0.join("home"), &temp.0),
+        "http://127.0.0.1:10100/v1".to_owned(),
+    ));
+    let openclaw = Arc::new(OpenClawIntegrationAdapter::with_gateway_base_url(
+        database.clone(),
+        credentials.clone(),
+        profiles.clone(),
+        OpenClawPaths::for_macos(&temp.0.join("home"), &temp.0),
+        "http://127.0.0.1:10100/v1".to_owned(),
+    ));
+    let hermes_agent = Arc::new(HermesAgentIntegrationAdapter::with_gateway_base_url(
+        database.clone(),
+        credentials,
+        profiles,
+        HermesAgentPaths::for_macos(&temp.0.join("home"), &temp.0),
         "http://127.0.0.1:10100/v1".to_owned(),
     ));
     let catalog = Arc::new(
@@ -201,6 +480,9 @@ fn agent_model_discovery_plan_and_confirm_use_one_deterministic_download_manager
         database.clone(),
         engine.clone(),
         open_code.clone(),
+        pi_coding_agent.clone(),
+        openclaw.clone(),
+        hermes_agent.clone(),
         gateway.clone(),
     ));
     let action_plans = AgentActionPlanStore::new();
@@ -209,16 +491,25 @@ fn agent_model_discovery_plan_and_confirm_use_one_deterministic_download_manager
         database.clone(),
         engine,
         open_code,
+        pi_coding_agent,
+        openclaw,
+        hermes_agent,
         removals,
         diagnostics,
         catalog,
         downloads.clone(),
+        Arc::new(ManagedExternalAgentDeploymentManager::new(
+            database.clone(),
+            temp.0.join("managed-external-agents"),
+            Vec::new(),
+        )),
         gateway,
         action_plans.clone(),
     );
     let cancellation = Arc::new(AtomicBool::new(false));
     let mut run = executor.start_run(
         "agent-model-download-run".to_owned(),
+        None,
         runtime.handle().clone(),
         cancellation,
     );

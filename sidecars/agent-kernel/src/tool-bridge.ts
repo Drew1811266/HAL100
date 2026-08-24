@@ -8,16 +8,23 @@ export const RUNTIME_CATALOG_TOOL = "hal100.inspect_runtime_catalog";
 export const PLAN_MODEL_START_TOOL = "hal100.plan_model_start";
 export const PLAN_MODEL_REMOVAL_TOOL = "hal100.plan_model_removal";
 export const ENVIRONMENT_DIAGNOSTICS_TOOL = "hal100.inspect_environment_diagnostics";
+export const OPERATIONAL_HISTORY_TOOL = "hal100.inspect_operational_history";
+export const OPERATIONAL_HEALTH_OBSERVATION_TOOL = "hal100.observe_operational_health";
 export const PLAN_DIAGNOSTIC_REPAIR_TOOL = "hal100.plan_diagnostic_repair";
 export const PLAN_ENGINE_INSTALL_TOOL = "hal100.plan_engine_install";
 export const PLAN_ENGINE_REMOVE_TOOL = "hal100.plan_engine_remove";
-export const OPENCODE_STATUS_TOOL = "hal100.inspect_opencode_status";
-export const PLAN_OPENCODE_CONFIGURATION_TOOL = "hal100.plan_opencode_configuration";
+export const EXTERNAL_AGENT_STATUS_TOOL = "hal100.inspect_external_agent";
+export const PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL = "hal100.plan_external_agent_installation";
+export const PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL =
+  "hal100.plan_managed_external_agent_removal";
+export const PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL = "hal100.plan_external_agent_configuration";
+export const PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL = "hal100.plan_external_agent_disconnection";
 export const MODEL_CATALOG_SEARCH_TOOL = "hal100.search_model_catalog";
 export const MODEL_REPOSITORY_INSPECTION_TOOL = "hal100.inspect_model_repository";
 export const PLAN_MODEL_DOWNLOAD_TOOL = "hal100.plan_model_download";
 const TOOL_BROKER_TIMEOUT_MS = 5_000;
 const CATALOG_TOOL_BROKER_TIMEOUT_MS = 20_000;
+const DEPLOYMENT_TOOL_BROKER_TIMEOUT_MS = 30_000;
 export const MAX_TOOL_RESULT_BYTES = 128 * 1024;
 
 const systemSummaryParameters = Type.Object(
@@ -48,9 +55,14 @@ const llamaCppTargetParameters = Type.Object(
   { additionalProperties: false },
 );
 
-const openCodeTargetParameters = Type.Object(
+const externalAgentParameters = Type.Object(
   {
-    target: Type.Literal("opencode"),
+    integrationId: Type.Union([
+      Type.Literal("opencode"),
+      Type.Literal("pi-coding-agent"),
+      Type.Literal("openclaw"),
+      Type.Literal("hermes-agent"),
+    ]),
   },
   { additionalProperties: false },
 );
@@ -58,6 +70,21 @@ const openCodeTargetParameters = Type.Object(
 const environmentDiagnosticsParameters = Type.Object(
   {
     target: Type.Literal("full"),
+  },
+  { additionalProperties: false },
+);
+
+const operationalHistoryParameters = Type.Object(
+  {
+    target: Type.Literal("recent"),
+  },
+  { additionalProperties: false },
+);
+
+const operationalHealthObservationParameters = Type.Object(
+  {
+    target: Type.Literal("deployment"),
+    sampleCount: Type.Literal(3),
   },
   { additionalProperties: false },
 );
@@ -149,11 +176,16 @@ export class ToolBrokerBridge {
       this.createDiagnosticRepairPlanTool(runId),
       this.createEngineInstallPlanTool(runId),
       this.createEngineRemovePlanTool(runId),
-      this.createOpenCodeStatusTool(runId),
-      this.createOpenCodeConfigurationPlanTool(runId),
+      this.createExternalAgentStatusTool(runId),
+      this.createExternalAgentConfigurationPlanTool(runId),
+      this.createExternalAgentDisconnectionPlanTool(runId),
       this.createModelCatalogSearchTool(runId),
       this.createModelRepositoryInspectionTool(runId),
       this.createModelDownloadPlanTool(runId),
+      this.createOperationalHistoryTool(runId),
+      this.createOperationalHealthObservationTool(runId),
+      this.createExternalAgentInstallationPlanTool(runId),
+      this.createManagedExternalAgentRemovalPlanTool(runId),
     ];
   }
 
@@ -280,6 +312,58 @@ export class ToolBrokerBridge {
     };
   }
 
+  createOperationalHistoryTool(
+    runId: string,
+  ): AgentTool<typeof operationalHistoryParameters, unknown> {
+    return {
+      name: OPERATIONAL_HISTORY_TOOL,
+      label: "读取近期运维事件",
+      description:
+        "请求 Rust 返回最多24条近期脱敏操作事件，只包含固定事件类型、目标类型、时间、安全错误码和动作标识；不返回目标ID、提示词、回答、路径、配置或凭据。",
+      parameters: operationalHistoryParameters,
+      executionMode: "sequential",
+      execute: async (toolCallId, parameters, signal) => {
+        const output = await this.requestTool(
+          runId,
+          toolCallId,
+          OPERATIONAL_HISTORY_TOOL,
+          parameters,
+          signal,
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(output) }],
+          details: output,
+        };
+      },
+    };
+  }
+
+  createOperationalHealthObservationTool(
+    runId: string,
+  ): AgentTool<typeof operationalHealthObservationParameters, unknown> {
+    return {
+      name: OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+      label: "检查部署就绪与运行稳定性",
+      description:
+        "请求 Rust 在固定短窗口内完成3次Gateway、引擎和路由状态采样，并结合四类外部Agent诊断返回脱敏部署就绪摘要；不读取原始日志、路径、配置或凭据。",
+      parameters: operationalHealthObservationParameters,
+      executionMode: "sequential",
+      execute: async (toolCallId, parameters, signal) => {
+        const output = await this.requestTool(
+          runId,
+          toolCallId,
+          OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+          parameters,
+          signal,
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(output) }],
+          details: output,
+        };
+      },
+    };
+  }
+
   diagnosticRepairAvailable(): boolean | undefined {
     return this.diagnosticRepairAvailableState;
   }
@@ -330,25 +414,58 @@ export class ToolBrokerBridge {
     );
   }
 
-  createOpenCodeStatusTool(runId: string): AgentTool<typeof openCodeTargetParameters, unknown> {
-    return this.createExactTargetTool(
+  createExternalAgentStatusTool(runId: string): AgentTool<typeof externalAgentParameters, unknown> {
+    return this.createExternalAgentTool(
       runId,
-      OPENCODE_STATUS_TOOL,
-      "检查 OpenCode 接入状态",
-      "请求 Rust 检查 OpenCode 是否安装、全局配置是否存在以及 HAL100 Provider 是否冲突。Sidecar 不直接读取用户配置文件。",
-      openCodeTargetParameters,
+      EXTERNAL_AGENT_STATUS_TOOL,
+      "检查外部 Agent 接入状态",
+      "请求 Rust 检查指定外部 Agent 的安装、受管配置与所有权。只返回脱敏状态；Sidecar 不读取二进制路径或用户配置文件。",
     );
   }
 
-  createOpenCodeConfigurationPlanTool(
+  createExternalAgentInstallationPlanTool(
     runId: string,
-  ): AgentTool<typeof openCodeTargetParameters, unknown> {
-    return this.createExactTargetTool(
+  ): AgentTool<typeof externalAgentParameters, unknown> {
+    return this.createExternalAgentTool(
       runId,
-      PLAN_OPENCODE_CONFIGURATION_TOOL,
-      "生成 OpenCode 配置计划",
-      "请求 Rust 生成一次性 OpenCode 配置计划；不覆盖冲突配置，不更改默认模型，且必须由用户在 HAL100 原生窗口确认。",
-      openCodeTargetParameters,
+      PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+      "生成外部 Agent 私有安装计划",
+      "请求 Rust 核对版本化官方包、归档完整性和完整依赖闭包并生成一次性 HAL100 私有安装计划；不改 PATH、HOME、用户配置或现有安装，且必须由用户原生确认。",
+      DEPLOYMENT_TOOL_BROKER_TIMEOUT_MS,
+    );
+  }
+
+  createManagedExternalAgentRemovalPlanTool(
+    runId: string,
+  ): AgentTool<typeof externalAgentParameters, unknown> {
+    return this.createExternalAgentTool(
+      runId,
+      PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
+      "生成外部 Agent 私有卸载计划",
+      "请求 Rust 仅为 HAL100 私有运行时生成一次性卸载计划；运行时会移入系统废纸篓，用户安装、配置、凭据和会话不受影响，且必须由用户原生确认。",
+      DEPLOYMENT_TOOL_BROKER_TIMEOUT_MS,
+    );
+  }
+
+  createExternalAgentConfigurationPlanTool(
+    runId: string,
+  ): AgentTool<typeof externalAgentParameters, unknown> {
+    return this.createExternalAgentTool(
+      runId,
+      PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+      "生成外部 Agent 配置计划",
+      "请求 Rust 生成一次性配置事务计划；不覆盖冲突配置，不更改默认模型，使用独立凭据，并且必须由用户在 HAL100 原生窗口确认。",
+    );
+  }
+
+  createExternalAgentDisconnectionPlanTool(
+    runId: string,
+  ): AgentTool<typeof externalAgentParameters, unknown> {
+    return this.createExternalAgentTool(
+      runId,
+      PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
+      "生成外部 Agent 断开计划",
+      "请求 Rust 生成一次性断开事务计划；只移除 HAL100 受管片段和专属凭据，不删除用户配置，并且必须由用户原生确认。",
     );
   }
 
@@ -430,13 +547,6 @@ export class ToolBrokerBridge {
     description: string,
     parameters: TParameters,
   ): AgentTool<TParameters, unknown>;
-  private createExactTargetTool<TParameters extends typeof openCodeTargetParameters>(
-    runId: string,
-    toolName: string,
-    label: string,
-    description: string,
-    parameters: TParameters,
-  ): AgentTool<TParameters, unknown>;
   private createExactTargetTool<TParameters extends typeof environmentDiagnosticsParameters>(
     runId: string,
     toolName: string,
@@ -449,16 +559,8 @@ export class ToolBrokerBridge {
     toolName: string,
     label: string,
     description: string,
-    parameters:
-      | typeof llamaCppTargetParameters
-      | typeof openCodeTargetParameters
-      | typeof environmentDiagnosticsParameters,
-  ): AgentTool<
-    | typeof llamaCppTargetParameters
-    | typeof openCodeTargetParameters
-    | typeof environmentDiagnosticsParameters,
-    unknown
-  > {
+    parameters: typeof llamaCppTargetParameters | typeof environmentDiagnosticsParameters,
+  ): AgentTool<typeof llamaCppTargetParameters | typeof environmentDiagnosticsParameters, unknown> {
     return {
       name: toolName,
       label,
@@ -467,6 +569,36 @@ export class ToolBrokerBridge {
       executionMode: "sequential",
       execute: async (toolCallId, toolParameters, signal) => {
         const output = await this.requestTool(runId, toolCallId, toolName, toolParameters, signal);
+        return {
+          content: [{ type: "text", text: JSON.stringify(output) }],
+          details: output,
+        };
+      },
+    };
+  }
+
+  private createExternalAgentTool(
+    runId: string,
+    toolName: string,
+    label: string,
+    description: string,
+    timeoutMs = TOOL_BROKER_TIMEOUT_MS,
+  ): AgentTool<typeof externalAgentParameters, unknown> {
+    return {
+      name: toolName,
+      label,
+      description,
+      parameters: externalAgentParameters,
+      executionMode: "sequential",
+      execute: async (toolCallId, parameters, signal) => {
+        const output = await this.requestTool(
+          runId,
+          toolCallId,
+          toolName,
+          parameters,
+          signal,
+          timeoutMs,
+        );
         return {
           content: [{ type: "text", text: JSON.stringify(output) }],
           details: output,
@@ -642,7 +774,7 @@ function diagnosticRepairAvailability(value: unknown): boolean | undefined {
     (finding) =>
       isRecord(finding) &&
       (finding.repairKind === "installLlamaCpp" ||
-        finding.repairKind === "configureOpenCode" ||
+        finding.repairKind === "configureExternalAgent" ||
         finding.repairKind === "removeModelIndex"),
   );
 }

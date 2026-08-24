@@ -1,7 +1,10 @@
 use hal100_protocol::{ToolCallErrorPayload, ToolCallRequestPayload, ToolCallResultPayload};
 use serde_json::{Map, Value, json};
 
-use crate::{AgentCapabilityId, AgentCapabilityRegistry};
+use crate::{
+    AgentCapabilityId, AgentCapabilityRegistry, ExternalAgentIntegrationId,
+    ExternalAgentIntegrationRegistry,
+};
 
 const MAX_CORRELATION_ID_BYTES: usize = 128;
 
@@ -21,14 +24,29 @@ pub enum AuthorizedAgentTool {
         model_id: String,
     },
     InspectEnvironmentDiagnostics,
+    InspectOperationalHistory,
+    ObserveOperationalHealth,
     PlanDiagnosticRepair {
         report_id: String,
         finding_id: String,
     },
     PlanEngineInstall,
     PlanEngineRemove,
-    InspectOpenCodeStatus,
-    PlanOpenCodeConfiguration,
+    InspectExternalAgent {
+        integration_id: ExternalAgentIntegrationId,
+    },
+    PlanExternalAgentConfiguration {
+        integration_id: ExternalAgentIntegrationId,
+    },
+    PlanExternalAgentDisconnection {
+        integration_id: ExternalAgentIntegrationId,
+    },
+    PlanExternalAgentInstallation {
+        integration_id: ExternalAgentIntegrationId,
+    },
+    PlanManagedExternalAgentRemoval {
+        integration_id: ExternalAgentIntegrationId,
+    },
     SearchModelCatalog {
         query: String,
     },
@@ -82,6 +100,14 @@ impl AgentToolPolicy {
                 require_exact_target_arguments(&request.arguments, "full")?;
                 Ok(AuthorizedAgentTool::InspectEnvironmentDiagnostics)
             }
+            AgentCapabilityId::InspectOperationalHistory => {
+                require_exact_target_arguments(&request.arguments, "recent")?;
+                Ok(AuthorizedAgentTool::InspectOperationalHistory)
+            }
+            AgentCapabilityId::ObserveOperationalHealth => {
+                require_exact_operational_observation_arguments(&request.arguments)?;
+                Ok(AuthorizedAgentTool::ObserveOperationalHealth)
+            }
             AgentCapabilityId::PlanDiagnosticRepair => {
                 let (report_id, finding_id) = exact_diagnostic_repair_ids(&request.arguments)?;
                 Ok(AuthorizedAgentTool::PlanDiagnosticRepair {
@@ -97,13 +123,30 @@ impl AgentToolPolicy {
                 require_exact_target_arguments(&request.arguments, "llama.cpp")?;
                 Ok(AuthorizedAgentTool::PlanEngineRemove)
             }
-            AgentCapabilityId::InspectOpenCodeStatus => {
-                require_exact_target_arguments(&request.arguments, "opencode")?;
-                Ok(AuthorizedAgentTool::InspectOpenCodeStatus)
+            AgentCapabilityId::InspectExternalAgent => {
+                Ok(AuthorizedAgentTool::InspectExternalAgent {
+                    integration_id: exact_external_agent_integration(&request.arguments)?,
+                })
             }
-            AgentCapabilityId::PlanOpenCodeConfiguration => {
-                require_exact_target_arguments(&request.arguments, "opencode")?;
-                Ok(AuthorizedAgentTool::PlanOpenCodeConfiguration)
+            AgentCapabilityId::PlanExternalAgentConfiguration => {
+                Ok(AuthorizedAgentTool::PlanExternalAgentConfiguration {
+                    integration_id: exact_external_agent_integration(&request.arguments)?,
+                })
+            }
+            AgentCapabilityId::PlanExternalAgentDisconnection => {
+                Ok(AuthorizedAgentTool::PlanExternalAgentDisconnection {
+                    integration_id: exact_external_agent_integration(&request.arguments)?,
+                })
+            }
+            AgentCapabilityId::PlanExternalAgentInstallation => {
+                Ok(AuthorizedAgentTool::PlanExternalAgentInstallation {
+                    integration_id: exact_external_agent_integration(&request.arguments)?,
+                })
+            }
+            AgentCapabilityId::PlanManagedExternalAgentRemoval => {
+                Ok(AuthorizedAgentTool::PlanManagedExternalAgentRemoval {
+                    integration_id: exact_external_agent_integration(&request.arguments)?,
+                })
             }
             AgentCapabilityId::SearchModelCatalog => Ok(AuthorizedAgentTool::SearchModelCatalog {
                 query: exact_bounded_string(&request.arguments, "query", 2, 100)?,
@@ -128,6 +171,17 @@ impl AgentToolPolicy {
             }
         }
     }
+}
+
+fn exact_external_agent_integration(
+    arguments: &Value,
+) -> Result<ExternalAgentIntegrationId, ToolCallErrorPayload> {
+    let integration_id = exact_bounded_string(arguments, "integrationId", 1, 64)?;
+    ExternalAgentIntegrationRegistry::by_integration_id(&integration_id)
+        .map(|descriptor| descriptor.id)
+        .ok_or_else(|| {
+            invalid_arguments("integrationId must name a registered external Agent integration")
+        })
 }
 
 impl SimulatedToolBroker {
@@ -209,6 +263,23 @@ fn require_exact_target_arguments(
         Err(ToolCallErrorPayload {
             code: "invalid_arguments".to_owned(),
             message: format!("expected exactly {{\"target\":\"{expected_target}\"}}"),
+        })
+    }
+}
+
+fn require_exact_operational_observation_arguments(
+    arguments: &Value,
+) -> Result<(), ToolCallErrorPayload> {
+    let expected = Map::from_iter([
+        ("target".to_owned(), Value::String("deployment".to_owned())),
+        ("sampleCount".to_owned(), Value::from(3)),
+    ]);
+    if arguments.as_object() == Some(&expected) {
+        Ok(())
+    } else {
+        Err(ToolCallErrorPayload {
+            code: "invalid_arguments".to_owned(),
+            message: "expected exactly {\"target\":\"deployment\",\"sampleCount\":3}".to_owned(),
         })
     }
 }
@@ -307,11 +378,13 @@ fn invalid_arguments(message: &str) -> ToolCallErrorPayload {
 #[cfg(test)]
 mod tests {
     use hal100_protocol::{
-        ENVIRONMENT_DIAGNOSTICS_TOOL, MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL,
-        OPENCODE_STATUS_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
-        PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-        PLAN_MODEL_START_TOOL, PLAN_OPENCODE_CONFIGURATION_TOOL, RUNTIME_CATALOG_TOOL,
-        SYSTEM_SUMMARY_TOOL, ToolCallResultStatus,
+        ENVIRONMENT_DIAGNOSTICS_TOOL, EXTERNAL_AGENT_STATUS_TOOL, MODEL_CATALOG_SEARCH_TOOL,
+        MODEL_REPOSITORY_INSPECTION_TOOL, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
+        PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+        PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+        PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL,
+        PLAN_MODEL_REMOVAL_TOOL, PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
+        ToolCallResultStatus,
     };
 
     use super::*;
@@ -507,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn authorizes_only_exact_engine_and_opencode_targets() {
+    fn authorizes_only_exact_engine_targets() {
         for (tool_name, target, expected) in [
             (
                 PLAN_ENGINE_INSTALL_TOOL,
@@ -518,16 +591,6 @@ mod tests {
                 PLAN_ENGINE_REMOVE_TOOL,
                 "llama.cpp",
                 AuthorizedAgentTool::PlanEngineRemove,
-            ),
-            (
-                OPENCODE_STATUS_TOOL,
-                "opencode",
-                AuthorizedAgentTool::InspectOpenCodeStatus,
-            ),
-            (
-                PLAN_OPENCODE_CONFIGURATION_TOOL,
-                "opencode",
-                AuthorizedAgentTool::PlanOpenCodeConfiguration,
             ),
         ] {
             let mut request = allowed_request(json!({ "target": target }));
@@ -549,10 +612,67 @@ mod tests {
     }
 
     #[test]
-    fn rust_argument_policy_matches_shared_v4_fixtures() {
+    fn authorizes_only_registered_external_agent_integrations() {
+        for (tool_name, expected) in [
+            (
+                EXTERNAL_AGENT_STATUS_TOOL,
+                AuthorizedAgentTool::InspectExternalAgent {
+                    integration_id: ExternalAgentIntegrationId::PiCodingAgent,
+                },
+            ),
+            (
+                PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+                AuthorizedAgentTool::PlanExternalAgentConfiguration {
+                    integration_id: ExternalAgentIntegrationId::PiCodingAgent,
+                },
+            ),
+            (
+                PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
+                AuthorizedAgentTool::PlanExternalAgentDisconnection {
+                    integration_id: ExternalAgentIntegrationId::PiCodingAgent,
+                },
+            ),
+            (
+                PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+                AuthorizedAgentTool::PlanExternalAgentInstallation {
+                    integration_id: ExternalAgentIntegrationId::PiCodingAgent,
+                },
+            ),
+            (
+                PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
+                AuthorizedAgentTool::PlanManagedExternalAgentRemoval {
+                    integration_id: ExternalAgentIntegrationId::PiCodingAgent,
+                },
+            ),
+        ] {
+            let mut request = allowed_request(json!({ "integrationId": "pi-coding-agent" }));
+            request.tool_name = tool_name.to_owned();
+            assert_eq!(
+                AgentToolPolicy.authorize(&request).expect("allowed"),
+                expected
+            );
+
+            for arguments in [
+                json!({ "integrationId": "unknown-agent" }),
+                json!({ "integrationId": "pi-coding-agent", "force": true }),
+            ] {
+                request.arguments = arguments;
+                assert_eq!(
+                    AgentToolPolicy
+                        .authorize(&request)
+                        .expect_err("rejected")
+                        .code,
+                    "invalid_arguments"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rust_argument_policy_matches_shared_v9_fixtures() {
         let manifest: Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v4-tools.json"))
-                .expect("shared Agent RPC v4 tool policy");
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v9-tools.json"))
+                .expect("shared Agent RPC v9 tool policy");
         let tools = manifest["tools"].as_array().expect("tool policy array");
         assert_eq!(tools.len(), AgentCapabilityRegistry::all().len());
 

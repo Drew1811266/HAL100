@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use hal100_core::ExternalAgentIntegrationId;
 use hal100_protocol::{AgentActionKind, AgentActionPlan};
 
 const MAX_ACTION_PLAN_ID_CHARS: usize = 128;
@@ -34,8 +35,21 @@ pub(super) enum AgentActionExecutor {
         removal_plan_id: String,
         model_id: String,
     },
-    ConfigureOpenCode {
-        configuration_plan_id: String,
+    InstallExternalAgent {
+        integration_id: ExternalAgentIntegrationId,
+        deployment_plan_id: String,
+    },
+    RemoveExternalAgent {
+        integration_id: ExternalAgentIntegrationId,
+        deployment_plan_id: String,
+    },
+    ConfigureExternalAgent {
+        integration_id: ExternalAgentIntegrationId,
+        integration_plan_id: String,
+    },
+    DisconnectExternalAgent {
+        integration_id: ExternalAgentIntegrationId,
+        integration_plan_id: String,
     },
 }
 
@@ -114,7 +128,10 @@ pub(super) const fn action_kind_key(kind: AgentActionKind) -> &'static str {
         AgentActionKind::InstallLlamaCpp => "install_llama_cpp",
         AgentActionKind::RemoveLlamaCpp => "remove_llama_cpp",
         AgentActionKind::RemoveModel => "remove_model",
-        AgentActionKind::ConfigureOpenCode => "configure_opencode",
+        AgentActionKind::InstallExternalAgent => "install_external_agent",
+        AgentActionKind::RemoveExternalAgent => "remove_external_agent",
+        AgentActionKind::ConfigureExternalAgent => "configure_external_agent",
+        AgentActionKind::DisconnectExternalAgent => "disconnect_external_agent",
     }
 }
 

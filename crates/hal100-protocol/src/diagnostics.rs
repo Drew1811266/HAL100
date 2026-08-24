@@ -25,13 +25,16 @@ pub enum DiagnosticComponent {
     InferenceEngine,
     ModelLibrary,
     OpenCode,
+    PiCodingAgent,
+    OpenClaw,
+    HermesAgent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticRepairKind {
     InstallLlamaCpp,
-    ConfigureOpenCode,
+    ConfigureExternalAgent,
     RemoveModelIndex,
 }
 
@@ -62,6 +65,9 @@ pub struct EnvironmentDiagnosticReport {
     pub configured_backend_count: u32,
     pub open_code_installed: bool,
     pub open_code_integration_state: OpenCodeIntegrationState,
+    pub installed_external_agent_count: u32,
+    pub configured_external_agent_count: u32,
+    pub attention_external_agent_count: u32,
     pub warning_count: u32,
     pub error_count: u32,
     pub omitted_finding_count: u32,
