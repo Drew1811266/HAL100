@@ -5,7 +5,7 @@
 <h1 align="center">HAL100</h1>
 
 <p align="center">
-  面向本地 AI 的桌面控制中心：统一管理模型、推理后端、客户端接入与精确 Token 用量。
+  面向本地 AI 的桌面控制中心：统一管理模型、推理服务、软件接入、受控 Agent 与精确 Usage。
 </p>
 
 <p align="center">
@@ -15,26 +15,40 @@
   <img alt="UI: Chinese" src="https://img.shields.io/badge/UI-%E4%B8%AD%E6%96%87-4F7561">
 </p>
 
-HAL100 不是通用聊天客户端。它是运行在用户电脑上的本地 AI 控制平面：负责下载和管理 GGUF 模型、托管或连接推理引擎，通过统一 Gateway 为 OpenCode、Pi Coding Agent、OpenClaw、Hermes Agent 等软件提供模型服务，并按客户端记录后端返回的精确 Token 用量。
+HAL100 不是通用聊天客户端，也不是另一个 Coding Agent。它是运行在用户电脑上的本地 AI 控制平面：负责下载和管理 GGUF 模型、托管或连接推理服务，通过统一 Gateway 为 OpenCode、Pi Coding Agent、OpenClaw、Hermes Agent 等软件提供模型，并按客户端记录推理后端返回的精确 Token 用量。
 
-内置 HAL100 Agent 使用本地小模型与 [Pi Agent Core](https://github.com/earendil-works/pi) 帮助用户诊断和配置本地推理环境；Pi 负责推理，Rust Core 始终是唯一授权与执行权威。
+内置 HAL100 Agent 使用本地小模型与 [Pi Agent Core](https://github.com/earendil-works/pi) 帮助用户诊断、部署、配置和调试 HAL100 环境。Pi Agent Core 只负责任务与工具调用编排；模型请求统一经过 Gateway，Rust Core 始终是唯一授权与执行权威。
 
 > [!WARNING]
 > HAL100 当前版本为 `1.0.3` 早期开发版，仅用于 Apple Silicon Mac 内部开发测试。项目暂不提供签名、公证或正式安装包，也不支持 Intel Mac。Windows 10/11 目前只保留架构兼容边界，尚未实现。
 
-![HAL100 总览界面](docs/images/hal100-overview.png)
+## 当前开发版
+
+`1.0.3` 已完成当前五个业务入口、独立设置入口和用量统计闭环。界面仍在快速迭代，README 不再嵌入容易过期的页面截图；实际页面、交互和验收状态以当前源码、[UI/UX 规范](docs/UI_UX_SPEC.md)与[开发路线图](docs/ROADMAP.md)为准。
+
+| 入口 | 当前职责 |
+| --- | --- |
+| 首页 | 根据模型与运行时的真实状态，显示一个优先事项和推荐下一步 |
+| 模型与运行 | 管理模型、HAL100 托管运行时、外部推理服务与模型测试 |
+| 软件接入 | 检测、配置和断开 OpenCode、Pi、OpenClaw、Hermes 及通用客户端 |
+| Agent | 诊断环境、检查部署状态并生成由 Rust 执行的受控操作计划 |
+| 活动 | 分别查看精确 Token 用量和最近 50 条受控操作记录 |
+| 设置 | 管理下载来源、启动行为、外观、本机数据保留策略与版本信息 |
+
+用量页以同一时间范围和筛选条件驱动摘要、客户端分布、趋势、Token 构成与明细；支持年、月、周、天四档，折线分别显示输入（缓存命中）、输入（缓存未命中）与输出，全年活动图固定展示过去 365 天并可联动单日数据。
 
 ## 主要能力
 
 | 能力 | 当前实现 |
 | --- | --- |
 | 模型管理 | 从 Hugging Face 或 ModelScope 搜索公开 GGUF，支持断点下载、哈希与 GGUF 校验、原子安装；本地 GGUF 可只读导入索引 |
-| 推理引擎 | 安装和管理固定、可校验的 Apple Silicon `llama.cpp`；连接外部 Ollama、vLLM、llama.cpp Server 及 OpenAI/Anthropic 兼容后端 |
+| 推理服务 | 安装和管理固定、可校验的 Apple Silicon `llama.cpp`；连接外部 Ollama、vLLM、llama.cpp Server 及 OpenAI/Anthropic 兼容后端 |
 | 本地 Gateway | 固定回环入口，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、SSE、Tool Calling 与取消 |
 | 路由与切换 | `hal100-active` 活动模型、模型别名、安全排空切换、经原生确认的强制切换与故障关闭 |
 | 软件接入 | 专门适配 OpenCode、Pi Coding Agent、OpenClaw 与 Hermes Agent；每个客户端拥有独立配置、凭据、Usage 身份和可逆断开流程，同时支持通用 OpenAI/Anthropic 客户端 |
-| Token 统计 | 使用推理后端返回的 Usage 记录精确输入、缓存输入和输出 Token，并按客户端、模型、后端和时间归类 |
-| HAL100 Agent | 本地 Qwen 默认运行；可按用户选择使用单次云端增强或当前内存会话，支持四客户端环境诊断、脱敏运维历史、部署就绪短时观测，以及固定依赖闭包的Pi私有安装和可恢复私有卸载等受控操作计划 |
+| 用量统计 | 年/月/周/天统一范围；按客户端、模型、后端和状态筛选；独立统计缓存命中输入、缓存未命中输入和输出，并提供全年 365 天请求活动图 |
+| 操作记录 | 界面加载最近 50 条受控操作，支持类型筛选、搜索和脱敏详情；历史数据继续按用户设置的本机保留策略管理 |
+| HAL100 Agent | 本地 Qwen 默认运行；可由用户主动选择单次云端或当前内存会话，支持环境诊断、公开模型发现、部署观测，以及模型、引擎和外部 Agent 的受控计划 |
 | 后台运行 | 系统托盘、隐藏并复用主 WebView、按需启动 Sidecar/模型运行时，空闲时不轮询模型、统计或审计数据 |
 
 ## HAL100 如何工作
@@ -47,7 +61,9 @@ flowchart LR
     Router --> Local["外部 Ollama / vLLM / llama.cpp"]
     Router --> Cloud["OpenAI / Anthropic 兼容后端"]
     Gateway --> Usage["Usage Collector"]
+    Core --> Audit["Audit Events"]
     Usage --> SQLite[("SQLite WAL")]
+    Audit --> SQLite
 
     UI["React WebView"] -->|Tauri IPC| Core["Rust Core"]
     Core --> Runtime["模型与引擎管理器"]
@@ -69,7 +85,10 @@ HAL100 Agent 只负责 HAL100、本地模型和推理环境，不作为通用聊
 - Pi Sidecar 不持有云端 API Key，不直接连接推理后端，也不能执行任意 Shell、文件或进程操作。
 - Agent 只能调用 HAL100 暴露的固定工具；Rust 会重新校验工具、参数、现实状态和请求关联。
 - 安装、卸载、删除、配置写入和强制切换始终需要 Rust 发起的原生确认。
-- 当前 Agent 可诊断环境、发现模型并生成受控的模型下载、启动、切换、单项修复、Pi私有安装和私有卸载计划；Pi安装固定官方归档与完整npm依赖闭包，私有卸载只进入系统废纸篓且不触碰用户Pi、配置或会话。所有写操作仍由确定性 Rust 执行器和原生确认约束。
+- 当前 Agent 可诊断环境、读取脱敏运维历史、执行短时部署观测、搜索公开模型目录，并生成模型下载、启动、切换、单项修复、外部 Agent 配置/断开以及 Pi 私有安装/卸载计划。
+- 模型搜索最多返回有界公开目录元数据；下载必须命中同一任务的可信文件快照，仍由 Rust 复验并在原生确认后执行。
+- Pi 私有安装固定官方归档与完整 npm 依赖闭包；私有卸载只处理 HAL100 所有的运行时并移入系统废纸篓，不触碰用户安装的 Pi、配置、凭据或会话。
+- OpenCode、Pi Coding Agent、OpenClaw 与 Hermes Agent 均支持独立检测、配置预览、确认写入和精确断开；当前只有 Pi 提供 HAL100 受管安装配方。
 
 详见[受控 Agent 架构决策](docs/adr/0004-controlled-agent.md)、[安全设计](docs/SECURITY.md)和[第三方 Agent 依赖登记](docs/THIRD_PARTY_AGENT_DEPENDENCIES.md)。
 
@@ -199,7 +218,8 @@ HAL100 的常驻核心与按需推理进程分离。窗口隐藏、无模型和�
 - 项目尚无签名、公证、自动更新或正式发行包。
 - Windows 版本尚未开发。
 - Agent 模型权重、用户模型和推理引擎二进制不会提交到源码仓库。
-- Agent 不能搜索或下载模型，也不能执行任意 Shell。
+- Agent 不能执行任意 Shell、任意路径文件操作或通用桌面自动化；模型搜索与下载只能通过有界目录、一次性计划、Rust 复验和原生确认完成。
+- OpenCode、OpenClaw 与 Hermes Agent 暂无 HAL100 受管安装配方；HAL100 只管理其已明确预览和确认的接入配置。
 - 正式 App Sandbox/平台沙箱和自包含 Sidecar 仍属于后续工作。
 - 当前持续迭代同一个开发版，不在每个阶段制作安装包。
 
@@ -217,9 +237,13 @@ HAL100 的常驻核心与按需推理进程分离。窗口隐藏、无模型和�
 | [模型管理](docs/MODEL_MANAGEMENT.md) | GGUF 搜索、下载、导入、所有权与删除语义 |
 | [Gateway 开发说明](docs/GATEWAY_DEVELOPMENT.md) | 协议、认证、端口、路由和开发配置 |
 | [OpenCode 集成](docs/OPENCODE_INTEGRATION.md) | 检测、预览、备份、配置与回滚 |
+| [Pi Coding Agent 集成](docs/PI_CODING_AGENT_INTEGRATION.md) | 用户安装、HAL100 私有运行时、配置与凭据隔离 |
+| [OpenClaw 集成](docs/OPENCLAW_INTEGRATION.md) | 三协议接入、配置所有权与断开语义 |
+| [Hermes Agent 集成](docs/HERMES_AGENT_INTEGRATION.md) | Provider 配置、上下文约束与隔离验收 |
 | [UI/UX 规范](docs/UI_UX_SPEC.md) | 中文界面、交互、主题和确认规范 |
 | [内部测试说明](docs/INTERNAL_TESTING.md) | 内部测试流程、场景和问题分级 |
 | [开发路线图](docs/ROADMAP.md) | 迭代状态与后续工作 |
+| [更新记录](CHANGELOG.md) | 各开发版本的主要变化与版本边界 |
 | [架构决策记录](docs/adr/README.md) | 已接受的关键技术决策 |
 
 ## 上游项目
