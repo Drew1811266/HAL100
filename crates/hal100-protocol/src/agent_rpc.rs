@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::AgentProviderProtocol;
 
-pub const AGENT_RPC_VERSION: u16 = 9;
+pub const AGENT_RPC_VERSION: u16 = 12;
 pub const AGENT_RPC_MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const AGENT_RPC_MAX_REQUIRED_TOOLS: usize = 4;
 pub const AGENT_RPC_MAX_ACTION_PLANS: usize = 1;
@@ -29,6 +29,39 @@ pub struct AgentRunStartPayload {
     pub api_key: String,
     pub model_id: String,
     pub provider_protocol: AgentProviderProtocol,
+    pub context_window_tokens: u32,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntentStartPayload {
+    pub prompt: String,
+    pub gateway_base_url: String,
+    pub api_key: String,
+    pub model_id: String,
+    pub provider_protocol: AgentProviderProtocol,
+    pub context_window_tokens: u32,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentIntentCompletionStatus {
+    Proposed,
+    Invalid,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentIntentCompletedPayload {
+    pub run_id: String,
+    pub status: AgentIntentCompletionStatus,
+    #[serde(default)]
+    pub proposal: Option<Value>,
+    #[serde(default)]
+    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -39,6 +72,27 @@ pub struct AgentRunCompletedPayload {
     pub registered_tool_count: u8,
     pub completed_tool_calls: u32,
     pub tool_names: Vec<String>,
+    pub efficiency: AgentRunEfficiencyPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentRunEfficiencyPayload {
+    pub context_window_tokens: u32,
+    pub max_output_tokens: u32,
+    pub execution_model_turn_count: u32,
+    pub continuation_prompt_count: u32,
+    pub provider_usage_available: bool,
+    pub reported_input_tokens: u64,
+    pub reported_output_tokens: u64,
+    pub peak_reported_input_tokens: u64,
+    pub peak_estimated_input_tokens: u64,
+    pub task_system_prompt_bytes: u64,
+    pub compacted_turn_count: u32,
+    pub sent_tool_result_bytes: u64,
+    pub sent_tool_result_token_estimate: u64,
+    pub repeated_tool_result_bytes: u64,
+    pub repeated_tool_result_token_estimate: u64,
 }
 
 #[derive(Debug, Error)]
@@ -179,29 +233,34 @@ mod tests {
             api_key: "local-transient-session-key".to_owned(),
             model_id: "hal100-agent-cloud-test".to_owned(),
             provider_protocol: AgentProviderProtocol::CloudAnthropic,
+            context_window_tokens: 128_000,
+            max_output_tokens: 2_048,
         };
         let value = serde_json::to_value(payload).expect("Agent start payload");
         assert_eq!(value["providerProtocol"], "cloudAnthropic");
         assert_eq!(value["modelId"], "hal100-agent-cloud-test");
         assert_eq!(value["requiredTools"].as_array().map(Vec::len), Some(2));
+        assert_eq!(value["contextWindowTokens"], 128_000);
+        assert_eq!(value["maxOutputTokens"], 2_048);
         assert!(value.get("requiresRuntimeCatalog").is_none());
         assert!(value.get("backendApiKey").is_none());
     }
 
     #[test]
-    fn rpc_version_matches_the_shared_v9_envelope_schema() {
+    fn rpc_version_matches_the_shared_v12_envelope_schema() {
         let schema: serde_json::Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v9.schema.json"))
-                .expect("shared Agent RPC v9 schema");
-        assert_eq!(schema["properties"]["protocolVersion"]["const"], 9);
-        assert_eq!(AGENT_RPC_VERSION, 9);
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v12.schema.json"))
+                .expect("shared Agent RPC v12 schema");
+        assert_eq!(schema["properties"]["protocolVersion"]["const"], 12);
+        assert_eq!(AGENT_RPC_VERSION, 12);
     }
 
     #[test]
-    fn rpc_limits_match_the_shared_v9_tool_policy() {
+    fn rpc_limits_match_the_shared_v12_tool_policy() {
         let manifest: serde_json::Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v9-tools.json"))
-                .expect("shared Agent RPC v9 tool policy");
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v12-tools.json"))
+                .expect("shared Agent RPC v12 tool policy");
+        assert_eq!(manifest["protocolVersion"], AGENT_RPC_VERSION);
         assert_eq!(
             manifest["limits"]["maxRequiredTools"],
             AGENT_RPC_MAX_REQUIRED_TOOLS
@@ -219,6 +278,31 @@ mod tests {
                 .as_u64()
                 .expect("tool result budget")
                 < AGENT_RPC_MAX_FRAME_BYTES as u64
+        );
+    }
+
+    #[test]
+    fn intent_completion_payload_rejects_unbounded_extra_fields() {
+        let valid: AgentIntentCompletedPayload = serde_json::from_value(serde_json::json!({
+            "runId": "run-intent-1",
+            "status": "proposed",
+            "proposal": {
+                "schemaVersion": 1,
+                "disposition": "task",
+                "taskKind": "inspect_system"
+            }
+        }))
+        .expect("bounded intent completion");
+        assert_eq!(valid.status, AgentIntentCompletionStatus::Proposed);
+
+        assert!(
+            serde_json::from_value::<AgentIntentCompletedPayload>(serde_json::json!({
+                "runId": "run-intent-1",
+                "status": "invalid",
+                "errorCode": "invalid_intent_output",
+                "rawOutput": "arbitrary model text"
+            }))
+            .is_err()
         );
     }
 }

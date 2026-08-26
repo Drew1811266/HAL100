@@ -1,3 +1,4 @@
+import { proposePiIntent, validateAgentIntentRequest } from "./agent-intent.js";
 import { AgentRunFailure, runPiAgent, validateAgentRunRequest } from "./agent-run.js";
 import { probePiKernel } from "./pi-boundary.js";
 import { runPiToolSimulation } from "./pi-tool-simulation.js";
@@ -13,6 +14,7 @@ const decoder = new AgentRpcFrameDecoder();
 const piKernelStatus = probePiKernel();
 const toolBridge = new ToolBrokerBridge(reply);
 let activeSimulationId: string | undefined;
+let activeIntentId: string | undefined;
 let activeRunId: string | undefined;
 let shuttingDown = false;
 
@@ -54,7 +56,7 @@ function handle(envelope: AgentRpcEnvelope): void {
   }
 
   if (envelope.kind === "agent.simulation.start") {
-    if (activeSimulationId || activeRunId) {
+    if (activeSimulationId || activeIntentId || activeRunId) {
       reply({
         protocolVersion: AGENT_RPC_VERSION,
         id: envelope.id,
@@ -92,8 +94,61 @@ function handle(envelope: AgentRpcEnvelope): void {
     return;
   }
 
+  if (envelope.kind === "agent.intent.start") {
+    if (activeSimulationId || activeIntentId || activeRunId) {
+      reply({
+        protocolVersion: AGENT_RPC_VERSION,
+        id: envelope.id,
+        kind: "system.error",
+        payload: { code: "agent_busy" },
+      });
+      return;
+    }
+
+    try {
+      const request = validateAgentIntentRequest(envelope.payload as never);
+      activeIntentId = envelope.id;
+      void proposePiIntent(request)
+        .then((result) => {
+          if (!shuttingDown) {
+            reply({
+              protocolVersion: AGENT_RPC_VERSION,
+              id: envelope.id,
+              kind: "agent.intent.completed",
+              payload: { runId: envelope.id, ...result },
+            });
+          }
+        })
+        .catch(() => {
+          if (!shuttingDown) {
+            reply({
+              protocolVersion: AGENT_RPC_VERSION,
+              id: envelope.id,
+              kind: "agent.intent.completed",
+              payload: {
+                runId: envelope.id,
+                status: "failed",
+                errorCode: "model_request_failed",
+              },
+            });
+          }
+        })
+        .finally(() => {
+          activeIntentId = undefined;
+        });
+    } catch {
+      reply({
+        protocolVersion: AGENT_RPC_VERSION,
+        id: envelope.id,
+        kind: "system.error",
+        payload: { code: "invalid_agent_intent" },
+      });
+    }
+    return;
+  }
+
   if (envelope.kind === "agent.run.start") {
-    if (activeSimulationId || activeRunId) {
+    if (activeSimulationId || activeIntentId || activeRunId) {
       reply({
         protocolVersion: AGENT_RPC_VERSION,
         id: envelope.id,

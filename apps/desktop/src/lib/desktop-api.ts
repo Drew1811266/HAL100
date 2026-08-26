@@ -637,6 +637,185 @@ export interface ModelTestResult {
 
 export type AgentComponentState = "unavailable" | "stopped" | "starting" | "running" | "error";
 
+export interface AgentIntentShadowMetrics {
+  sampleCount: number;
+  deterministicResolvedCount: number;
+  piRequestedCount: number;
+  piProposedCount: number;
+  piInvalidCount: number;
+  piFailedCount: number;
+  piRejectedCount: number;
+  piProtocolErrorCount: number;
+  agreementCount: number;
+  deterministicGuardCount: number;
+  deterministicOnlyCount: number;
+  proposalCandidateCount: number;
+  conflictCount: number;
+  unresolvedCount: number;
+  cumulativePiLatencyMs: number;
+  maxPiLatencyMs: number;
+  lastPiLatencyMs: number | null;
+  lastProposalStatus:
+    | "notRequested"
+    | "proposed"
+    | "invalid"
+    | "failed"
+    | "rejected"
+    | "protocolError"
+    | null;
+  lastAdjudicationOutcome:
+    | "agreement"
+    | "deterministicGuard"
+    | "deterministicOnly"
+    | "proposalCandidate"
+    | "conflict"
+    | "unresolved"
+    | null;
+  updatedAtMs: number | null;
+}
+
+export type AgentTaskRoutingMode = "controlled" | "safeLegacy";
+export type AgentTaskRoutingDecision =
+  | "structuredDeterministic"
+  | "structuredPi"
+  | "guardedResponse"
+  | "safeLegacyDeterministic"
+  | "legacyNoToolFallback"
+  | "failClosed";
+
+export interface AgentTaskRoutingMetrics {
+  sampleCount: number;
+  structuredDeterministicCount: number;
+  structuredPiCount: number;
+  guardedResponseCount: number;
+  safeLegacyDeterministicCount: number;
+  legacyNoToolFallbackCount: number;
+  failClosedCount: number;
+  lastDecision: AgentTaskRoutingDecision | null;
+  updatedAtMs: number | null;
+}
+
+export type AgentTaskCheckpointPhase =
+  | "draft"
+  | "clarifying"
+  | "inspecting"
+  | "planning"
+  | "awaitingConfirmation"
+  | "executing"
+  | "verifying"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "cancelled";
+
+export type AgentTaskVerificationState =
+  | "notStarted"
+  | "pending"
+  | "satisfied"
+  | "unsatisfied"
+  | "evidenceUnavailable"
+  | "failed";
+export type AgentTaskRecoveryScope = "none" | "inProcessClarification" | "inProcessConfirmation";
+export type AgentClarificationKind =
+  | "externalAgentTarget"
+  | "managedOwnership"
+  | "singleMutationTarget";
+export type AgentClarificationChoice =
+  | "selectExternalAgent"
+  | "removeManagedRuntime"
+  | "disconnectOnly"
+  | "cancel";
+export type AgentExternalAgentChoice = "openCode" | "piCodingAgent" | "openClaw" | "hermesAgent";
+export type AgentTaskEvidenceSource =
+  | "systemProbe"
+  | "runtimeCatalog"
+  | "environmentDiagnostics"
+  | "operationalHistory"
+  | "operationalHealth"
+  | "modelCatalog"
+  | "modelRepository"
+  | "externalIntegrationStatus"
+  | "actionPlan"
+  | "runtimeRecheck"
+  | "modelLibraryRecheck"
+  | "engineRecheck"
+  | "integrationRecheck"
+  | "managedInstallationRecheck"
+  | "repairDiagnosticRecheck";
+
+export interface AgentTaskCheckpoint {
+  schemaVersion: 3;
+  phase: AgentTaskCheckpointPhase;
+  checkpointSequence: number;
+  taskKind: string;
+  targetKind: string;
+  desiredState: string;
+  providerMode: string;
+  dataScope: string;
+  successPredicate: string;
+  pendingActionPlan: boolean;
+  nativeConfirmationRequired: boolean;
+  verificationState: AgentTaskVerificationState;
+  evidenceSource: AgentTaskEvidenceSource | null;
+  evidenceObservationCount: number;
+  replanAttemptCount: number;
+  maxReplanAttempts: number;
+  clarificationKind: AgentClarificationKind | null;
+  clarificationAttemptCount: number;
+  maxClarificationAttempts: number;
+  clarificationExpiresAtMs: number | null;
+  recoveryScope: AgentTaskRecoveryScope;
+  updatedAtMs: number;
+}
+
+export type AgentTaskGraphCheckpointState =
+  | "active"
+  | "succeeded"
+  | "failed"
+  | "compensating"
+  | "compensated"
+  | "cancelled";
+export type AgentTaskGraphNodeCheckpointState =
+  | "blocked"
+  | "ready"
+  | "running"
+  | "awaitingConfirmation"
+  | "succeeded"
+  | "failed"
+  | "compensating"
+  | "compensated"
+  | "cancelled";
+
+export interface AgentTaskGraphNodeCheckpoint {
+  nodeIndex: number;
+  state: AgentTaskGraphNodeCheckpointState;
+  taskKind: string;
+  targetKind: string;
+  successPredicate: string;
+  dependencyIndexes: number[];
+  evidenceSource: AgentTaskEvidenceSource | null;
+  changedOwnedState: boolean;
+  requiresReauthorization: boolean;
+}
+
+export interface AgentTaskGraphCheckpoint {
+  schemaVersion: 1;
+  checkpointSequence: number;
+  state: AgentTaskGraphCheckpointState;
+  nodes: AgentTaskGraphNodeCheckpoint[];
+  readyNodeCount: number;
+  succeededNodeCount: number;
+  updatedAtMs: number;
+}
+
+export type AgentTaskGraphKind = "prepareExternalAgent" | "prepareManagedPi";
+
+export interface AgentTaskGraphStartRequest {
+  kind: AgentTaskGraphKind;
+  modelId: string;
+  externalAgent: AgentExternalAgentChoice | null;
+}
+
 export interface AgentStatus {
   kernelState: AgentComponentState;
   modelRuntimeState: AgentComponentState;
@@ -644,10 +823,20 @@ export interface AgentStatus {
   modelName: string;
   modelPrepared: boolean;
   modelSizeBytes: number;
+  capacityTier: string;
+  contextWindowTokens: number;
+  availableInputTokensBeforeReserve: number;
+  maxOutputTokens: number;
   idleTimeoutSeconds: number;
   activeRunId: string | null;
   cancellationRequested: boolean;
   lastErrorCode: string | null;
+  intentShadowMetrics: AgentIntentShadowMetrics;
+  taskRoutingMode: AgentTaskRoutingMode;
+  taskRoutingMetrics: AgentTaskRoutingMetrics;
+  taskCheckpoint: AgentTaskCheckpoint | null;
+  taskGraphCheckpoint: AgentTaskGraphCheckpoint | null;
+  recoverableTaskGraphCheckpoint: AgentTaskGraphCheckpoint | null;
 }
 
 export type EnvironmentHealthStatus = "healthy" | "needsAttention" | "error";
@@ -699,6 +888,26 @@ export interface EnvironmentDiagnosticReport {
 
 export interface AgentPromptRequest {
   prompt: string;
+  cloudTarget: AgentCloudTarget | null;
+}
+
+export interface AgentClarificationOption {
+  choice: AgentClarificationChoice;
+  externalAgent: AgentExternalAgentChoice | null;
+}
+
+export interface AgentClarification {
+  kind: AgentClarificationKind;
+  options: AgentClarificationOption[];
+  attemptCount: number;
+  maxAttempts: number;
+  expiresAtMs: number;
+}
+
+export interface AgentClarificationAnswerRequest {
+  kind: AgentClarificationKind;
+  choice: AgentClarificationChoice;
+  externalAgent: AgentExternalAgentChoice | null;
   cloudTarget: AgentCloudTarget | null;
 }
 
@@ -764,13 +973,36 @@ export interface AgentRunResult {
   answer: string;
   toolEvents: AgentToolEvent[];
   actionPlans: AgentActionPlan[];
+  clarification: AgentClarification | null;
+  efficiency: AgentRunEfficiency;
   modelName: string;
   startedAtMs: number;
   completedAtMs: number;
 }
 
+export interface AgentRunEfficiency {
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  intentModelTurnCount: number;
+  executionModelTurnCount: number;
+  totalModelTurnCount: number;
+  continuationPromptCount: number;
+  providerUsageAvailable: boolean;
+  reportedInputTokens: number;
+  reportedOutputTokens: number;
+  peakReportedInputTokens: number;
+  peakEstimatedInputTokens: number;
+  taskSystemPromptBytes: number;
+  compactedTurnCount: number;
+  sentToolResultBytes: number;
+  sentToolResultTokenEstimate: number;
+  repeatedToolResultBytes: number;
+  repeatedToolResultTokenEstimate: number;
+}
+
 export type AgentActionKind =
   | "startOrSwitchModel"
+  | "stopModel"
   | "downloadModel"
   | "removeModel"
   | "installLlamaCpp"
@@ -805,8 +1037,8 @@ export interface AgentActionResult {
 
 const developmentOverview: AppOverview = {
   appName: "HAL100",
-  version: "1.0.3",
-  phase: "迭代 22 · 版本化受管部署配方",
+  version: "1.0.4",
+  phase: "1.0.4 · 开发初期",
   gatewayState: "运行中",
   databaseState: "已就绪",
   platform: {
@@ -889,7 +1121,7 @@ const browserPiCodingAgentDetection: ExternalAgentDetection = {
   configExists: false,
   integrationState: "notInstalled",
   configuredProtocol: null,
-  modelProfileRevision: "managed-route-v1",
+  modelProfileRevision: "managed-route-v3",
   warnings: ["当前是浏览器预览模式，不会读取或修改本机配置。"],
 };
 
@@ -903,7 +1135,7 @@ const browserOpenClawDetection: ExternalAgentDetection = {
   configExists: false,
   integrationState: "notInstalled",
   configuredProtocol: null,
-  modelProfileRevision: "managed-route-v1",
+  modelProfileRevision: "managed-route-v3",
   warnings: ["当前是浏览器预览模式，不会读取或修改本机配置。"],
 };
 
@@ -917,7 +1149,7 @@ const browserHermesAgentDetection: ExternalAgentDetection = {
   configExists: false,
   integrationState: "notInstalled",
   configuredProtocol: null,
-  modelProfileRevision: "managed-route-v1",
+  modelProfileRevision: "managed-route-v3",
   warnings: ["当前是浏览器预览模式，不会读取或修改本机配置。"],
 };
 
@@ -1071,10 +1303,51 @@ const browserAgentStatus: AgentStatus = {
   modelName: "Qwen3.5-2B Q4_K_M",
   modelPrepared: true,
   modelSizeBytes: 1_280_835_840,
+  capacityTier: "standard32k",
+  contextWindowTokens: 32_768,
+  availableInputTokensBeforeReserve: 28_672,
+  maxOutputTokens: 768,
   idleTimeoutSeconds: 120,
   activeRunId: null,
   cancellationRequested: false,
   lastErrorCode: null,
+  intentShadowMetrics: {
+    sampleCount: 0,
+    deterministicResolvedCount: 0,
+    piRequestedCount: 0,
+    piProposedCount: 0,
+    piInvalidCount: 0,
+    piFailedCount: 0,
+    piRejectedCount: 0,
+    piProtocolErrorCount: 0,
+    agreementCount: 0,
+    deterministicGuardCount: 0,
+    deterministicOnlyCount: 0,
+    proposalCandidateCount: 0,
+    conflictCount: 0,
+    unresolvedCount: 0,
+    cumulativePiLatencyMs: 0,
+    maxPiLatencyMs: 0,
+    lastPiLatencyMs: null,
+    lastProposalStatus: null,
+    lastAdjudicationOutcome: null,
+    updatedAtMs: null,
+  },
+  taskRoutingMode: "controlled",
+  taskRoutingMetrics: {
+    sampleCount: 0,
+    structuredDeterministicCount: 0,
+    structuredPiCount: 0,
+    guardedResponseCount: 0,
+    safeLegacyDeterministicCount: 0,
+    legacyNoToolFallbackCount: 0,
+    failClosedCount: 0,
+    lastDecision: null,
+    updatedAtMs: null,
+  },
+  taskCheckpoint: null,
+  taskGraphCheckpoint: null,
+  recoverableTaskGraphCheckpoint: null,
 };
 
 const browserEnvironmentDiagnostics: EnvironmentDiagnosticReport = {
@@ -1139,6 +1412,35 @@ export async function getAgentStatus(): Promise<AgentStatus> {
   return invoke<AgentStatus>("get_agent_status");
 }
 
+export async function startAgentTaskGraph(
+  request: AgentTaskGraphStartRequest,
+): Promise<AgentTaskGraphCheckpoint> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会创建复合 Agent 任务");
+  return invoke<AgentTaskGraphCheckpoint>("start_agent_task_graph", { request });
+}
+
+export async function restoreAgentTaskGraph(
+  request: AgentTaskGraphStartRequest,
+): Promise<AgentTaskGraphCheckpoint> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会恢复复合 Agent 任务");
+  return invoke<AgentTaskGraphCheckpoint>("restore_agent_task_graph", { request });
+}
+
+export async function runNextAgentTaskGraphNode(): Promise<AgentRunResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会运行复合 Agent 任务");
+  return invoke<AgentRunResult>("run_next_agent_task_graph_node");
+}
+
+export async function runNextAgentTaskGraphCompensation(): Promise<AgentRunResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会运行复合 Agent 补偿");
+  return invoke<AgentRunResult>("run_next_agent_task_graph_compensation");
+}
+
+export async function cancelAgentTaskGraph(): Promise<AgentStatus> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式没有复合 Agent 任务");
+  return invoke<AgentStatus>("cancel_agent_task_graph");
+}
+
 export async function getEnvironmentDiagnostics(): Promise<EnvironmentDiagnosticReport> {
   if (!isTauriRuntime()) return { ...browserEnvironmentDiagnostics, generatedAtMs: Date.now() };
   return invoke<EnvironmentDiagnosticReport>("get_environment_diagnostics");
@@ -1147,6 +1449,13 @@ export async function getEnvironmentDiagnostics(): Promise<EnvironmentDiagnostic
 export async function runAgentPrompt(request: AgentPromptRequest): Promise<AgentRunResult> {
   if (!isTauriRuntime()) throw new Error("浏览器预览模式不会启动本地 Agent");
   return invoke<AgentRunResult>("run_agent_prompt", { request });
+}
+
+export async function continueAgentClarification(
+  request: AgentClarificationAnswerRequest,
+): Promise<AgentRunResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会继续本地 Agent 澄清任务");
+  return invoke<AgentRunResult>("continue_agent_clarification", { request });
 }
 
 export async function previewAgentCloudRun(
@@ -1892,7 +2201,7 @@ export async function planPiCodingAgentConfiguration(): Promise<ExternalAgentCon
       createsBackup: false,
       preservesDefaultModel: true,
       requiresConfirmation: true,
-      modelProfileRevision: "managed-route-v1",
+      modelProfileRevision: "managed-route-v3",
       warnings: [],
     };
   }
@@ -1985,7 +2294,7 @@ export async function planOpenClawConfiguration(
       createsBackup: false,
       preservesDefaultModel: true,
       requiresConfirmation: true,
-      modelProfileRevision: "managed-route-v1",
+      modelProfileRevision: "managed-route-v3",
       warnings: ["HAL100不会修改OpenClaw默认模型，也不会启动、停止或重启OpenClaw服务。"],
     };
   }
@@ -2063,7 +2372,7 @@ export async function planHermesAgentConfiguration(): Promise<ExternalAgentConfi
       createsBackup: false,
       preservesDefaultModel: true,
       requiresConfirmation: true,
-      modelProfileRevision: "managed-route-v1",
+      modelProfileRevision: "managed-route-v3",
       warnings: [
         "Hermes 0.18.2 要求模型上下文至少 64000 Token；真实桌面环境会在预览前校验。",
         "HAL100 只管理 default Profile 中的 hal100 Provider 和专属环境变量。",

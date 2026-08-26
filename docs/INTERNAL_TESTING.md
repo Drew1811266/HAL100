@@ -2,14 +2,15 @@
 
 - 适用版本：macOS Apple Silicon连续开发版
 - 当前界面：中文标准版
-- 分发状态：内部测试，不签名、不公证、不制作安装包
+- 开发状态：开发初期，仅内部测试
+- 范围边界：不签名、不公证、不制作安装包，不规划自动更新、正式升级或正式发布流程
 - 测试窗口：后台稳定性从原计划24小时缩短为已确认的1小时
 
 ## 1. 测试前提
 
 1. 只在团队拥有或明确授权的 Apple Silicon Mac上测试，不在 Intel Mac上运行。
 2. 使用仓库锁定的 Node、pnpm和Rust版本，先执行`pnpm install`。
-3. 使用`pnpm tauri dev`启动同一个连续开发版；不要生成或分发安装包。
+3. 使用`pnpm desktop:open`启动同一个连续开发版；不要生成或分发安装包。
 4. 测试公开模型时可选择Hugging Face或ModelScope。Qwen3.5-2B基线使用已登记的Q4_K_M GGUF，不把模型权重提交到仓库。
 5. OpenCode自动兼容门槛为1.17.9；当前自动验收版本为1.18.11和1.17.9。1.15.10无法完成HAL100模拟回答，界面会提示升级。
 
@@ -19,8 +20,8 @@
 - 模型：公开GGUF搜索、计划、原生确认、断点下载、取消/恢复、本地只读导入。
 - 引擎：固定官方llama.cpp供应链安装、启动、停止、切换、卸载；所有变更必须出现原生确认。
 - Gateway：OpenAI Chat/Responses、Anthropic Messages、SSE、取消、工具结构和精确Usage。
-- 接入：OpenCode、通用OpenAI客户端、通用Anthropic客户端；每个客户端独立Key。
-- Agent：本地Qwen、单次云端、当前内存会话、取消、状态读取和模型操作计划。Agent不提供通用聊天，安装/卸载/删除没有Agent执行入口。
+- 接入：OpenCode、Pi Coding Agent、OpenClaw、Hermes Agent、通用OpenAI客户端和通用Anthropic客户端；每个客户端独立Key，专用适配器必须验证预览、确认、回滚与精确断开。
+- Agent：本地Qwen、单次云端、当前内存会话、取消、RPC v12按需Pi意图提案、Rust双路裁决和结构化任务工具接管、任务级上下文/效率指标、18项固定工具、环境诊断、模型搜索/下载、四类外部Agent配置/断开，以及Pi私有安装/移除计划。Agent不提供通用聊天，所有变更只生成一次性计划，必须由Rust原生确认、复验和确定性执行。
 - 后台：关闭主窗口后进程和Gateway继续运行；托盘可恢复窗口；只有明确“退出HAL100”才结束进程。
 
 ## 3. 自动验收
@@ -54,6 +55,53 @@ bash tests/stability/probe_suspend_resume.sh
 
 所有报告写入`output/stability/`，目录和文件默认仅当前用户可读。失败阶段的完整日志和机器可读摘要必须随问题单一起保存，但不能提交模型权重、Key或用户提示词/回答。
 
+真实Pi意图质量属于显式重型验收，不包含在`pnpm check`中。模型文件已校验且没有其他Agent任务
+时运行：
+
+```bash
+cargo test -p hal100-desktop real_qwen_pi_intent_quality_meets_iteration_34_thresholds -- --ignored --nocapture
+```
+
+该合同执行6个固定场景各3轮，只走零工具意图路径。门槛为结构化提案率至少95%、语义精确率
+至少85%、安全拒绝率100%和未授权系统变更为0。输出只能包含聚合比例、耗时、失败场景ID和
+有界路由标签，不得保存提示词或模型原文。本次迭代34基线为18/18结构化、18/18语义精确、
+6/6安全拒绝，p95约2.61秒；这不等于开放输入100%准确，该基线本身也不单独构成接管授权。
+
+迭代35真实纵向接管验收同样显式运行：
+
+```bash
+cargo test -p hal100-desktop real_qwen_controlled_long_tail_inspection_uses_structured_route -- --ignored --nocapture
+```
+
+期望只调用`hal100.inspect_external_agent`，操作计划为0，路由指标为`structuredPi`。日常自动测试
+中的v4合同必须达到13/13决策和13/13精确工具集合。开发期需要验证回退时，可以用
+`HAL100_AGENT_TASK_ROUTING_MODE=safe-legacy`启动；状态必须显示`safeLegacy`，且Pi独有任务应
+故障关闭，不能回退旧关键词工具执行。
+
+迭代36建立的同一长尾只读验收当前要求schema v3任务检查点以序列3到达
+`completed/satisfied/externalIntegrationStatus/none`。受控计划暂停和取消使用另一条显式真实测试：
+
+```bash
+cargo test -p hal100-desktop real_agent_creates_a_nonexecuting_engine_remove_plan -- --ignored --nocapture
+```
+
+该测试必须只生成一个llama.cpp卸载计划，检查点以序列3停在
+`awaitingConfirmation/inProcessConfirmation`；测试丢弃计划后转为`cancelled/none`，引擎继续为
+`installed`。日常自动测试中的v5合同必须达到10/10生命周期、0次未授权恢复和0个检查点敏感
+字段。伪造、过期、确认取消、新任务替换、执行/复验失败与进程重启都必须有固定终态；测试和
+日志不得输出私有计划ID、具体目标或用户内容。
+
+迭代37的日常v6合同还必须达到18/18成功谓词来源覆盖和6/6故障注入；受控任务非终态重规划
+最多1次。动作专属执行后复验使用临时模型索引，不操作真实开发引擎：
+
+```bash
+cargo test -p hal100-desktop confirmed_model_removal_completes_only_after -- --nocapture
+```
+
+该测试必须消费一次精确计划、删除临时索引、重新读取模型库，并以
+`completed/satisfied/modelLibraryRecheck`结束。Agent专属审计序列化结果不得出现计划/run ID、
+具体模型ID或路径；正常模型领域审计继续保留用户可见的操作结果。
+
 ## 4. 真机睡眠/唤醒
 
 自动进程暂停探针不等同于整机睡眠。真机测试必须由正在使用电脑的测试员主动执行：
@@ -79,6 +127,10 @@ bash tests/stability/probe_suspend_resume.sh
 | SQLite被占锁 | 约5秒内失败；释放锁后写入恢复 |
 | Sidecar超大RPC帧 | 进程在5秒内以固定错误退出，无挂起 |
 | Sidecar连续25次启停 | 每次ping/shutdown成功，无子进程遗留 |
+| Pi意图输出非JSON、额外字段或未知目标 | Sidecar或Rust将提案降为无效，不把原始输出写入RPC或日志；旧能力非空时故障关闭且不调用工具 |
+| Pi意图与确定性安全规则冲突 | 确定性澄清/拒绝优先；任务冲突不选择任一提案 |
+| Pi意图影子指标读取与应用重启 | 只返回固定状态、裁决计数和毫秒耗时；不含提示词、回答、目标、run ID或凭据；重启后清零 |
+| 结构化任务接管指标与应用重启 | 只返回当前模式、固定决策计数和更新时间；不含任务类型、目标、提示词或回答；重启后清零 |
 | 100万Usage | 查询、预览和保留策略清理达到规模预算 |
 | 1万模型快照 | 状态刷新和模型库查询达到规模预算 |
 

@@ -22,7 +22,9 @@ Provider固定使用：
 - Base URL：当前HAL100 Gateway的`/v1`地址。
 - API：`openai-completions`。
 - 模型ID：`hal100-active`。
-- 模型能力：来自HAL100版本化模型契约，当前为text输入、4096上下文、1024最大输出。
+- 模型能力：来自HAL100版本化`managed-route-v3`合同，当前为text输入、Rust设备策略选择的
+  16384/32768上下文、1024最大输出。该值与HAL100托管llama.cpp实际`--ctx-size`一致，不虚报
+  活动路由容量。
 - 凭据：`0600`独立文件；配置只保存固定`/bin/cat`读取命令，不保存明文Key。
 
 HAL100不在Pi配置中声明上游没有定义的`supportsTools`字段。工具能力由Gateway模型契约和

@@ -10,24 +10,39 @@ import {
 } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
+import { PageHeader } from "../../components/ui/PageHeader";
 import {
   type AgentActionPlan,
+  type AgentClarificationKind,
+  type AgentClarificationOption,
   type AgentCloudRunPreview,
   type AgentCloudSessionPreview,
   type AgentComponentState,
+  type AgentExternalAgentChoice,
   type AgentRunResult,
+  type AgentTaskCheckpointPhase,
+  type AgentTaskEvidenceSource,
+  type AgentTaskGraphNodeCheckpointState,
+  type AgentTaskVerificationState,
   applyAgentActionPlan,
   type BackendSummary,
   cancelAgentRun,
+  cancelAgentTaskGraph,
+  continueAgentClarification,
   getAgentCloudSession,
   getAgentStatus,
   getBackendCatalog,
   getEnvironmentDiagnostics,
+  getModelLibrary,
   isTauriRuntime,
   previewAgentCloudRun,
   previewAgentCloudSession,
+  restoreAgentTaskGraph,
   runAgentPrompt,
+  runNextAgentTaskGraphCompensation,
+  runNextAgentTaskGraphNode,
   startAgentCloudSession,
+  startAgentTaskGraph,
   stopAgentCloudSession,
   stopAgentRuntime,
 } from "../../lib/desktop-api";
@@ -44,6 +59,81 @@ const agentStateCopy: Record<AgentComponentState, { label: string; tone: string 
   running: { label: "运行中", tone: "ok" },
   error: { label: "运行异常", tone: "warning" },
 };
+
+const agentTaskPhaseCopy: Record<AgentTaskCheckpointPhase, string> = {
+  draft: "草拟",
+  clarifying: "等待澄清",
+  inspecting: "检查中",
+  planning: "规划中",
+  awaitingConfirmation: "等待原生确认",
+  executing: "执行中",
+  verifying: "复验中",
+  completed: "已完成",
+  blocked: "已阻塞",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+const agentTaskVerificationCopy: Record<AgentTaskVerificationState, string> = {
+  notStarted: "尚未开始",
+  pending: "等待确定性证据",
+  satisfied: "目标已满足",
+  unsatisfied: "目标尚未满足",
+  evidenceUnavailable: "证据不可用",
+  failed: "复验失败",
+};
+
+const agentTaskEvidenceSourceCopy: Record<AgentTaskEvidenceSource, string> = {
+  systemProbe: "系统探针",
+  runtimeCatalog: "运行目录",
+  environmentDiagnostics: "环境诊断",
+  operationalHistory: "脱敏运维历史",
+  operationalHealth: "短时健康观测",
+  modelCatalog: "公开模型目录",
+  modelRepository: "模型仓库快照",
+  externalIntegrationStatus: "软件接入状态",
+  actionPlan: "Rust 一次性计划",
+  runtimeRecheck: "模型运行态复验",
+  modelLibraryRecheck: "模型库复验",
+  engineRecheck: "引擎复验",
+  integrationRecheck: "软件接入复验",
+  managedInstallationRecheck: "私有安装复验",
+  repairDiagnosticRecheck: "修复后诊断",
+};
+
+const agentTaskGraphNodeStateCopy: Record<AgentTaskGraphNodeCheckpointState, string> = {
+  blocked: "等待前置节点",
+  ready: "可以继续",
+  running: "正在处理",
+  awaitingConfirmation: "等待原生确认",
+  succeeded: "已由现实证据完成",
+  failed: "失败",
+  compensating: "补偿中",
+  compensated: "已补偿",
+  cancelled: "已取消",
+};
+
+const externalAgentChoiceCopy = {
+  openCode: "OpenCode",
+  piCodingAgent: "Pi Coding Agent",
+  openClaw: "OpenClaw",
+  hermesAgent: "Hermes Agent",
+} as const;
+
+const clarificationQuestionCopy: Record<AgentClarificationKind, string> = {
+  externalAgentTarget: "本次要处理哪个外部 Agent？",
+  managedOwnership: "你希望处理 HAL100 私有运行时，还是只断开接入？",
+  singleMutationTarget: "本次只继续处理哪个外部 Agent？",
+};
+
+function clarificationOptionCopy(option: AgentClarificationOption): string {
+  if (option.choice === "selectExternalAgent" && option.externalAgent) {
+    return externalAgentChoiceCopy[option.externalAgent];
+  }
+  if (option.choice === "removeManagedRuntime") return "移除 HAL100 私有 Pi 运行时";
+  if (option.choice === "disconnectOnly") return "只断开 HAL100 接入";
+  return "取消当前任务";
+}
 
 const defaultAgentPrompt = "检测这台 Mac，并根据真实硬件给出适合的本地模型参数范围和量化建议。";
 
@@ -121,6 +211,12 @@ const agentTaskLibrary: AgentTaskTemplate[] = [
     prompt: "读取可用模型，并为 Qwen3.5-2B Q4_K_M 生成启动或安全切换计划；不要直接执行。",
   },
   {
+    id: "stop-current-model",
+    category: "models",
+    label: "生成当前模型停止计划",
+    prompt: "读取当前活动模型，并生成安全停止计划；保留模型文件、索引和用量记录，不要直接执行。",
+  },
+  {
     id: "install-engine",
     category: "models",
     label: "生成引擎安装计划",
@@ -187,6 +283,11 @@ const agentActionCopy: Record<
     targetLabel: "目标模型",
     pendingSummary: "Agent 尚未执行任何模型切换",
   },
+  stopModel: {
+    title: "停止当前本地模型",
+    targetLabel: "当前模型",
+    pendingSummary: "Agent 尚未停止当前模型",
+  },
   downloadModel: {
     title: "下载公开 GGUF 模型",
     targetLabel: "目标文件",
@@ -241,6 +342,10 @@ export function AgentPage() {
   );
   const [cloudBackendId, setCloudBackendId] = useState("");
   const [cloudModel, setCloudModel] = useState("");
+  const [graphModelId, setGraphModelId] = useState("");
+  const [graphExternalAgent, setGraphExternalAgent] =
+    useState<AgentExternalAgentChoice>("openCode");
+  const [includeManagedPi, setIncludeManagedPi] = useState(false);
   const [cloudRunPreview, setCloudRunPreview] = useState<AgentCloudRunPreview | null>(null);
   const [cloudSessionPreview, setCloudSessionPreview] = useState<AgentCloudSessionPreview | null>(
     null,
@@ -254,6 +359,12 @@ export function AgentPage() {
   const backends = useQuery({
     queryKey: ["backend-catalog"],
     queryFn: getBackendCatalog,
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: false,
+  });
+  const modelLibrary = useQuery({
+    queryKey: ["model-library"],
+    queryFn: getModelLibrary,
     staleTime: Number.POSITIVE_INFINITY,
     refetchOnWindowFocus: false,
   });
@@ -275,18 +386,28 @@ export function AgentPage() {
       setProviderMode("cloud-session");
     }
   }, [cloudSession.data?.active]);
+  const acceptRunResult = (nextResult: AgentRunResult) => {
+    setResult(nextResult);
+    setCloudRunPreview(null);
+    setActionMessage(null);
+    queryClient.invalidateQueries({ queryKey: ["agent-status"] });
+    queryClient.invalidateQueries({ queryKey: ["agent-cloud-session"] });
+    queryClient.invalidateQueries({ queryKey: ["usage-dashboard"] });
+    queryClient.invalidateQueries({ queryKey: ["audit-log"] });
+  };
   const runMutation = useMutation({
     mutationFn: runAgentPrompt,
-    onSuccess: (nextResult) => {
-      setResult(nextResult);
-      setCloudRunPreview(null);
-      setActionMessage(null);
-      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
+    onSuccess: acceptRunResult,
+    onError: () => {
       queryClient.invalidateQueries({ queryKey: ["agent-cloud-session"] });
-      queryClient.invalidateQueries({ queryKey: ["usage-dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["audit-log"] });
     },
+  });
+  const clarificationMutation = useMutation({
+    mutationFn: continueAgentClarification,
+    onSuccess: acceptRunResult,
     onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
       queryClient.invalidateQueries({ queryKey: ["agent-cloud-session"] });
       queryClient.invalidateQueries({ queryKey: ["audit-log"] });
     },
@@ -354,7 +475,7 @@ export function AgentPage() {
       queryClient.invalidateQueries({ queryKey: ["model-library"] });
       queryClient.invalidateQueries({ queryKey: ["audit-log"] });
     },
-    onError: (_error, planId) =>
+    onError: (_error, planId) => {
       setResult((previous) =>
         previous
           ? {
@@ -362,7 +483,52 @@ export function AgentPage() {
               actionPlans: previous.actionPlans.filter((plan) => plan.planId !== planId),
             }
           : previous,
-      ),
+      );
+      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
+    },
+  });
+  const startGraphMutation = useMutation({
+    mutationFn: startAgentTaskGraph,
+    onSuccess: () => {
+      setResult(null);
+      setActionMessage(null);
+      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
+      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
+    },
+  });
+  const restoreGraphMutation = useMutation({
+    mutationFn: restoreAgentTaskGraph,
+    onSuccess: () => {
+      setResult(null);
+      setActionMessage(null);
+      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
+      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
+    },
+  });
+  const runGraphNodeMutation = useMutation({
+    mutationFn: runNextAgentTaskGraphNode,
+    onSuccess: acceptRunResult,
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
+      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
+    },
+  });
+  const runGraphCompensationMutation = useMutation({
+    mutationFn: runNextAgentTaskGraphCompensation,
+    onSuccess: acceptRunResult,
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
+      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
+    },
+  });
+  const cancelGraphMutation = useMutation({
+    mutationFn: cancelAgentTaskGraph,
+    onSuccess: (nextStatus) => {
+      setResult(null);
+      setActionMessage(null);
+      queryClient.setQueryData(["agent-status"], nextStatus);
+      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
+    },
   });
 
   if (status.isPending || cloudSession.isPending) {
@@ -393,13 +559,29 @@ export function AgentPage() {
   const sessionHealthy = sessionData.available && !sessionData.lastErrorCode;
   const agentTransitionPending =
     runMutation.isPending ||
+    clarificationMutation.isPending ||
     previewRunMutation.isPending ||
     previewSessionMutation.isPending ||
     startSessionMutation.isPending ||
-    stopSessionMutation.isPending;
-  const kernelState = runMutation.isPending ? "running" : data.kernelState;
+    stopSessionMutation.isPending ||
+    startGraphMutation.isPending ||
+    restoreGraphMutation.isPending ||
+    runGraphNodeMutation.isPending ||
+    runGraphCompensationMutation.isPending ||
+    cancelGraphMutation.isPending;
+  const kernelState =
+    runMutation.isPending ||
+    runGraphNodeMutation.isPending ||
+    runGraphCompensationMutation.isPending
+      ? "running"
+      : data.kernelState;
   const modelState =
-    runMutation.isPending && providerMode === "local" ? "running" : data.modelRuntimeState;
+    (runMutation.isPending ||
+      runGraphNodeMutation.isPending ||
+      runGraphCompensationMutation.isPending) &&
+    providerMode === "local"
+      ? "running"
+      : data.modelRuntimeState;
   const canRun =
     runtime &&
     (providerMode === "local"
@@ -410,14 +592,18 @@ export function AgentPage() {
           ? sessionData.available
           : cloudTargetReady) &&
     !runMutation.isPending &&
+    !clarificationMutation.isPending &&
     !previewRunMutation.isPending &&
     !previewSessionMutation.isPending &&
     !startSessionMutation.isPending &&
     !stopSessionMutation.isPending &&
     !stopMutation.isPending &&
-    !actionMutation.isPending;
+    !actionMutation.isPending &&
+    data.taskGraphCheckpoint?.state !== "active" &&
+    data.taskGraphCheckpoint?.state !== "compensating";
   const operationError =
     runMutation.error ??
+    clarificationMutation.error ??
     previewRunMutation.error ??
     previewSessionMutation.error ??
     startSessionMutation.error ??
@@ -425,10 +611,17 @@ export function AgentPage() {
     stopMutation.error ??
     cancelMutation.error ??
     actionMutation.error ??
+    startGraphMutation.error ??
+    restoreGraphMutation.error ??
+    runGraphNodeMutation.error ??
+    runGraphCompensationMutation.error ??
+    cancelGraphMutation.error ??
+    modelLibrary.error ??
     diagnostics.error;
   const elapsedSeconds = result
     ? Math.max(0, (result.completedAtMs - result.startedAtMs) / 1000).toFixed(1)
     : null;
+  const clarification = result?.clarification ?? null;
   const recommendedTaskIds = data.lastErrorCode
     ? ["diagnose-environment", "analyze-failures", "plan-single-fix"]
     : !data.modelPrepared
@@ -440,11 +633,53 @@ export function AgentPage() {
   });
   const libraryTasks = agentTaskLibrary.filter((task) => task.category === taskCategory);
   const agentReady = data.modelPrepared && kernelState !== "error" && !data.lastErrorCode;
-  const agentStatusLabel = runMutation.isPending
-    ? "正在运行"
-    : agentReady
-      ? "可以开始任务"
-      : "需要准备";
+  const agentStatusLabel =
+    runMutation.isPending ||
+    runGraphNodeMutation.isPending ||
+    runGraphCompensationMutation.isPending
+      ? "正在运行"
+      : agentReady
+        ? "可以开始任务"
+        : "需要准备";
+  const graph = data.taskGraphCheckpoint;
+  const recoverableGraph = data.recoverableTaskGraphCheckpoint;
+  const readyModels = modelLibrary.data?.models.filter((model) => model.state === "ready") ?? [];
+  const effectiveGraphModelId = graphModelId || readyModels[0]?.id || "";
+  const graphAwaitingConfirmation = graph?.nodes.some(
+    (node) => node.state === "awaitingConfirmation",
+  );
+  const graphHasRunningNode = graph?.nodes.some((node) => node.state === "running");
+  const graphHasCompensatingNode = graph?.nodes.some((node) => node.state === "compensating");
+  const graphHasCompensationCandidate = graph?.nodes.some(
+    (node) => node.state === "succeeded" && node.changedOwnedState,
+  );
+  const graphCompensationAwaitingConfirmation = Boolean(
+    graph?.state === "compensating" && data.taskCheckpoint?.phase === "awaitingConfirmation",
+  );
+  const graphRequiresAttention = Boolean(
+    graph?.state === "active" ||
+      graph?.state === "compensating" ||
+      (graph?.state === "failed" && graphHasCompensationCandidate) ||
+      (recoverableGraph && !graph),
+  );
+  const canContinueGraph = Boolean(
+    runtime &&
+      graph?.state === "active" &&
+      !graphAwaitingConfirmation &&
+      (graph.readyNodeCount > 0 || graphHasRunningNode) &&
+      data.modelPrepared &&
+      !agentTransitionPending &&
+      !actionMutation.isPending,
+  );
+  const canContinueGraphCompensation = Boolean(
+    runtime &&
+      graph?.state === "compensating" &&
+      !graphCompensationAwaitingConfirmation &&
+      graphHasCompensatingNode &&
+      data.modelPrepared &&
+      !agentTransitionPending &&
+      !actionMutation.isPending,
+  );
 
   const updatePrompt = (nextPrompt: string) => {
     setPrompt(nextPrompt);
@@ -472,38 +707,40 @@ export function AgentPage() {
 
   return (
     <div className="page-content agent-page">
-      <header className="page-header model-page-header">
-        <div>
-          <p className="eyebrow">本机受控助手</p>
-          <h1>HAL100 Agent</h1>
-          <p>本地 Qwen 默认运行；云端可仅用一次或绑定当前内存会话，且不会保存聊天历史。</p>
-        </div>
-        <button
-          className="secondary-button refresh-button"
-          disabled={
-            status.isFetching ||
-            cloudSession.isFetching ||
-            backends.isFetching ||
-            runMutation.isPending
-          }
-          onClick={() => {
-            void status.refetch();
-            void cloudSession.refetch();
-            void backends.refetch();
-          }}
-          type="button"
-        >
-          <RefreshCw
-            className={
-              status.isFetching || cloudSession.isFetching || backends.isFetching ? "spinning" : ""
+      <PageHeader
+        action={
+          <button
+            className="secondary-button refresh-button"
+            disabled={
+              status.isFetching ||
+              cloudSession.isFetching ||
+              backends.isFetching ||
+              runMutation.isPending
             }
-            size={14}
-          />
-          {status.isFetching || cloudSession.isFetching || backends.isFetching
-            ? "刷新中…"
-            : "刷新状态"}
-        </button>
-      </header>
+            onClick={() => {
+              void status.refetch();
+              void cloudSession.refetch();
+              void backends.refetch();
+            }}
+            type="button"
+          >
+            <RefreshCw
+              className={
+                status.isFetching || cloudSession.isFetching || backends.isFetching
+                  ? "spinning"
+                  : ""
+              }
+              size={14}
+            />
+            {status.isFetching || cloudSession.isFetching || backends.isFetching
+              ? "刷新中…"
+              : "刷新状态"}
+          </button>
+        }
+        description="使用本地 Qwen 完成配置任务；云端仅按次或限于当前内存会话，且不保存聊天历史。"
+        eyebrow="本机受控助手"
+        title="HAL100 Agent"
+      />
 
       <details className="agent-boundary inline-disclosure">
         <summary>
@@ -559,7 +796,7 @@ export function AgentPage() {
         </span>
         <div>
           <span
-            className={`status-pill ${runMutation.isPending ? "warning" : agentReady ? "ok" : "neutral"}`}
+            className={`agent-status-kicker ${runMutation.isPending ? "warning" : agentReady ? "ready" : "neutral"}`}
           >
             {agentStatusLabel}
           </span>
@@ -607,6 +844,43 @@ export function AgentPage() {
             <dt>运行策略</dt>
             <dd>{data.idleTimeoutSeconds / 60} 分钟空闲退出 · Rust 授权</dd>
           </div>
+          <div>
+            <dt>上下文容量</dt>
+            <dd>
+              {data.contextWindowTokens.toLocaleString()} Token · {data.capacityTier} · Rust
+              设备策略
+            </dd>
+          </div>
+          {data.taskCheckpoint && (
+            <>
+              <div>
+                <dt>任务检查点</dt>
+                <dd>
+                  {data.taskCheckpoint.taskKind} · {agentTaskPhaseCopy[data.taskCheckpoint.phase]} ·
+                  序列
+                  {data.taskCheckpoint.checkpointSequence}
+                </dd>
+              </div>
+              <div>
+                <dt>成功复验</dt>
+                <dd>
+                  {agentTaskVerificationCopy[data.taskCheckpoint.verificationState]}
+                  {data.taskCheckpoint.evidenceSource
+                    ? ` · ${agentTaskEvidenceSourceCopy[data.taskCheckpoint.evidenceSource]}`
+                    : ""}
+                  {data.taskCheckpoint.evidenceObservationCount > 0
+                    ? ` · ${data.taskCheckpoint.evidenceObservationCount} 项有界观察`
+                    : ""}
+                  {data.taskCheckpoint.maxReplanAttempts > 0
+                    ? ` · 重规划 ${data.taskCheckpoint.replanAttemptCount}/${data.taskCheckpoint.maxReplanAttempts}`
+                    : ""}
+                  {data.taskCheckpoint.maxClarificationAttempts > 0
+                    ? ` · 澄清 ${data.taskCheckpoint.clarificationAttemptCount}/${data.taskCheckpoint.maxClarificationAttempts}`
+                    : ""}
+                </dd>
+              </div>
+            </>
+          )}
         </dl>
       </details>
 
@@ -632,12 +906,260 @@ export function AgentPage() {
         </section>
       )}
 
+      <section
+        className={`agent-task-graph${graphRequiresAttention ? " is-active" : ""}`}
+        aria-label="复合配置任务"
+      >
+        <div className="agent-section-heading">
+          <div>
+            <p className="eyebrow">复合配置任务</p>
+            <h2>逐项准备模型环境与外部 Agent</h2>
+          </div>
+          <span className="agent-composer-context">
+            <ShieldCheck size={12} />
+            Rust 固定任务图
+          </span>
+        </div>
+        <p className="agent-task-graph-note">
+          每次只运行一个节点；安装、启动和配置仍分别生成一次性计划，并逐项弹出原生确认。
+        </p>
+        {graph?.state === "active" || graph?.state === "compensating" ? (
+          <>
+            <ol className="agent-task-graph-nodes">
+              {graph.nodes.map((node) => (
+                <li className={node.state} key={node.nodeIndex}>
+                  <span>{node.nodeIndex + 1}</span>
+                  <div>
+                    <strong>{node.taskKind}</strong>
+                    <small>
+                      {agentTaskGraphNodeStateCopy[node.state]}
+                      {node.evidenceSource
+                        ? ` · ${agentTaskEvidenceSourceCopy[node.evidenceSource]}`
+                        : ""}
+                      {node.changedOwnedState ? " · 已改变 HAL100 所有状态" : ""}
+                    </small>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {graphAwaitingConfirmation && (
+              <p className="inline-notice">
+                当前节点已停在确认前。请检查下方一次性计划；确认执行并通过 Rust
+                复验后，后继节点才会解锁。
+              </p>
+            )}
+            {graphCompensationAwaitingConfirmation && (
+              <p className="inline-notice">
+                补偿计划已停在确认前。补偿不会自动执行；请核对下方逆操作并再次完成原生确认。
+              </p>
+            )}
+            {graph.state === "active" ? (
+              <div className="agent-task-graph-actions">
+                <button
+                  className="primary-button"
+                  disabled={!canContinueGraph}
+                  onClick={() => runGraphNodeMutation.mutate()}
+                  type="button"
+                >
+                  <Play size={12} />
+                  {runGraphNodeMutation.isPending
+                    ? "正在处理节点…"
+                    : graphHasRunningNode
+                      ? "重新规划当前节点"
+                      : "继续下一节点"}
+                </button>
+                {runGraphNodeMutation.isPending ? (
+                  <button
+                    className="secondary-button"
+                    disabled={!runtime || cancelMutation.isPending || data.cancellationRequested}
+                    onClick={() => cancelMutation.mutate()}
+                    type="button"
+                  >
+                    <Square size={11} />
+                    取消当前节点
+                  </button>
+                ) : (
+                  <button
+                    className="secondary-button"
+                    disabled={!runtime || agentTransitionPending || actionMutation.isPending}
+                    onClick={() => cancelGraphMutation.mutate()}
+                    type="button"
+                  >
+                    <Square size={11} />
+                    取消复合任务
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="agent-task-graph-actions">
+                <button
+                  className="primary-button"
+                  disabled={!canContinueGraphCompensation}
+                  onClick={() => runGraphCompensationMutation.mutate()}
+                  type="button"
+                >
+                  <Play size={12} />
+                  {runGraphCompensationMutation.isPending
+                    ? "正在生成补偿计划…"
+                    : "重新规划当前补偿"}
+                </button>
+                {runGraphCompensationMutation.isPending ? (
+                  <button
+                    className="secondary-button"
+                    disabled={!runtime || cancelMutation.isPending || data.cancellationRequested}
+                    onClick={() => cancelMutation.mutate()}
+                    type="button"
+                  >
+                    <Square size={11} />
+                    取消当前补偿
+                  </button>
+                ) : (
+                  <button
+                    className="secondary-button"
+                    disabled={!runtime || agentTransitionPending || actionMutation.isPending}
+                    onClick={() => cancelGraphMutation.mutate()}
+                    type="button"
+                  >
+                    <Square size={11} />
+                    停止补偿
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {graph && (
+              <>
+                <p className={`agent-task-graph-terminal ${graph.state}`}>
+                  上一复合任务：{graph.state === "succeeded" ? "全部完成" : graph.state}
+                </p>
+                {(graph.state === "failed" || graph.state === "cancelled") &&
+                  graphHasCompensationCandidate && (
+                    <button
+                      className="secondary-button"
+                      disabled={!runtime || agentTransitionPending || actionMutation.isPending}
+                      onClick={() => runGraphCompensationMutation.mutate()}
+                      type="button"
+                    >
+                      <ShieldCheck size={12} />
+                      {runGraphCompensationMutation.isPending
+                        ? "正在准备补偿…"
+                        : "显式准备下一项安全补偿"}
+                    </button>
+                  )}
+              </>
+            )}
+            {recoverableGraph && !graph && (
+              <div className="inline-notice">
+                <strong>检测到重启前的脱敏任务图</strong>
+                <span>
+                  仅保留{recoverableGraph.nodes.length}个节点的语义形状；请在下方重新选择精确模型和
+                  软件。恢复后所有节点都会重新读取现实状态，旧成功、计划与确认均不会恢复。
+                </span>
+                <button
+                  className="secondary-button"
+                  disabled={
+                    !runtime ||
+                    !data.modelPrepared ||
+                    !effectiveGraphModelId ||
+                    agentTransitionPending ||
+                    actionMutation.isPending
+                  }
+                  onClick={() =>
+                    restoreGraphMutation.mutate({
+                      kind:
+                        recoverableGraph.nodes.length === 4
+                          ? "prepareManagedPi"
+                          : "prepareExternalAgent",
+                      modelId: effectiveGraphModelId,
+                      externalAgent:
+                        recoverableGraph.nodes.length === 4 ? "piCodingAgent" : graphExternalAgent,
+                    })
+                  }
+                  type="button"
+                >
+                  <RefreshCw size={12} />
+                  {restoreGraphMutation.isPending ? "正在重绑定…" : "按当前选择恢复并全量复验"}
+                </button>
+              </div>
+            )}
+            <div className="agent-task-graph-form">
+              <label>
+                <span>要启动的本地模型</span>
+                <select
+                  disabled={agentTransitionPending || readyModels.length === 0}
+                  onChange={(event) => setGraphModelId(event.target.value)}
+                  value={effectiveGraphModelId}
+                >
+                  {readyModels.length === 0 ? (
+                    <option value="">模型库中没有已就绪模型</option>
+                  ) : (
+                    readyModels.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.displayName}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              <label>
+                <span>要接入的软件</span>
+                <select
+                  disabled={agentTransitionPending}
+                  onChange={(event) => {
+                    const next = event.target.value as AgentExternalAgentChoice;
+                    setGraphExternalAgent(next);
+                    if (next !== "piCodingAgent") setIncludeManagedPi(false);
+                  }}
+                  value={graphExternalAgent}
+                >
+                  <option value="openCode">OpenCode</option>
+                  <option value="piCodingAgent">Pi Coding Agent</option>
+                  <option value="openClaw">OpenClaw</option>
+                </select>
+              </label>
+              <label className="agent-task-graph-check">
+                <input
+                  checked={includeManagedPi}
+                  disabled={graphExternalAgent !== "piCodingAgent" || agentTransitionPending}
+                  onChange={(event) => setIncludeManagedPi(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>同时准备 HAL100 私有 Pi 安装</span>
+              </label>
+              <button
+                className="primary-button"
+                disabled={
+                  !runtime ||
+                  !data.modelPrepared ||
+                  !effectiveGraphModelId ||
+                  agentTransitionPending ||
+                  actionMutation.isPending
+                }
+                onClick={() =>
+                  startGraphMutation.mutate({
+                    kind: includeManagedPi ? "prepareManagedPi" : "prepareExternalAgent",
+                    modelId: effectiveGraphModelId,
+                    externalAgent: graphExternalAgent,
+                  })
+                }
+                type="button"
+              >
+                <Play size={12} />
+                {startGraphMutation.isPending ? "正在创建…" : "创建受控任务图"}
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+
       <section className="agent-workspace">
         <form className="agent-composer" onSubmit={submitPrompt}>
           <div className="agent-section-heading">
             <div>
               <p className="eyebrow">单任务会话</p>
-              <h2>诊断、部署检查或生成受控计划</h2>
+              <h2>诊断与生成受控计划</h2>
             </div>
             <span className="agent-composer-context">
               <ShieldCheck size={12} />
@@ -1088,6 +1610,53 @@ export function AgentPage() {
               })}
               {actionMessage && <p className="agent-action-success">{actionMessage}</p>}
               <div className="agent-answer">{result.answer}</div>
+              {clarification && (
+                <section className="agent-clarification" aria-label="继续当前澄清任务">
+                  <div>
+                    <ShieldCheck size={15} />
+                    <div>
+                      <strong>{clarificationQuestionCopy[clarification.kind]}</strong>
+                      <span>固定选项只补全当前任务，不恢复旧提示词，也不等同于执行确认。</span>
+                    </div>
+                  </div>
+                  <div className="agent-clarification-options">
+                    {clarification.options.map((option) => (
+                      <button
+                        className={
+                          option.choice === "cancel" ? "secondary-button" : "primary-button"
+                        }
+                        disabled={
+                          clarificationMutation.isPending || Date.now() > clarification.expiresAtMs
+                        }
+                        key={`${option.choice}-${option.externalAgent ?? "none"}`}
+                        onClick={() =>
+                          clarificationMutation.mutate({
+                            kind: clarification.kind,
+                            choice: option.choice,
+                            externalAgent: option.externalAgent,
+                            cloudTarget:
+                              providerMode === "cloud-single"
+                                ? {
+                                    backendId: effectiveCloudBackendId,
+                                    model: cloudModel.trim(),
+                                  }
+                                : null,
+                          })
+                        }
+                        type="button"
+                      >
+                        {clarificationMutation.isPending
+                          ? "正在继续…"
+                          : clarificationOptionCopy(option)}
+                      </button>
+                    ))}
+                  </div>
+                  <small>
+                    澄清次数 {clarification.attemptCount}/{clarification.maxAttempts} ·
+                    仅当前进程内有效
+                  </small>
+                </section>
+              )}
               <details className="agent-tool-trace">
                 <summary>
                   <span>工具轨迹 · {result.toolEvents.length} 项</span>
@@ -1124,6 +1693,32 @@ export function AgentPage() {
                   <div>
                     <dt>模型</dt>
                     <dd>{result.modelName}</dd>
+                  </div>
+                  <div>
+                    <dt>上下文窗口</dt>
+                    <dd>{result.efficiency.contextWindowTokens.toLocaleString()} Token</dd>
+                  </div>
+                  <div>
+                    <dt>模型回合</dt>
+                    <dd>
+                      {result.efficiency.totalModelTurnCount}（意图
+                      {result.efficiency.intentModelTurnCount} / 执行
+                      {result.efficiency.executionModelTurnCount}）
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>峰值输入</dt>
+                    <dd>
+                      {result.efficiency.providerUsageAvailable
+                        ? `${result.efficiency.peakReportedInputTokens.toLocaleString()} Token`
+                        : `约 ${result.efficiency.peakEstimatedInputTokens.toLocaleString()} Token`}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>重复工具结果</dt>
+                    <dd>
+                      约 {result.efficiency.repeatedToolResultTokenEstimate.toLocaleString()} Token
+                    </dd>
                   </div>
                   <div>
                     <dt>Run ID</dt>

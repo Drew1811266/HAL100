@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "suite": "hal100-device-context-stability",
+  "purpose": "Qualify the Rust-owned device capacity decision and bind every enabled tier to bounded live evidence without extrapolating an untested larger context.",
+  "thresholds": {
+    "selectionCaseRate": 1,
+    "minimumRepeatedStandardRuns": 20,
+    "maxExecutionModelTurnsPerReadOnlyTask": 2,
+    "maxRepeatedToolResultTokens": 0,
+    "postStopActiveRunCount": 0,
+    "postStopChildRuntimeCount": 0
+  },
+  "selectionCases": [
+    {
+      "id": "unknown-memory-falls-back",
+      "totalUnifiedMemoryBytes": 0,
+      "expectedTier": "baseline16k",
+      "expectedContextWindowTokens": 16384
+    },
+    {
+      "id": "eight-gib-baseline",
+      "totalUnifiedMemoryBytes": 8589934592,
+      "expectedTier": "baseline16k",
+      "expectedContextWindowTokens": 16384
+    },
+    {
+      "id": "threshold-minus-one-baseline",
+      "totalUnifiedMemoryBytes": 17179869183,
+      "expectedTier": "baseline16k",
+      "expectedContextWindowTokens": 16384
+    },
+    {
+      "id": "sixteen-gib-standard",
+      "totalUnifiedMemoryBytes": 17179869184,
+      "expectedTier": "standard32k",
+      "expectedContextWindowTokens": 32768
+    },
+    {
+      "id": "twenty-four-gib-standard",
+      "totalUnifiedMemoryBytes": 25769803776,
+      "expectedTier": "standard32k",
+      "expectedContextWindowTokens": 32768
+    },
+    {
+      "id": "sixty-four-gib-still-capped",
+      "totalUnifiedMemoryBytes": 68719476736,
+      "expectedTier": "standard32k",
+      "expectedContextWindowTokens": 32768
+    },
+    {
+      "id": "one-hundred-twenty-eight-gib-still-capped",
+      "totalUnifiedMemoryBytes": 137438953472,
+      "expectedTier": "standard32k",
+      "expectedContextWindowTokens": 32768
+    }
+  ],
+  "liveEvidence": [
+    {
+      "id": "baseline16k-capacity-and-recovery",
+      "profile": "baseline16k",
+      "source": "docs/benchmarks/2026-08-25-iteration-38-agent-context-capacity.md",
+      "result": "validated"
+    },
+    {
+      "id": "standard32k-long-input",
+      "profile": "standard32k",
+      "source": "docs/benchmarks/2026-08-26-iteration-43-device-aware-agent-context.md",
+      "result": "validated"
+    },
+    {
+      "id": "standard32k-cancel-and-recovery",
+      "profile": "standard32k",
+      "source": "apps/desktop/src-tauri/src/agent_service.rs",
+      "test": "real_agent_32k_profile_cancels_and_recovers_in_isolation"
+    },
+    {
+      "id": "standard32k-repeated-task-stability",
+      "profile": "standard32k",
+      "source": "apps/desktop/src-tauri/src/agent_service.rs",
+      "test": "real_agent_32k_repeated_tasks_are_stable_and_reclaim_resources"
+    }
+  ],
+  "closedTiers": [
+    {
+      "contextWindowTokens": 65536,
+      "reason": "no_live_minimum_device_evidence"
+    }
+  ]
+}

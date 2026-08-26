@@ -1,5 +1,8 @@
 # HAL100 软件架构
 
+本文维护现行架构原则与实现边界；版本、已完成迭代、schema、RPC和工具数量等易变摘要以
+[当前开发状态](CURRENT_STATE.md)为准。文中的旧迭代和旧schema说明保留当时历史语义。
+
 ## 1. 架构目标
 
 - 长期后台运行时低资源占用。
@@ -79,7 +82,7 @@ Tauri Core进程长期常驻并承载：
 
 - Agent Kernel Sidecar：包含 Pi Agent Core、Pi AI和 HAL100薄适配层；每个 Agent任务启动一个进程，完成版本化 RPC shutdown后立即退出。
 - Agent Model Runtime：本地 Agent模式下按需加载内置小模型；云端模式不启动；最后一次 Agent任务完成后空闲两分钟退出。
-- 托管用户 llama.cpp：请求到达或用户手动启动时启动，默认空闲15分钟后退出。
+- 托管用户 llama.cpp：由用户显式启动、切换和停止；当前不启用空闲自动卸载。
 - 下载/元数据工作进程：只在有任务时运行，CPU密集工作不得阻塞网关异步线程。
 
 Kernel Sidecar与 Model Runtime崩溃时不得带崩 Rust Core，也不得中断面向 OpenCode和通用客户端的 Gateway。Rust Core负责子进程状态机、超时、取消、退出和孤儿进程清理。
@@ -207,24 +210,28 @@ Embedding、Reranking和音视频协议不属于初始闭环，后续依据实�
 
 ## 9. 数据架构
 
-SQLite是唯一持久化事实源，但不保存云端 API Key和明文客户端密钥。概念实体包括：
+SQLite是唯一持久化事实源，但不保存云端 API Key和明文客户端密钥。schema v9当前实际表包括：
 
 - `settings`
 - `models`
 - `model_locations`
 - `backends`
-- `routes`
+- `model_routes`
 - `client_apps`
 - `api_key_hashes`
 - `usage_requests`
-- `usage_daily`
 - `downloads`
 - `integrations`
-- `operations`
+- `integration_resources`
 - `audit_events`
-- `agent_sessions`
 
-当前schema v7中的实际表名为`backends`与`model_routes`；活动外部后端ID使用`settings.gateway.active_backend_id`保存。`backends.credential_id`只是系统凭据引用，不是密钥。启动恢复先读取非敏感元数据，再从Keychain解析凭据；凭据缺失时不加载对应运行态后端和别名。向导步骤、登录启动询问状态、下载源和保留天数都写入类型化`settings`键；保留天数仅允许30、90、180、365或永久。通用客户端复用`client_apps`和`api_key_hashes`，只存客户端ID、显示名、Key前缀和SHA-256摘要。
+活动外部后端ID使用`settings.gateway.active_backend_id`保存。`backends.credential_id`只是系统
+凭据引用，不是密钥。启动恢复先读取非敏感元数据，再从Keychain解析凭据；凭据缺失时不
+加载对应运行态后端和别名。向导步骤、登录启动询问状态、下载源和保留天数都写入类型化
+`settings`键；保留天数只允许30、90、180、365或永久。通用客户端复用`client_apps`和
+`api_key_hashes`，只存客户端ID、显示名、Key前缀和SHA-256摘要。schema v9为统一Usage
+范围查询增加`usage_requests(started_at_ms DESC)`索引；日/小时数据按查询范围聚合，不维护
+第二套`usage_daily`持久化事实源。
 
 数据库使用显式版本迁移。Usage通过单写入队列进入 WAL事务；不得按流式 Token逐条写入。
 
@@ -269,7 +276,7 @@ Agent由六层组成：
 
 禁用 Pi工具只限制模型可以触发的能力。未落实平台进程沙箱时，Sidecar本身仍是以当前用户身份运行的受信任第三方代码；该供应链残余风险必须保留在威胁模型中，不能表述为操作系统级文件或网络隔离。
 
-迭代1的可移植启动基线会规范化运行时和入口路径，要求入口与工作目录位于 HAL100受控根目录，清空父进程环境，并为 Sidecar创建独立 HOME/TMPDIR。macOS未签名开发版可显式启用弃用的 `sandbox-exec`配置做拒绝路径回归，但不能作为发布安全边界，也不能在不可用时静默降级。未来进入签名阶段后，优先验证具有独立权限的 XPC服务或 helper app；单纯让命令行 helper继承主应用沙箱无法获得比主应用更窄的权限集合。详细结论见 [Agent Sidecar隔离验证](SIDECAR_ISOLATION.md)。
+迭代1的可移植启动基线会规范化运行时和入口路径，要求入口与工作目录位于 HAL100受控根目录，清空父进程环境，并为 Sidecar创建独立 HOME/TMPDIR。macOS未签名开发版可显式启用弃用的 `sandbox-exec`配置做拒绝路径回归，但不能作为发布安全边界，也不能在不可用时静默降级。具有独立权限的 XPC服务或 helper app只在未来明确重新纳入签名与分发范围后评估；单纯让命令行 helper继承主应用沙箱无法获得比主应用更窄的权限集合。详细结论见 [Agent Sidecar隔离验证](SIDECAR_ISOLATION.md)。
 
 ### 11.2 工具调用生命周期
 
@@ -287,15 +294,46 @@ Agent由六层组成：
 
 Pi的执行前后钩子只能作为额外防线，不能替代 Rust复验。Sidecar内不存在可绕过 Tool Broker的通用执行工具。
 
-迭代1先用确定性 Faux模型完成模拟边界验证。迭代7已将同一协议升级为真实产品链，迭代10升级为RPC v2，迭代11再升级为RPC v3；迭代12把桌面Agent拆为稳定外观与五个变化边界：`agent_coordinator`负责能力需求、完成校验和任务取消生命周期，`agent_kernel`负责固定Node/Sidecar与RPC传输，`agent_tools`负责工具授权和确定性计划编排，`agent_action`负责一次性待确认计划状态，`agent_provider`负责本地/云端Provider与内存会话。迭代13将私有协议升级为RPC v4；迭代19升级为RPC v5，将外部Agent检测、配置和断开收敛为注册表驱动的通用能力；迭代20升级为RPC v6，把全面诊断扩展到四类客户端并增加脱敏运维事件读取；迭代21升级为RPC v7，增加部署就绪与有界短时观测；迭代22升级为RPC v8，新增外部Agent受管安装计划和独立部署配方执行器；迭代23升级为RPC v9，为受管Pi补齐完整npm依赖闭包指纹与可恢复卸载生命周期。`AgentService`继续负责运行互斥、临时凭据/路由装配、原生确认后的确定性执行、审计和错误兼容。Sidecar通过临时客户端Key向Gateway请求内部保留模型别名`hal100-agent`。独立`AgentModelRuntime`复用已校验的Qwen3.5-2B Q4_K_M权重，但使用单独的llama-server、随机回环端口、临时后端Key、内部后端和模型路由，不修改用户活动后端。运行时使用6144上下文、最多768输出Token、parallel 1和reasoning off；空闲2分钟后通过一次性generation timer停止，没有轮询。
+迭代1先用确定性 Faux模型完成模拟边界验证。迭代7已将同一协议升级为真实产品链，迭代10升级为RPC v2，迭代11再升级为RPC v3；迭代12把桌面Agent拆为稳定外观与六个变化边界：`agent_coordinator`负责能力需求、完成校验和任务取消生命周期，`agent_kernel`负责固定Node/Sidecar与RPC传输，`agent_tools`负责工具授权和确定性计划编排，`agent_action`负责一次性待确认计划状态，`agent_provider`负责本地/云端Provider与内存会话，`agent_task_runtime`负责Rust任务阶段与脱敏检查点。迭代13将私有协议升级为RPC v4；迭代19升级为RPC v5，将外部Agent检测、配置和断开收敛为注册表驱动的通用能力；迭代20升级为RPC v6，把全面诊断扩展到四类客户端并增加脱敏运维事件读取；迭代21升级为RPC v7，增加部署就绪与有界短时观测；迭代22升级为RPC v8，新增外部Agent受管安装计划和独立部署配方执行器；迭代23升级为RPC v9，为受管Pi补齐完整npm依赖闭包指纹与可恢复卸载生命周期；迭代33升级为RPC v10，在旧执行合同前增加按需结构化意图提案；迭代41升级为RPC v11，增加Rust复核的任务级效率指标；迭代43升级为RPC v12，显式携带Rust已选设备容量。`AgentService`继续负责运行互斥、临时凭据/路由装配、原生确认后的确定性执行、审计和错误兼容。Sidecar通过临时客户端Key向Gateway请求内部保留模型别名`hal100-agent`。独立`AgentModelRuntime`复用已校验的Qwen3.5-2B Q4_K_M权重，但使用单独的llama-server、随机回环端口、临时后端Key、内部后端和模型路由，不修改用户活动后端。`agent-runtime-v2`由Rust启动时读取一次统一内存：低于16 GiB选16384基线，16 GiB及以上选已验收32768标准档；两档均为最多768输出Token、temperature 0、parallel 1和reasoning off。Pi固定保留4096 Token，可用输入分别为12288和28672 Token。Rust以同一档案驱动Agent llama.cpp、托管用户模型、受管外部Agent描述和RPC完成载荷复核；Sidecar只接受合同中的16K/32K，模型或用户输入不能提高容量。空闲2分钟后通过一次性generation timer停止，没有轮询。Apple M1/16 GiB的32K实测完成27,725 Token输入，物理占用峰值566.3 MiB且回收通过；64K未获最低设备证据，保持关闭。
 
-产品Sidecar当前注册18个HAL100代理工具。外部Agent使用检测、配置、断开和受管安装四项通用能力，Pi另有只针对HAL100私有运行时的卸载能力；目标只能是注册表中的四个固定ID，并绑定用户提示目标。检测结果用`managedInstallation`区分HAL100私有运行时和用户安装，卸载意图还必须明确包含HAL100私有/受管语义，不能与断开配置或用户自行卸载混用。受管安装和卸载当前只有Pi Coding Agent配方，其他ID故障关闭。专用适配器仍分别拥有配置格式、版本、协议、受管资源和回滚策略。`inspect_environment_diagnostics`聚合Gateway、引擎、模型库和四客户端状态，`inspect_operational_history`读取数据库中最多24条已脱敏事件并再次删除目标ID；`observe_operational_health`复用诊断并在约200毫秒固定窗口内完成3次引擎、用户路由、后端数量和熔断计数采样。模型只看到脱敏状态和外层计划，不看到后端ID、路径、配置内容、告警原文、日志正文、凭据或内部计划ID。Rust Tool Broker复验工具名、精确参数、目标、run ID、tool call ID、唯一性、规范顺序、前置闭包和RPC v9当前每任务最多4次调用；每项任务最多产生一个可写计划。共享工具策略固定读/计划效果、前置关系、原生确认、参数正反例和128 KiB结果预算。4项是协议版本的单任务预算而非软件规模上限。Sidecar筛选只提高小模型可靠性，不是权限边界；任何缺失、错配、过长、协议异常或进程超时都故障关闭。
+迭代31在`hal100-core`建立Rust拥有的Agent任务层：18类`AgentTaskSpec`通过工作流注册表绑定目标类型、期望状态、数据范围、成功判定和步骤；`AgentTaskState`显式表达澄清、检查、规划、等待确认、执行、复验和终态。当时该领域基础尚未接入运行链；迭代36已完成这部分迁移。决策见[ADR-0021](adr/0021-rust-owned-agent-task-architecture.md)。
+
+迭代32新增`AgentTaskIntentRouter`四态影子路由和意图提案schema v1。任务启动时只计算并记录枚举化影子结果，现行关键词能力路由仍负责实际工具选择。Pi只能提出任务类型、注册目标或有限澄清/拒绝原因；`AgentTaskProposalValidator`拒绝未知版本、额外字段、未知任务、错误目标类型和未注册外部Agent，并由Rust注入Provider模式、派生能力和确认要求。提案不包含解释、工具名、执行参数或授权。决策见[ADR-0022](adr/0022-shadow-intent-routing-and-pi-proposal-contract.md)。
+
+迭代33通过RPC v10把Pi提案接入影子链。确定性路由只有在`Unresolved`时才发起独立零工具Pi调用；Sidecar只转发重建后的规范对象，Rust再验证并以六态结果裁决。明确任务不增加模型回合，确定性澄清和拒绝不能被模型覆盖，冲突不选择任一方。当前选中结果仍不参与`requiredTools`和执行，运行链继续由原能力需求计算。决策见[ADR-0023](adr/0023-on-demand-pi-intent-proposals-and-dual-adjudication.md)。
+
+迭代34修正外部Agent入口的过度匹配：已知目标但没有明确检查或受支持动作时返回`Unresolved`，避免把长尾配置请求默认为检查；Core同时把受管安装和移除严格限制为Pi目标。意图模型采用独立128 Token上限、`temperature=0`和任务域短正反例，真实本地Qwen在6场景×3轮中达到18/18。`AgentIntentShadowMetrics`只在进程内聚合固定提案状态、裁决结果、调用次数和毫秒耗时，不保存提示词、回答、run ID、任务目标或凭据，重启即清空。该证据仍不改变旧能力路由。决策见[ADR-0024](adr/0024-deterministic-pi-intent-quality-observation.md)。
+
+迭代35完成结构化任务路由受控接管。每类`AgentTaskKind`在Core映射一个叶能力，能力注册表闭合前置关系并生成规范`requiredTools`；模型不能提交工具。确定性与Pi可信任务使用同一Rust工作流，外部Agent目标来自已验证`AgentTaskSpec`。确定性澄清/拒绝由Rust直接固定回答且不启动Kernel或模型；Pi守卫在意图回合后固定收口；含工具但未解析的请求故障关闭，只有零工具解释保留兼容路径。开发期`safe-legacy`模式只回退确定性任务，不能激活Pi独有任务。接管指标只聚合固定决策计数。决策见[ADR-0025](adr/0025-controlled-structured-task-routing-cutover.md)。
+
+迭代36把`AgentTaskState`接入真实运行链。裁决接受任务后，Rust创建单项进程内运行态；只读任务
+从检查进入复验和完成，写任务在规划后绑定一个私有计划关联并停在等待原生确认。精确计划被
+消费后才进入执行，确定性管理器成功与有界环境复查完成后进入终态；取消、失败、替换或过期
+同步撤销计划。`AgentStatus`中的schema v1检查点只保留任务/目标类别、期望状态、Provider、
+数据范围、阶段序列和复验/恢复枚举，不包含具体目标或授权ID。检查点与计划都不持久化，重启
+恢复为空。决策见[ADR-0026](adr/0026-in-process-redacted-agent-task-checkpoints.md)。
+
+迭代37增加`agent_task_evidence`并把工作流的14种成功谓词接入真实证据链，覆盖全部18类任务。
+每个`AgentTaskSpec`拥有固定证据来源白名单；只读工具在Rust持有类型化DTO时立即缩减为
+`Satisfied`、`Unsatisfied`或`EvidenceUnavailable`，Sidecar完成消息和模型回答不参与结论。
+受控动作执行后分别重新读取活动模型、模型库、引擎安装态、外部Agent配置态、Pi私有安装态或
+修复发现；错误来源不能推进其他任务。首次动作不满足从`Verifying`返回`Planning`且计数为1，
+同一精确任务可以继续一次；第二次不满足或证据不可用进入`Blocked`。现行schema v3检查点增加成功
+谓词、证据来源、观察数和重规划计数，仍只存在内存；Agent专属动作审计只持久化动作类别。决策见
+[ADR-0027](adr/0027-rust-success-predicates-and-bounded-evidence.md)。
+
+迭代43以现有确定性引擎停止器补齐第19类`StopModel`任务、第19项工具和第15种成功谓词。
+这不是通用进程控制：任务目标只能来自Rust运行目录中的当前活动模型，计划与执行都重新读取
+引擎状态，执行后只接受`RuntimeRecheck`。若模型已停止则由Rust幂等预检直接完成；目标漂移、
+伪造/过期计划、运行态不匹配或复检不可用均故障关闭。
+
+产品Sidecar当前注册19个HAL100代理工具。外部Agent使用检测、配置、断开和受管安装四项通用能力，Pi另有只针对HAL100私有运行时的卸载能力；目标只能是注册表中的四个固定ID，并绑定用户提示目标。检测结果用`managedInstallation`区分HAL100私有运行时和用户安装，卸载意图还必须明确包含HAL100私有/受管语义，不能与断开配置或用户自行卸载混用。受管安装和卸载当前只有Pi Coding Agent配方，其他ID故障关闭。专用适配器仍分别拥有配置格式、版本、协议、受管资源和回滚策略。`inspect_environment_diagnostics`聚合Gateway、引擎、模型库和四客户端状态，`inspect_operational_history`读取数据库中最多24条已脱敏事件并再次删除目标ID；`observe_operational_health`复用诊断并在约200毫秒固定窗口内完成3次引擎、用户路由、后端数量和熔断计数采样。新增`plan_model_stop`只能在完成运行目录读取后复制当前活动`modelId`；Rust在计划与执行前双重复核，原生确认后调用托管停止器，并要求`Stopped`且活动模型为空的现实证据，不删除模型、索引或用量。模型只看到脱敏状态和外层计划，不看到后端ID、路径、配置内容、告警原文、日志正文、凭据或内部计划ID。Rust Tool Broker复验工具名、精确参数、目标、run ID、tool call ID、唯一性、规范顺序、前置闭包和RPC v12当前每任务最多4次调用；每项任务最多产生一个可写计划。共享工具策略固定读/计划效果、前置关系、原生确认、参数正反例和128 KiB结果预算。4项是协议版本的单任务预算而非软件规模上限。Sidecar筛选只提高小模型可靠性，不是权限边界；任何缺失、错配、过长、协议异常或进程超时都故障关闭。
 
 `ManagedExternalAgentDeploymentManager`拥有Pi私有运行时的安装与卸载生命周期，但不承担`~/.pi`配置事务。安装在HAL100 owner-only UUID暂存目录中执行，npm进程使用固定绝对身份、清空环境、只包含npm同目录Node的最小PATH和私有工作目录；顶层归档SHA-512通过后生成lockfile v3，Rust将全部非根包的版本、来源、完整性和依赖语义规范化为固定SHA-256。闭包验证发生在任何Pi代码执行之前。卸载只接受固定`runtime`规范路径，预览与确认后均复验闭包和入口，再原子隔离并移入系统废纸篓；失败时恢复原目录。用户Pi候选始终优先，且不属于这个生命周期的所有权范围。
 
-`EnvironmentDiagnostics`属于Infra层的同步按需服务：只刷新模型文件存在性/廉价快照，读取引擎状态、Gateway路由与熔断快照以及四类外部Agent检测结果，不读原始日志、不做完整模型哈希、发现数量上限64。直接桌面诊断不启动Pi或Qwen；Agent诊断只把脱敏DTO交给模型。当前只有引擎未安装、已安装但未配置或需要刷新的外部Agent、非内置模型文件缺失三类发现带`repairKind`。修复工具不信任旧报告：Rust在计划生成前重新检查引擎安装态、外部Agent所有权或模型仍为`Missing`，再复用既有确定性计划。用户原生确认执行成功后运行一次新的诊断并返回界面；复检失败只写固定错误码，不泄漏底层路径，也不把已成功操作改判为失败。短时观测在任务内按固定次数等待并响应取消，结束后不保留timer或后台状态。
+`EnvironmentDiagnostics`属于Infra层的同步按需服务：只刷新模型文件存在性/廉价快照，读取引擎状态、Gateway路由与熔断快照以及四类外部Agent检测结果，不读原始日志、不做完整模型哈希、发现数量上限64。直接桌面诊断不启动Pi或Qwen；Agent诊断只把脱敏DTO交给模型。当前只有引擎未安装、已安装但未配置或需要刷新的外部Agent、非内置模型文件缺失三类发现带`repairKind`。修复工具不信任旧报告：Rust在计划生成前重新检查引擎安装态、外部Agent所有权或模型仍为`Missing`，再复用既有确定性计划。用户原生确认执行成功后运行一次新的诊断并返回界面；原修复发现仍存在时结论为不满足，发现可能被截断或复检失败时结论为证据不可用。其他动作以各自现实状态为主要证据，宽泛环境诊断失败不会替代动作专属结论。短时观测在任务内按固定次数等待并响应取消，结束后不保留timer或后台状态。
 
-Agent计划是Rust内存中的一次性能力对象：绑定生成任务、精确目标、当前状态、内部确定性管理器计划、5分钟到期时间和`requires_native_confirmation`，且只保留最新一项；底层管理器计划ID不发送给Pi。新任务、取消、失败或用户取消原生确认会同时废弃外层与底层计划；伪造、超长、过期、已消费或缺少原生确认标记的ID均拒绝。WebView只能请求Rust显示原生确认；确认后Rust再次取走并校验同一计划，再调用确定性管理器。模型移除还在引擎生命周期锁内复核活动模型，托管文件只能进入系统废纸篓，外部文件只能移除索引，内置Agent模型直接拒绝。因此“模型说已执行”、Pi工具成功或聊天中的同意都不是授权。
+Agent计划是Rust内存中的一次性能力对象：绑定生成任务、精确目标、当前状态、内部确定性管理器计划、5分钟到期时间和`requires_native_confirmation`，且只保留最新一项；底层管理器计划ID不发送给Pi。新任务、取消、失败或用户取消原生确认会同时废弃外层与底层计划；状态读取也会在固定截止时间后回收过期计划，不启动轮询。伪造、超长、过期、已消费、与当前任务检查点不匹配或缺少原生确认标记的ID均拒绝。WebView只能请求Rust显示原生确认；确认后Rust再次取走并校验同一计划，再调用确定性管理器。模型移除还在引擎生命周期锁内复核活动模型，托管文件只能进入系统废纸篓，外部文件只能移除索引，内置Agent模型直接拒绝。因此“模型说已执行”、Pi工具成功或聊天中的同意都不是授权。
 
 活动任务由`agent_coordinator::AgentRunRegistry`绑定独立取消原子标记和精确run租约。模型资源SHA-256每读取1 MiB检查，健康等待每50 ms、RPC接收与远端目录future每100 ms检查，不等待15/90/180秒超时；取消时丢弃HTTP future，随后Rust终止Sidecar、移除临时Gateway凭据和会话目录、停止独立Agent模型并写固定审计。`active_run_id`和`cancellation_requested`只作为状态展示，不授予额外能力。
 
@@ -324,7 +362,7 @@ Detect → Parse → Validate → Preview → Confirm → Backup → Atomic Patc
 
 实现使用5分钟有效的一次性计划将预览与执行分离。预览只包含HAL100将写入的语义字段，不把现有配置正文或凭据发送给WebView。确认后Rust Core重新比较原文件SHA-256，再创建原始字节备份并通过同目录临时文件、`fsync`和原子替换提交。OpenCode专属Key位于HAL100应用数据目录的`0600`文件，OpenCode配置只保存`{file:...}`引用。
 
-SQLite schema v8的`integrations`记录主配置路径、凭据路径和受管分片语义哈希；
+SQLite schema v8引入且schema v9继续保留的`integrations`记录主配置路径、凭据路径和受管分片语义哈希；
 `integration_resources`登记配置、凭据和辅助配置资源，`api_key_hashes`只保存Key摘要。资源、
 接入与凭据在同一事务中写入，成功后共享CredentialRegistry热更新，Gateway无需重启。
 OpenCode检测和配置只由界面或Agent受控工具按需触发，不存在常驻轮询任务。

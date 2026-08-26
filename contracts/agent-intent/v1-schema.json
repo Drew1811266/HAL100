@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hal100.local/contracts/agent-intent/v1-schema.json",
+  "title": "HAL100 Agent task intent proposal v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/taskProposal"
+    },
+    {
+      "$ref": "#/$defs/clarificationProposal"
+    },
+    {
+      "$ref": "#/$defs/rejectionProposal"
+    },
+    {
+      "$ref": "#/$defs/unresolvedProposal"
+    }
+  ],
+  "$defs": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "taskKind": {
+      "enum": [
+        "inspect_system",
+        "inspect_runtime",
+        "diagnose_environment",
+        "repair_environment",
+        "analyze_operational_history",
+        "observe_deployment_health",
+        "start_model",
+        "stop_model",
+        "remove_model",
+        "search_model_catalog",
+        "inspect_model_repository",
+        "download_model",
+        "install_engine",
+        "remove_engine",
+        "inspect_external_agent",
+        "configure_external_agent",
+        "disconnect_external_agent",
+        "install_managed_external_agent",
+        "remove_managed_external_agent"
+      ]
+    },
+    "clarificationKind": {
+      "enum": ["external_agent_target", "managed_ownership", "single_mutation_target"]
+    },
+    "rejectionReason": {
+      "enum": ["invalid_prompt", "outside_capability_boundary", "outside_ownership_boundary"]
+    },
+    "taskProposal": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "disposition": {
+          "const": "task"
+        },
+        "taskKind": {
+          "$ref": "#/$defs/taskKind"
+        },
+        "targetId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["schemaVersion", "disposition", "taskKind"],
+      "additionalProperties": false
+    },
+    "clarificationProposal": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "disposition": {
+          "const": "clarify"
+        },
+        "clarificationKind": {
+          "$ref": "#/$defs/clarificationKind"
+        }
+      },
+      "required": ["schemaVersion", "disposition", "clarificationKind"],
+      "additionalProperties": false
+    },
+    "rejectionProposal": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "disposition": {
+          "const": "reject"
+        },
+        "rejectionReason": {
+          "$ref": "#/$defs/rejectionReason"
+        }
+      },
+      "required": ["schemaVersion", "disposition", "rejectionReason"],
+      "additionalProperties": false
+    },
+    "unresolvedProposal": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "$ref": "#/$defs/schemaVersion"
+        },
+        "disposition": {
+          "const": "unresolved"
+        }
+      },
+      "required": ["schemaVersion", "disposition"],
+      "additionalProperties": false
+    }
+  }
+}

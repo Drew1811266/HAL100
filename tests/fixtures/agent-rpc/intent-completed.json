@@ -1,0 +1,15 @@
+{
+  "protocolVersion": 12,
+  "id": "intent-run-1",
+  "kind": "agent.intent.completed",
+  "payload": {
+    "runId": "intent-run-1",
+    "status": "proposed",
+    "proposal": {
+      "schemaVersion": 1,
+      "disposition": "task",
+      "taskKind": "configure_external_agent",
+      "targetId": "opencode"
+    }
+  }
+}

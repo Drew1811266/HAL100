@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 2,
+  "revision": "agent-runtime-v2",
+  "selection": {
+    "authority": "rust",
+    "standardMinUnifiedMemoryBytes": 17179869184,
+    "modelOverrideAllowed": false,
+    "userOverrideAllowed": false
+  },
+  "localProfiles": {
+    "baseline16k": {
+      "contextWindowTokens": 16384,
+      "piReservedTokens": 4096,
+      "availableInputTokensBeforeReserve": 12288,
+      "maxOutputTokens": 768,
+      "parallel": 1,
+      "reasoning": false,
+      "temperature": 0
+    },
+    "standard32k": {
+      "contextWindowTokens": 32768,
+      "piReservedTokens": 4096,
+      "availableInputTokensBeforeReserve": 28672,
+      "maxOutputTokens": 768,
+      "parallel": 1,
+      "reasoning": false,
+      "temperature": 0
+    }
+  },
+  "cloudRuntime": {
+    "contextWindowTokens": 128000,
+    "maxOutputTokens": 2048
+  },
+  "transport": {
+    "maxToolResultBytes": 131072,
+    "maxRpcFrameBytes": 1048576
+  }
+}

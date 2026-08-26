@@ -1,6 +1,7 @@
 use hal100_protocol::{
-    AGENT_RPC_VERSION, AgentRpcEnvelope, SIMULATED_SYSTEM_SUMMARY_TOOL, ToolCallRequestPayload,
-    ToolCallResultPayload, ToolCallResultStatus,
+    AGENT_RPC_VERSION, AgentIntentCompletedPayload, AgentIntentCompletionStatus, AgentRpcEnvelope,
+    SIMULATED_SYSTEM_SUMMARY_TOOL, ToolCallRequestPayload, ToolCallResultPayload,
+    ToolCallResultStatus,
 };
 
 #[test]
@@ -10,6 +11,22 @@ fn shared_ping_fixture_matches_rust_contract() {
 
     assert_eq!(envelope.protocol_version, AGENT_RPC_VERSION);
     assert_eq!(envelope.kind, "system.ping");
+}
+
+#[test]
+fn shared_intent_fixture_matches_rust_contract() {
+    let fixture = include_str!("../../../tests/fixtures/agent-rpc/intent-completed.json");
+    let envelope: AgentRpcEnvelope = serde_json::from_str(fixture).expect("valid fixture");
+    let payload: AgentIntentCompletedPayload =
+        serde_json::from_value(envelope.payload).expect("valid intent payload");
+
+    assert_eq!(envelope.protocol_version, AGENT_RPC_VERSION);
+    assert_eq!(envelope.kind, "agent.intent.completed");
+    assert_eq!(payload.status, AgentIntentCompletionStatus::Proposed);
+    assert_eq!(
+        payload.proposal.expect("intent proposal")["taskKind"],
+        "configure_external_agent"
+    );
 }
 
 #[test]

@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "suite": "hal100-task-checkpoint-lifecycle",
+  "purpose": "Lock the iteration 36 Rust-owned task lifecycle, in-process confirmation recovery, and redacted semantic checkpoint boundary.",
+  "thresholds": {
+    "exactLifecycleRate": 1,
+    "unauthorizedResumeCount": 0,
+    "sensitiveCheckpointFieldCount": 0
+  },
+  "scenarios": [
+    {
+      "id": "read-only-completes-after-verification",
+      "events": ["beginReadOnly", "completeReadOnly"],
+      "expected": {
+        "phase": "completed",
+        "checkpointSequence": 3,
+        "pendingActionPlan": false,
+        "verificationState": "satisfied",
+        "recoveryScope": "none"
+      }
+    },
+    {
+      "id": "controlled-plan-pauses-for-native-confirmation",
+      "events": ["beginControlled", "planReady"],
+      "expected": {
+        "phase": "awaitingConfirmation",
+        "checkpointSequence": 3,
+        "pendingActionPlan": true,
+        "verificationState": "pending",
+        "recoveryScope": "inProcessConfirmation"
+      }
+    },
+    {
+      "id": "exact-confirmation-executes-verifies-and-completes",
+      "events": [
+        "beginControlled",
+        "planReady",
+        "confirmExact",
+        "verificationStarted",
+        "verificationSatisfied"
+      ],
+      "expected": {
+        "phase": "completed",
+        "checkpointSequence": 6,
+        "pendingActionPlan": false,
+        "verificationState": "satisfied",
+        "recoveryScope": "none"
+      }
+    },
+    {
+      "id": "native-confirmation-cancel-invalidates-plan",
+      "events": ["beginControlled", "planReady", "cancelExact"],
+      "expected": {
+        "phase": "cancelled",
+        "checkpointSequence": 4,
+        "pendingActionPlan": false,
+        "verificationState": "pending",
+        "recoveryScope": "none"
+      }
+    },
+    {
+      "id": "expired-plan-invalidates-confirmation-authority",
+      "events": ["beginControlled", "planReady", "expireExact"],
+      "expected": {
+        "phase": "cancelled",
+        "checkpointSequence": 4,
+        "pendingActionPlan": false,
+        "verificationState": "pending",
+        "recoveryScope": "none"
+      }
+    },
+    {
+      "id": "forged-plan-cannot-resume-or-change-checkpoint",
+      "events": ["beginControlled", "planReady", "confirmForged"],
+      "expected": {
+        "phase": "awaitingConfirmation",
+        "checkpointSequence": 3,
+        "pendingActionPlan": true,
+        "verificationState": "pending",
+        "recoveryScope": "inProcessConfirmation"
+      }
+    },
+    {
+      "id": "new-task-cancels-old-pending-confirmation",
+      "events": ["beginControlled", "planReady", "supersede"],
+      "expected": {
+        "phase": "cancelled",
+        "checkpointSequence": 4,
+        "pendingActionPlan": false,
+        "verificationState": "pending",
+        "recoveryScope": "none"
+      }
+    },
+    {
+      "id": "execution-failure-is-terminal-and-not-resumable",
+      "events": ["beginControlled", "planReady", "confirmExact", "executionFailed"],
+      "expected": {
+        "phase": "failed",
+        "checkpointSequence": 5,
+        "pendingActionPlan": false,
+        "verificationState": "failed",
+        "recoveryScope": "none"
+      }
+    },
+    {
+      "id": "verification-failure-is-terminal-and-not-resumable",
+      "events": [
+        "beginControlled",
+        "planReady",
+        "confirmExact",
+        "verificationStarted",
+        "verificationFailed"
+      ],
+      "expected": {
+        "phase": "failed",
+        "checkpointSequence": 6,
+        "pendingActionPlan": false,
+        "verificationState": "failed",
+        "recoveryScope": "none"
+      }
+    },
+    {
+      "id": "process-restart-restores-no-checkpoint-or-authority",
+      "events": ["beginControlled", "planReady", "restart"],
+      "expected": null
+    }
+  ]
+}

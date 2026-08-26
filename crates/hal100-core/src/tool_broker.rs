@@ -20,6 +20,9 @@ pub enum AuthorizedAgentTool {
     PlanModelStart {
         model_id: String,
     },
+    PlanModelStop {
+        model_id: String,
+    },
     PlanModelRemoval {
         model_id: String,
     },
@@ -91,6 +94,9 @@ impl AgentToolPolicy {
                 Ok(AuthorizedAgentTool::InspectRuntimeCatalog)
             }
             AgentCapabilityId::PlanModelStart => Ok(AuthorizedAgentTool::PlanModelStart {
+                model_id: exact_model_id(&request.arguments)?,
+            }),
+            AgentCapabilityId::PlanModelStop => Ok(AuthorizedAgentTool::PlanModelStop {
                 model_id: exact_model_id(&request.arguments)?,
             }),
             AgentCapabilityId::PlanModelRemoval => Ok(AuthorizedAgentTool::PlanModelRemoval {
@@ -383,8 +389,8 @@ mod tests {
         PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
         PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
         PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL,
-        PLAN_MODEL_REMOVAL_TOOL, PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
-        ToolCallResultStatus,
+        PLAN_MODEL_REMOVAL_TOOL, PLAN_MODEL_START_TOOL, PLAN_MODEL_STOP_TOOL, RUNTIME_CATALOG_TOOL,
+        SYSTEM_SUMMARY_TOOL, ToolCallResultStatus,
     };
 
     use super::*;
@@ -464,6 +470,16 @@ mod tests {
                 .authorize(&request)
                 .expect("model plan tool"),
             AuthorizedAgentTool::PlanModelStart {
+                model_id: "managed-model-1".to_owned()
+            }
+        );
+
+        request.tool_name = PLAN_MODEL_STOP_TOOL.to_owned();
+        assert_eq!(
+            AgentToolPolicy
+                .authorize(&request)
+                .expect("model stop plan tool"),
+            AuthorizedAgentTool::PlanModelStop {
                 model_id: "managed-model-1".to_owned()
             }
         );
@@ -669,11 +685,15 @@ mod tests {
     }
 
     #[test]
-    fn rust_argument_policy_matches_shared_v9_fixtures() {
+    fn rust_argument_policy_matches_shared_v12_fixtures() {
         let manifest: Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v9-tools.json"))
-                .expect("shared Agent RPC v9 tool policy");
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v12-tools.json"))
+                .expect("shared Agent RPC v12 tool policy");
         let tools = manifest["tools"].as_array().expect("tool policy array");
+        assert_eq!(
+            manifest["protocolVersion"].as_u64(),
+            Some(u64::from(hal100_protocol::AGENT_RPC_VERSION))
+        );
         assert_eq!(tools.len(), AgentCapabilityRegistry::all().len());
 
         for tool in tools {

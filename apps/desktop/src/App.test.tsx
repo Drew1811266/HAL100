@@ -46,7 +46,9 @@ describe("HAL100 application shell", () => {
 
     expect(await screen.findByRole("heading", { name: "今天需要处理什么" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "核心已就绪，尚未添加模型" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "添加第一个模型" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "添加模型" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "添加第一个模型" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "当前状态" })).toBeInTheDocument();
 
     const mainNavigation = screen.getByRole("navigation", { name: "主导航" });
     expect(within(mainNavigation).getAllByRole("link")).toHaveLength(5);
@@ -180,7 +182,7 @@ describe("HAL100 application shell", () => {
     expect(screen.queryByRole("heading", { name: "初始化配置中心" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "下载与启动" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "HAL100" })).toBeInTheDocument();
-    expect(await screen.findByText("v1.0.3")).toBeInTheDocument();
+    expect(await screen.findByText("v1.0.4")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "打开 Agent 诊断" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "已关闭" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存保留策略" })).toBeDisabled();

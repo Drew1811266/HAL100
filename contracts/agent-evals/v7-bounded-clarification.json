@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "checkpointSchemaVersion": 3,
+  "suite": "hal100-bounded-agent-clarification",
+  "purpose": "Lock typed, in-process clarification and same-task continuation without retaining free-form conversation or restoring authority.",
+  "limits": {
+    "ttlMs": 300000,
+    "maxAttempts": 2,
+    "maxPendingActionPlans": 0,
+    "persistentPromptCount": 0,
+    "persistentAnswerCount": 0,
+    "restoredAuthorizationCount": 0
+  },
+  "allowedKinds": ["externalAgentTarget", "managedOwnership", "singleMutationTarget"],
+  "allowedChoices": ["selectExternalAgent", "removeManagedRuntime", "disconnectOnly", "cancel"],
+  "forbiddenCheckpointFields": [
+    "prompt",
+    "answer",
+    "resourceId",
+    "targetId",
+    "planId",
+    "runId",
+    "path",
+    "credential",
+    "apiKey",
+    "toolResult",
+    "authorization"
+  ],
+  "scenarios": [
+    {
+      "id": "missing-external-target-enters-clarifying",
+      "events": ["beginExternalTarget"],
+      "expected": {
+        "phase": "clarifying",
+        "attemptCount": 0,
+        "recoveryScope": "inProcessClarification"
+      }
+    },
+    {
+      "id": "typed-target-continues-same-task",
+      "events": ["beginExternalTarget", "selectOpenCode"],
+      "expected": {
+        "phase": "inspecting",
+        "taskKind": "configure_external_agent",
+        "target": "opencode"
+      }
+    },
+    {
+      "id": "managed-pi-removal-is-explicit",
+      "events": ["beginManagedOwnership", "removeManagedRuntime"],
+      "expected": {
+        "phase": "inspecting",
+        "taskKind": "remove_managed_external_agent",
+        "target": "pi-coding-agent"
+      }
+    },
+    {
+      "id": "disconnect-does-not-uninstall-user-agent",
+      "events": ["beginManagedOwnership", "disconnectOnly"],
+      "expected": { "phase": "inspecting", "taskKind": "disconnect_external_agent" }
+    },
+    {
+      "id": "multi-target-removal-uses-two-slots",
+      "events": ["beginSingleMutationTarget", "selectPi", "removeManagedRuntime"],
+      "expected": { "phase": "inspecting", "checkpointSequence": 3, "attemptCount": 2 }
+    },
+    {
+      "id": "mismatched-choice-does-not-advance",
+      "events": ["beginExternalTarget", "submitOwnershipChoice"],
+      "expected": { "phase": "clarifying", "attemptCount": 1 }
+    },
+    {
+      "id": "second-invalid-choice-blocks",
+      "events": ["beginExternalTarget", "submitOwnershipChoice", "submitOwnershipChoice"],
+      "expected": { "phase": "blocked", "attemptCount": 2, "recoveryScope": "none" }
+    },
+    {
+      "id": "expiry-blocks-without-tool-or-plan",
+      "events": ["beginExternalTarget", "expire"],
+      "expected": { "phase": "blocked", "pendingActionPlan": false, "recoveryScope": "none" }
+    },
+    {
+      "id": "cancel-is-terminal",
+      "events": ["beginExternalTarget", "cancel"],
+      "expected": { "phase": "cancelled", "pendingActionPlan": false, "recoveryScope": "none" }
+    },
+    {
+      "id": "restart-restores-no-clarification-or-authority",
+      "events": ["beginExternalTarget", "restart"],
+      "expected": null
+    }
+  ]
+}

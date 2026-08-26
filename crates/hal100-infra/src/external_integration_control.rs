@@ -14,6 +14,10 @@ use uuid::Uuid;
 
 use hal100_protocol::{ExternalAgentInputModality, ExternalAgentModelProfile};
 
+use crate::{
+    AgentRuntimeCapacityProfile, MANAGED_ROUTE_MAX_OUTPUT_TOKENS, MANAGED_ROUTE_PROFILE_REVISION,
+};
+
 const SANITIZED_EXEC_PATH: &str = "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin";
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -157,18 +161,24 @@ impl ExternalModelProfileRegistry {
     ///
     /// Adapters must refresh this value when route-specific capability metadata becomes
     /// available instead of silently inheriting an upstream client's optimistic defaults.
-    pub fn conservative_managed_route() -> Self {
+    pub fn managed_route(capacity: AgentRuntimeCapacityProfile) -> Self {
         Self::new(ExternalAgentModelProfile {
             model_id: "hal100-active".to_owned(),
             display_name: "HAL100 当前模型".to_owned(),
-            context_window_tokens: 4_096,
-            max_output_tokens: 1_024,
+            context_window_tokens: capacity.context_window_tokens,
+            max_output_tokens: MANAGED_ROUTE_MAX_OUTPUT_TOKENS,
             input_modalities: vec![ExternalAgentInputModality::Text],
             supports_tools: true,
             supports_reasoning: false,
-            revision: "managed-route-v1".to_owned(),
+            revision: MANAGED_ROUTE_PROFILE_REVISION.to_owned(),
         })
         .expect("the built-in conservative profile is valid")
+    }
+
+    /// Conservative test/default profile. Product startup always supplies the Rust-selected
+    /// device profile through [`Self::managed_route`].
+    pub fn conservative_managed_route() -> Self {
+        Self::managed_route(AgentRuntimeCapacityProfile::baseline())
     }
 
     pub fn snapshot(&self) -> Result<ExternalAgentModelProfile, ModelProfileError> {
@@ -401,7 +411,7 @@ mod tests {
                 .snapshot()
                 .expect("initial profile")
                 .context_window_tokens,
-            4_096
+            crate::AGENT_BASELINE_CONTEXT_WINDOW_TOKENS
         );
         let invalid = ExternalAgentModelProfile {
             model_id: "hal100-active".to_owned(),

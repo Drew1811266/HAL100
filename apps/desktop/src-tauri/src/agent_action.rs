@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use hal100_core::ExternalAgentIntegrationId;
-use hal100_protocol::{AgentActionKind, AgentActionPlan};
+use hal100_core::{ExternalAgentIntegrationId, ExternalAgentIntegrationRegistry};
+use hal100_protocol::{AgentActionKind, AgentActionPlan, DiagnosticComponent};
 
 const MAX_ACTION_PLAN_ID_CHARS: usize = 128;
 
@@ -15,11 +15,22 @@ pub(super) enum AgentActionPlanError {
 pub(super) struct PendingAgentAction {
     pub(super) plan: AgentActionPlan,
     pub(super) executor: AgentActionExecutor,
+    pub(super) repair_verification: Option<AgentRepairVerification>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AgentRepairVerification {
+    pub(super) code: String,
+    pub(super) component: DiagnosticComponent,
+    pub(super) target_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum AgentActionExecutor {
     StartOrSwitchModel {
+        model_id: String,
+    },
+    StopModel {
         model_id: String,
     },
     DownloadModel {
@@ -51,6 +62,66 @@ pub(super) enum AgentActionExecutor {
         integration_id: ExternalAgentIntegrationId,
         integration_plan_id: String,
     },
+}
+
+impl AgentActionExecutor {
+    const fn action_kind(&self) -> AgentActionKind {
+        match self {
+            Self::StartOrSwitchModel { .. } => AgentActionKind::StartOrSwitchModel,
+            Self::StopModel { .. } => AgentActionKind::StopModel,
+            Self::DownloadModel { .. } => AgentActionKind::DownloadModel,
+            Self::InstallLlamaCpp { .. } => AgentActionKind::InstallLlamaCpp,
+            Self::RemoveLlamaCpp { .. } => AgentActionKind::RemoveLlamaCpp,
+            Self::RemoveModel { .. } => AgentActionKind::RemoveModel,
+            Self::InstallExternalAgent { .. } => AgentActionKind::InstallExternalAgent,
+            Self::RemoveExternalAgent { .. } => AgentActionKind::RemoveExternalAgent,
+            Self::ConfigureExternalAgent { .. } => AgentActionKind::ConfigureExternalAgent,
+            Self::DisconnectExternalAgent { .. } => AgentActionKind::DisconnectExternalAgent,
+        }
+    }
+
+    fn matches_public_target(&self, target_id: &str) -> bool {
+        match self {
+            Self::StartOrSwitchModel { model_id }
+            | Self::StopModel { model_id }
+            | Self::RemoveModel { model_id, .. } => target_id == model_id,
+            Self::InstallLlamaCpp { .. } | Self::RemoveLlamaCpp { .. } => target_id == "llama.cpp",
+            Self::InstallExternalAgent { integration_id, .. }
+            | Self::RemoveExternalAgent { integration_id, .. }
+            | Self::ConfigureExternalAgent { integration_id, .. }
+            | Self::DisconnectExternalAgent { integration_id, .. } => {
+                target_id
+                    == ExternalAgentIntegrationRegistry::descriptor(*integration_id).integration_id
+            }
+            // The public download target is a repository/revision/path tuple, while the executor
+            // intentionally retains only the private one-use download-plan ID.
+            Self::DownloadModel { .. } => !target_id.is_empty(),
+        }
+    }
+
+    const fn supports_repair_verification(&self) -> bool {
+        matches!(
+            self,
+            Self::InstallLlamaCpp { .. }
+                | Self::ConfigureExternalAgent { .. }
+                | Self::RemoveModel { .. }
+        )
+    }
+}
+
+impl PendingAgentAction {
+    fn is_consistent(&self) -> bool {
+        !self.plan.plan_id.is_empty()
+            && self.plan.plan_id.chars().count() <= MAX_ACTION_PLAN_ID_CHARS
+            && !self.plan.run_id.is_empty()
+            && self.plan.requires_native_confirmation
+            && self.plan.action_kind == self.executor.action_kind()
+            && self.executor.matches_public_target(&self.plan.target_id)
+            && self
+                .repair_verification
+                .as_ref()
+                .is_none_or(|_| self.executor.supports_repair_verification())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -92,6 +163,9 @@ impl AgentActionPlanStore {
         &self,
         pending_action: PendingAgentAction,
     ) -> Result<(), AgentActionPlanError> {
+        if !pending_action.is_consistent() {
+            return Err(AgentActionPlanError::Unavailable);
+        }
         let mut pending = self
             .pending
             .lock()
@@ -119,11 +193,22 @@ impl AgentActionPlanStore {
             .ok()
             .and_then(|mut pending| pending.take())
     }
+
+    pub(super) fn discard_expired(&self, current_time_ms: i64) -> Option<PendingAgentAction> {
+        self.pending.lock().ok().and_then(|mut pending| {
+            pending
+                .as_ref()
+                .is_some_and(|pending| current_time_ms > pending.plan.expires_at_ms)
+                .then(|| pending.take())
+                .flatten()
+        })
+    }
 }
 
 pub(super) const fn action_kind_key(kind: AgentActionKind) -> &'static str {
     match kind {
         AgentActionKind::StartOrSwitchModel => "start_or_switch_model",
+        AgentActionKind::StopModel => "stop_model",
         AgentActionKind::DownloadModel => "download_model",
         AgentActionKind::InstallLlamaCpp => "install_llama_cpp",
         AgentActionKind::RemoveLlamaCpp => "remove_llama_cpp",
@@ -164,6 +249,7 @@ mod tests {
             executor: AgentActionExecutor::StartOrSwitchModel {
                 model_id: "managed-model-1".to_owned(),
             },
+            repair_verification: None,
             plan: AgentActionPlan {
                 plan_id: "agent-plan-1".to_owned(),
                 run_id: "agent-run-1".to_owned(),
@@ -210,14 +296,9 @@ mod tests {
         let confirmation_bypass = AgentActionPlanStore::new();
         let mut bypass = fixture(200);
         bypass.plan.requires_native_confirmation = false;
-        confirmation_bypass
-            .register(bypass)
-            .expect("register bypass fixture");
         assert_eq!(
-            confirmation_bypass
-                .take("agent-plan-1", 100)
-                .expect_err("confirmation bypass"),
-            AgentActionPlanError::Unavailable
+            confirmation_bypass.register(bypass),
+            Err(AgentActionPlanError::Unavailable)
         );
         assert_eq!(
             confirmation_bypass
@@ -239,5 +320,46 @@ mod tests {
         assert!(store.current("agent-plan-1", 100).is_ok());
         assert!(store.discard("agent-plan-1").is_some());
         assert!(store.discard_any().is_none());
+    }
+
+    #[test]
+    fn registration_rejects_public_plan_and_private_executor_mismatches() {
+        let action_kind_mismatch = AgentActionPlanStore::new();
+        let mut pending = fixture(200);
+        pending.plan.action_kind = AgentActionKind::RemoveModel;
+        assert_eq!(
+            action_kind_mismatch.register(pending),
+            Err(AgentActionPlanError::Unavailable)
+        );
+
+        let target_mismatch = AgentActionPlanStore::new();
+        let mut pending = fixture(200);
+        pending.plan.target_id = "different-model".to_owned();
+        assert_eq!(
+            target_mismatch.register(pending),
+            Err(AgentActionPlanError::Unavailable)
+        );
+
+        let repair_mismatch = AgentActionPlanStore::new();
+        let mut pending = fixture(200);
+        pending.repair_verification = Some(AgentRepairVerification {
+            code: "fixture".to_owned(),
+            component: DiagnosticComponent::InferenceEngine,
+            target_id: None,
+        });
+        assert_eq!(
+            repair_mismatch.register(pending),
+            Err(AgentActionPlanError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn expiry_reconciliation_discards_only_after_the_fixed_deadline() {
+        let store = AgentActionPlanStore::new();
+        store.register(fixture(200)).expect("register plan");
+        assert!(store.discard_expired(200).is_none());
+        let expired = store.discard_expired(201).expect("expired plan");
+        assert_eq!(expired.plan.plan_id, "agent-plan-1");
+        assert!(store.discard_expired(300).is_none());
     }
 }

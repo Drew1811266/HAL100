@@ -124,6 +124,34 @@ fn remote_failures_keep_safe_actionable_codes() {
 }
 
 #[test]
+fn model_stop_plan_binds_only_the_exact_current_rust_runtime_state() {
+    let status = LlamaCppStatus {
+        version: "b10218".to_owned(),
+        install_state: EngineInstallState::Installed,
+        runtime_state: hal100_protocol::EngineRuntimeState::Running,
+        active_model_id: Some("model-a".to_owned()),
+        active_model_name: Some("Qwen fixture".to_owned()),
+        port: Some(12345),
+        last_error_code: None,
+    };
+    let pending = build_model_stop_plan_from_status("run-stop", "model-a", &status)
+        .expect("exact current model stop plan");
+    assert_eq!(pending.plan.action_kind, AgentActionKind::StopModel);
+    assert_eq!(pending.plan.target_id, "model-a");
+    assert!(pending.plan.requires_native_confirmation);
+    assert!(matches!(
+        pending.executor,
+        AgentActionExecutor::StopModel { ref model_id } if model_id == "model-a"
+    ));
+
+    assert!(build_model_stop_plan_from_status("run-stop", "model-b", &status).is_none());
+    let mut stopped = status;
+    stopped.runtime_state = hal100_protocol::EngineRuntimeState::Stopped;
+    stopped.active_model_id = None;
+    assert!(build_model_stop_plan_from_status("run-stop", "model-a", &stopped).is_none());
+}
+
+#[test]
 fn external_agent_tools_bind_the_prompt_target_and_never_return_local_paths() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -270,6 +298,7 @@ exit 9
     let mut run = executor.start_run(
         "agent-model-download-run".to_owned(),
         Some(ExternalAgentIntegrationId::PiCodingAgent),
+        None,
         runtime.handle().clone(),
         Arc::new(AtomicBool::new(false)),
     );
@@ -509,6 +538,7 @@ fn agent_model_discovery_plan_and_confirm_use_one_deterministic_download_manager
     let cancellation = Arc::new(AtomicBool::new(false));
     let mut run = executor.start_run(
         "agent-model-download-run".to_owned(),
+        None,
         None,
         runtime.handle().clone(),
         cancellation,

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "contractId": "hal100-agent-composite-recovery-v11",
+  "description": "脱敏复合图持久化只恢复语义形状；精确目标由用户重新绑定，全部节点从现实状态重验证。",
+  "limits": {
+    "maxCheckpointBytes": 16384,
+    "fileMode": "0600",
+    "maxNodes": 8,
+    "maxDependenciesPerNode": 4
+  },
+  "thresholds": {
+    "persistedResourceIdentifiers": 0,
+    "persistedPromptsOrAnswers": 0,
+    "persistedPlanRunOrConfirmationAuthority": 0,
+    "restoredSuccessfulNodes": 0,
+    "restoredChangedOwnedStateFlags": 0,
+    "restoredReauthorizationFlags": 0,
+    "unknownFieldAcceptance": 0,
+    "wrongShapeAcceptance": 0
+  },
+  "scenarios": [
+    {
+      "id": "bounded-0600-atomic-checkpoint",
+      "expected": "原子写入不超过16KiB且权限为0600"
+    },
+    {
+      "id": "semantic-shape-only",
+      "expected": "只保存节点序号、任务/目标类别、谓词、依赖、枚举状态与证据摘要"
+    },
+    {
+      "id": "no-exact-targets-or-content",
+      "expected": "不保存模型ID、外部Agent ID、提示词、回答、路径、凭据或原始结果"
+    },
+    {
+      "id": "no-authority-after-restart",
+      "expected": "不恢复计划ID、run ID、确认、运行或补偿授权"
+    },
+    {
+      "id": "new-exact-user-rebinding",
+      "expected": "用户重新选择精确模型和软件后才构造新的Rust图定义"
+    },
+    {
+      "id": "shape-mismatch-rejected",
+      "expected": "3节点与4节点或任一语义/依赖不匹配均拒绝"
+    },
+    {
+      "id": "full-reality-revalidation",
+      "expected": "恢复后所有节点重置为ready/blocked且证据、变更标记与授权清零"
+    },
+    {
+      "id": "unknown-field-rejected",
+      "expected": "协议或文件中的未知及潜在授权字段故障关闭"
+    },
+    {
+      "id": "terminal-success-clears-recovery",
+      "expected": "succeeded或compensated终态删除恢复文件"
+    }
+  ]
+}

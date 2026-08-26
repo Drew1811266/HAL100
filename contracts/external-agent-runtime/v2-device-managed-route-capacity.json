@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "revision": "managed-route-v3",
+  "modelId": "hal100-active",
+  "selectionAuthority": "rust",
+  "contextTiers": {
+    "baseline16k": 16384,
+    "standard32k": 32768
+  },
+  "maxOutputTokens": 1024,
+  "parallel": 1,
+  "reasoning": false,
+  "inputModalities": ["text"]
+}

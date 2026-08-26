@@ -5,6 +5,7 @@ pub const SYSTEM_SUMMARY_TOOL: &str = "hal100.inspect_system_summary";
 pub const SIMULATED_SYSTEM_SUMMARY_TOOL: &str = SYSTEM_SUMMARY_TOOL;
 pub const RUNTIME_CATALOG_TOOL: &str = "hal100.inspect_runtime_catalog";
 pub const PLAN_MODEL_START_TOOL: &str = "hal100.plan_model_start";
+pub const PLAN_MODEL_STOP_TOOL: &str = "hal100.plan_model_stop";
 pub const PLAN_MODEL_REMOVAL_TOOL: &str = "hal100.plan_model_removal";
 pub const ENVIRONMENT_DIAGNOSTICS_TOOL: &str = "hal100.inspect_environment_diagnostics";
 pub const OPERATIONAL_HISTORY_TOOL: &str = "hal100.inspect_operational_history";

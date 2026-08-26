@@ -45,6 +45,16 @@ impl SystemProbe for MacOsSystemProbe {
 }
 
 impl MacOsSystemProbe {
+    /// Reads unified memory once for startup policy selection. This does not start a sampler or
+    /// retain any hardware identifier.
+    pub fn total_unified_memory_bytes(&self) -> Result<u64, HardwareProbeError> {
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return Err(HardwareProbeError::UnsupportedPlatform);
+        }
+        let values = sysctl_values(&["hw.memsize"])?;
+        parse_u64("hw.memsize", &values[0])
+    }
+
     pub fn model_storage_available_bytes(
         &self,
         model_storage_path: &Path,
@@ -206,6 +216,17 @@ mod tests {
         assert_eq!(
             recommendation.conservative_model_bytes,
             9 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn probes_total_memory_once_for_runtime_policy() {
+        assert!(
+            MacOsSystemProbe
+                .total_unified_memory_bytes()
+                .expect("total unified memory")
+                >= 8 * 1024 * 1024 * 1024
         );
     }
 

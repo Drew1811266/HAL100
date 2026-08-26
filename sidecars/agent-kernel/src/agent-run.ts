@@ -1,5 +1,13 @@
 import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
-import { contentText, createModels, createProvider, type Model } from "@earendil-works/pi-ai";
+import {
+  type Context,
+  contentText,
+  createModels,
+  createProvider,
+  type Message,
+  type Model,
+  type Usage,
+} from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
@@ -19,6 +27,7 @@ import {
   PLAN_MODEL_DOWNLOAD_TOOL,
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_MODEL_START_TOOL,
+  PLAN_MODEL_STOP_TOOL,
   RUNTIME_CATALOG_TOOL,
   SYSTEM_SUMMARY_TOOL,
   type ToolBrokerBridge,
@@ -31,6 +40,11 @@ const CLOUD_AGENT_ROUTE_PREFIX = "hal100-agent-cloud-";
 const MAX_REQUIRED_TOOL_PROMPTS = 3;
 export const MAX_REQUIRED_TOOLS = 4;
 export const MAX_ACTION_PLANS = 1;
+export const LOCAL_AGENT_BASELINE_CONTEXT_WINDOW_TOKENS = 16_384;
+export const LOCAL_AGENT_STANDARD_CONTEXT_WINDOW_TOKENS = 32_768;
+export const LOCAL_AGENT_MAX_OUTPUT_TOKENS = 768;
+export const CLOUD_AGENT_CONTEXT_WINDOW_TOKENS = 128_000;
+export const CLOUD_AGENT_MAX_OUTPUT_TOKENS = 2_048;
 
 export type AgentProviderProtocol = "localOpenAi" | "cloudOpenAi" | "cloudAnthropic";
 
@@ -41,6 +55,8 @@ export interface AgentRunRequest {
   apiKey: string;
   modelId: string;
   providerProtocol: AgentProviderProtocol;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
 }
 
 export interface AgentRunResult {
@@ -49,6 +65,25 @@ export interface AgentRunResult {
   registeredToolCount: number;
   completedToolCalls: number;
   toolNames: string[];
+  efficiency: AgentRunEfficiency;
+}
+
+export interface AgentRunEfficiency {
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  executionModelTurnCount: number;
+  continuationPromptCount: number;
+  providerUsageAvailable: boolean;
+  reportedInputTokens: number;
+  reportedOutputTokens: number;
+  peakReportedInputTokens: number;
+  peakEstimatedInputTokens: number;
+  taskSystemPromptBytes: number;
+  compactedTurnCount: number;
+  sentToolResultBytes: number;
+  sentToolResultTokenEstimate: number;
+  repeatedToolResultBytes: number;
+  repeatedToolResultTokenEstimate: number;
 }
 
 export type AgentRunFailureCode =
@@ -80,10 +115,12 @@ export const AGENT_TOOL_NAMES = [
   OPERATIONAL_HEALTH_OBSERVATION_TOOL,
   PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
   PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
+  PLAN_MODEL_STOP_TOOL,
 ] as const;
 
 export const ACTION_PLAN_TOOLS = new Set<string>([
   PLAN_MODEL_START_TOOL,
+  PLAN_MODEL_STOP_TOOL,
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_DIAGNOSTIC_REPAIR_TOOL,
   PLAN_ENGINE_INSTALL_TOOL,
@@ -97,6 +134,7 @@ export const ACTION_PLAN_TOOLS = new Set<string>([
 
 export const TOOL_PREREQUISITES = new Map<string, readonly string[]>([
   [PLAN_MODEL_START_TOOL, [RUNTIME_CATALOG_TOOL]],
+  [PLAN_MODEL_STOP_TOOL, [RUNTIME_CATALOG_TOOL]],
   [PLAN_MODEL_REMOVAL_TOOL, [RUNTIME_CATALOG_TOOL]],
   [PLAN_DIAGNOSTIC_REPAIR_TOOL, [ENVIRONMENT_DIAGNOSTICS_TOOL]],
   [PLAN_ENGINE_INSTALL_TOOL, [RUNTIME_CATALOG_TOOL]],
@@ -135,6 +173,241 @@ interface AgentRuntimeOverride {
   streamFn: StreamFn;
   model: Model<"openai-completions" | "anthropic-messages">;
   failureCode?: () => AgentRunFailureCode | undefined;
+  contextAssemblyMode?: "bounded" | "legacyFull";
+}
+
+const BASE_SYSTEM_PROMPT =
+  "你是 HAL100 的本地配置 Agent，只负责 HAL100、本地模型和推理环境。" +
+  "不得充当通用聊天助手；超出范围时只说明职责边界。" +
+  "不得声称执行未提供的系统操作，不得生成或假装运行 shell 命令。" +
+  "用户询问HAL100 Gateway时，只解释它将经过本地凭据认证的客户端请求路由到当前后端，不得声称已经修改配置。" +
+  "安装、卸载、删除或改变配置只能使用 HAL100 提供的白名单计划工具；计划必须经用户原生确认后才能执行。" +
+  "不得为任意路径写入、通用Shell、桌面控制或强制切换编造工具调用；当前没有这些能力。" +
+  "只能依据工具返回的结构化结果，用简洁中文解释，不得猜测路径、凭据或系统信息。";
+
+const TOOL_SYSTEM_INSTRUCTIONS = new Map<string, string>([
+  [SYSTEM_SUMMARY_TOOL, "用户要求检测电脑配置时，必须调用 hal100.inspect_system_summary。"],
+  [
+    RUNTIME_CATALOG_TOOL,
+    "用户要求查看模型、引擎或后端状态时，必须调用 hal100.inspect_runtime_catalog。",
+  ],
+  [
+    PLAN_MODEL_START_TOOL,
+    "启动或切换模型时，从运行目录复制精确modelId调用hal100.plan_model_start；计划尚未执行，必须提醒用户在HAL100原生窗口确认。",
+  ],
+  [
+    PLAN_MODEL_STOP_TOOL,
+    "停止当前模型时，从运行目录复制精确活动modelId调用hal100.plan_model_stop；计划尚未执行，必须提醒用户在HAL100原生窗口确认。",
+  ],
+  [
+    PLAN_MODEL_REMOVAL_TOOL,
+    "移除模型时，从运行目录复制精确modelId调用hal100.plan_model_removal；托管文件移到废纸篓，外部文件只移除索引。",
+  ],
+  [
+    ENVIRONMENT_DIAGNOSTICS_TOOL,
+    "全面诊断HAL100环境时，必须调用hal100.inspect_environment_diagnostics。",
+  ],
+  [
+    PLAN_DIAGNOSTIC_REPAIR_TOOL,
+    "诊断并修复时，只能从本次报告选择一项带repairKind的发现，复制精确reportId和findingId调用hal100.plan_diagnostic_repair；无法安全修复时如实说明。",
+  ],
+  [PLAN_ENGINE_INSTALL_TOOL, "安装llama.cpp时，先读取运行环境，再调用hal100.plan_engine_install。"],
+  [PLAN_ENGINE_REMOVE_TOOL, "卸载llama.cpp时，先读取运行环境，再调用hal100.plan_engine_remove。"],
+  [
+    EXTERNAL_AGENT_STATUS_TOOL,
+    "检查OpenCode、Pi Coding Agent、OpenClaw或Hermes Agent时，复制用户点名软件的固定integrationId调用hal100.inspect_external_agent。",
+  ],
+  [
+    PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+    "配置或重新配置外部Agent时，检查同一integrationId后调用hal100.plan_external_agent_configuration。",
+  ],
+  [
+    PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL,
+    "断开外部Agent时，检查同一integrationId后调用hal100.plan_external_agent_disconnection；只允许移除HAL100受管配置和专属凭据。",
+  ],
+  [
+    PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+    "安装外部Agent时，检查同一integrationId后调用hal100.plan_external_agent_installation；当前只有Pi Coding Agent具备验收过的HAL100私有配方，计划本身不安装。",
+  ],
+  [
+    PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
+    "移除HAL100私有Pi运行时时，只有同一integrationId状态明确返回managedInstallation=true才调用hal100.plan_managed_external_agent_removal；不得删除用户自行安装的Pi。",
+  ],
+  [
+    MODEL_CATALOG_SEARCH_TOOL,
+    "搜索公开GGUF候选时，先调用hal100.search_model_catalog，并只使用返回的候选标识。",
+  ],
+  [
+    MODEL_REPOSITORY_INSPECTION_TOOL,
+    "检查模型仓库时，从搜索结果复制精确repositoryId调用hal100.inspect_model_repository。",
+  ],
+  [
+    PLAN_MODEL_DOWNLOAD_TOOL,
+    "下载模型时，从仓库结果复制精确repositoryId和fileName调用hal100.plan_model_download；计划尚未执行。",
+  ],
+  [
+    OPERATIONAL_HISTORY_TOOL,
+    "分析近期失败或调试操作链路时，调用hal100.inspect_operational_history；只能使用脱敏事件，不能猜测路径或原始日志。",
+  ],
+  [
+    OPERATIONAL_HEALTH_OBSERVATION_TOOL,
+    "部署前检查或稳定性观察时，调用hal100.observe_operational_health；固定3次短时采样不代表长期后台监控。",
+  ],
+]);
+
+export function buildAgentSystemPrompt(requiredTools: readonly string[]): string {
+  return [
+    BASE_SYSTEM_PROMPT,
+    ...requiredTools.flatMap((toolName) => {
+      const instruction = TOOL_SYSTEM_INSTRUCTIONS.get(toolName);
+      return instruction ? [instruction] : [];
+    }),
+  ].join("");
+}
+
+class AgentContextMetricsCollector {
+  private readonly seenToolResultCallIds = new Set<string>();
+  private modelTurnCount = 0;
+  private compactedTurnCount = 0;
+  private peakEstimatedInputTokens = 0;
+  private sentToolResultBytes = 0;
+  private sentToolResultTokenEstimate = 0;
+  private repeatedToolResultBytes = 0;
+  private repeatedToolResultTokenEstimate = 0;
+
+  observe(original: Context, assembled: Context): void {
+    this.modelTurnCount += 1;
+    if (assembled.messages.length < original.messages.length) this.compactedTurnCount += 1;
+    this.peakEstimatedInputTokens = Math.max(
+      this.peakEstimatedInputTokens,
+      estimateContextInputTokens(assembled),
+    );
+    for (const message of assembled.messages) {
+      if (message.role !== "toolResult") continue;
+      const text = visibleToolResultText(message);
+      const bytes = Buffer.byteLength(text, "utf8");
+      const tokens = Math.ceil(text.length / 4);
+      this.sentToolResultBytes += bytes;
+      this.sentToolResultTokenEstimate += tokens;
+      if (this.seenToolResultCallIds.has(message.toolCallId)) {
+        this.repeatedToolResultBytes += bytes;
+        this.repeatedToolResultTokenEstimate += tokens;
+      }
+      this.seenToolResultCallIds.add(message.toolCallId);
+    }
+  }
+
+  complete(
+    model: Model<"openai-completions" | "anthropic-messages">,
+    messages: readonly { role: string; usage?: Usage }[],
+    systemPrompt: string,
+    continuationPromptCount: number,
+  ): AgentRunEfficiency {
+    const usages = messages.flatMap((message) =>
+      message.role === "assistant" && message.usage ? [message.usage] : [],
+    );
+    const providerUsageAvailable = usages.some(
+      (usage) =>
+        usage.input > 0 ||
+        usage.output > 0 ||
+        usage.cacheRead > 0 ||
+        usage.cacheWrite > 0 ||
+        usage.totalTokens > 0,
+    );
+    const reportedInputs = usages.map((usage) => usage.input + usage.cacheRead + usage.cacheWrite);
+    return {
+      contextWindowTokens: model.contextWindow,
+      maxOutputTokens: model.maxTokens,
+      executionModelTurnCount: this.modelTurnCount,
+      continuationPromptCount,
+      providerUsageAvailable,
+      reportedInputTokens: reportedInputs.reduce((total, value) => total + value, 0),
+      reportedOutputTokens: usages.reduce((total, usage) => total + usage.output, 0),
+      peakReportedInputTokens: Math.max(0, ...reportedInputs),
+      peakEstimatedInputTokens: this.peakEstimatedInputTokens,
+      taskSystemPromptBytes: Buffer.byteLength(systemPrompt, "utf8"),
+      compactedTurnCount: this.compactedTurnCount,
+      sentToolResultBytes: this.sentToolResultBytes,
+      sentToolResultTokenEstimate: this.sentToolResultTokenEstimate,
+      repeatedToolResultBytes: this.repeatedToolResultBytes,
+      repeatedToolResultTokenEstimate: this.repeatedToolResultTokenEstimate,
+    };
+  }
+}
+
+export function compactAgentContext(context: Context): Context {
+  if (context.messages.length <= 1) return context;
+  const firstUserIndex = context.messages.findIndex((message) => message.role === "user");
+  let lastToolResultIndex = -1;
+  for (let index = context.messages.length - 1; index >= 0; index -= 1) {
+    if (context.messages[index]?.role === "toolResult") {
+      lastToolResultIndex = index;
+      break;
+    }
+  }
+  const selectedIndexes = new Set<number>();
+  if (firstUserIndex >= 0) selectedIndexes.add(firstUserIndex);
+  if (lastToolResultIndex >= 0) {
+    const toolResult = context.messages[lastToolResultIndex];
+    if (toolResult?.role !== "toolResult") return context;
+    let matchingAssistantIndex = -1;
+    for (let index = lastToolResultIndex - 1; index >= 0; index -= 1) {
+      const candidate = context.messages[index];
+      if (
+        candidate?.role === "assistant" &&
+        candidate.content.some(
+          (block) => block.type === "toolCall" && block.id === toolResult.toolCallId,
+        )
+      ) {
+        matchingAssistantIndex = index;
+        break;
+      }
+    }
+    if (matchingAssistantIndex < 0) return context;
+    selectedIndexes.add(matchingAssistantIndex);
+    selectedIndexes.add(lastToolResultIndex);
+  }
+  for (let index = context.messages.length - 1; index >= 0; index -= 1) {
+    if (context.messages[index]?.role === "user") {
+      selectedIndexes.add(index);
+      break;
+    }
+  }
+  return {
+    ...context,
+    messages: context.messages.filter((_message, index) => selectedIndexes.has(index)),
+  };
+}
+
+function visibleToolResultText(message: Extract<Message, { role: "toolResult" }>): string {
+  return message.content
+    .map((block) => (block.type === "text" ? block.text : `[image:${block.mimeType}]`))
+    .join("");
+}
+
+function estimateContextInputTokens(context: Context): number {
+  let characters = context.systemPrompt?.length ?? 0;
+  for (const message of context.messages) {
+    if (message.role === "user") {
+      characters +=
+        typeof message.content === "string"
+          ? message.content.length
+          : message.content.reduce(
+              (total, block) => total + (block.type === "text" ? block.text.length : 4_800),
+              0,
+            );
+    } else if (message.role === "toolResult") {
+      characters += visibleToolResultText(message).length;
+    } else {
+      for (const block of message.content) {
+        if (block.type === "text") characters += block.text.length;
+        else if (block.type === "thinking") characters += block.thinking.length;
+        else characters += block.name.length + JSON.stringify(block.arguments).length;
+      }
+    }
+  }
+  if (context.tools?.length) characters += JSON.stringify(context.tools).length;
+  return Math.ceil(characters / 4);
 }
 
 export async function runPiAgent(
@@ -147,33 +420,54 @@ export async function runPiAgent(
   const runtime = runtimeOverride ?? createGatewayRuntime(validated);
   const tools = bridge.createAgentTools(runId);
   const completedToolNames: string[] = [];
+  let endedAfterActionPlan = false;
+  const contextMetrics = new AgentContextMetricsCollector();
+  const systemPrompt = buildAgentSystemPrompt(validated.requiredTools);
+  const isAnthropic = validated.providerProtocol === "cloudAnthropic";
+  const streamFn: StreamFn = (selectedModel, context, options) => {
+    const nextRequiredTool = nextRequiredAgentTool(
+      validated,
+      completedToolNames,
+      bridge.diagnosticRepairAvailable(),
+    );
+    const assembledContext =
+      runtime.contextAssemblyMode === "legacyFull" ? context : compactAgentContext(context);
+    const constrainedContext = {
+      ...assembledContext,
+      tools: nextRequiredTool
+        ? assembledContext.tools?.filter((tool) => tool.name === nextRequiredTool)
+        : [],
+    };
+    contextMetrics.observe(context, constrainedContext);
+    return runtime.streamFn(selectedModel, constrainedContext, {
+      ...options,
+      toolChoice: nextRequiredTool ? (isAnthropic ? "auto" : "required") : "none",
+      onPayload:
+        isAnthropic && nextRequiredTool
+          ? (payload: unknown) => ({
+              ...(typeof payload === "object" && payload !== null ? payload : {}),
+              tool_choice: { type: "tool", name: nextRequiredTool },
+            })
+          : options?.onPayload,
+    } as never);
+  };
   const agent = new Agent({
-    streamFn: runtime.streamFn,
+    streamFn,
     toolExecution: "sequential",
+    afterToolCall: async ({ toolCall, isError }) => {
+      if (
+        !isError &&
+        runtime.contextAssemblyMode !== "legacyFull" &&
+        ACTION_PLAN_TOOLS.has(toolCall.name)
+      ) {
+        endedAfterActionPlan = true;
+        return { terminate: true };
+      }
+      return undefined;
+    },
     maxRetryDelayMs: 0,
     initialState: {
-      systemPrompt:
-        "你是 HAL100 的本地配置 Agent，只负责 HAL100、本地模型和推理环境。" +
-        "不得充当通用聊天助手；超出范围时只说明职责边界。" +
-        "不得声称执行未提供的系统操作，不得生成或假装运行 shell 命令。" +
-        "安装、卸载、删除或改变配置只能使用 HAL100 提供的白名单计划工具；计划必须经用户原生确认后才能执行。" +
-        "用户要求检测电脑配置时，必须调用 hal100.inspect_system_summary；" +
-        "用户要求查看模型、引擎或后端状态时，必须调用 hal100.inspect_runtime_catalog。" +
-        "用户要求启动或切换本地模型时，必须先调用 hal100.inspect_runtime_catalog，" +
-        "再从返回结果复制精确 modelId 调用 hal100.plan_model_start；计划工具绝不代表操作已经执行，必须明确提醒用户在 HAL100 原生窗口确认。" +
-        "用户要求删除或移除本地模型时，必须先读取运行环境，再从返回结果复制精确 modelId 调用 hal100.plan_model_removal；托管文件移到废纸篓，外部文件只移除索引。" +
-        "用户要求全面诊断HAL100环境时，必须调用 hal100.inspect_environment_diagnostics。" +
-        "用户要求分析近期失败、错误历史或调试操作链路时，必须调用 hal100.inspect_operational_history；该工具只返回脱敏事件，不能据此猜测路径或原始日志。" +
-        "用户要求部署前检查、运行监测或稳定性观察时，必须调用 hal100.observe_operational_health；该工具只执行固定3次短时采样，不代表长期后台监控。" +
-        "用户明确要求诊断并修复时，必须先读取诊断报告；只能选择报告中带 repairKind 的一项，复制精确 reportId 和 findingId 调用 hal100.plan_diagnostic_repair。每次只修复一项，无法自动修复的问题必须如实说明。" +
-        "用户要求安装或卸载 llama.cpp 时，必须先读取运行环境，再分别调用 hal100.plan_engine_install 或 hal100.plan_engine_remove。" +
-        "用户要求检查 OpenCode、Pi Coding Agent、OpenClaw 或 Hermes Agent 时，必须按用户点名的软件复制固定 integrationId，调用 hal100.inspect_external_agent。" +
-        "用户明确要求安装外部 Agent 时，必须先检查同一 integrationId，再调用 hal100.plan_external_agent_installation；当前只有 Pi Coding Agent 提供经过验收的 HAL100 私有部署配方，计划工具本身不安装。" +
-        "用户明确要求卸载 HAL100 私有 Pi 运行时时，必须先检查同一 integrationId，并且只在状态明确返回 managedInstallation=true 时调用 hal100.plan_managed_external_agent_removal；不得把断开配置、用户自行安装的 Pi 或含糊的卸载请求解释为私有卸载。" +
-        "用户要求配置或重新配置外部 Agent 时，必须先检查同一 integrationId，再调用 hal100.plan_external_agent_configuration。" +
-        "用户要求断开外部 Agent 时，必须先检查同一 integrationId，再调用 hal100.plan_external_agent_disconnection；只允许移除 HAL100 受管配置和专属凭据。" +
-        "不得为任意路径写入、通用Shell、桌面控制或强制切换编造工具调用；当前没有这些能力。" +
-        "只能依据工具返回的结构化结果，用简洁中文解释，不得猜测路径、凭据或系统信息。",
+      systemPrompt,
       model: runtime.model,
       thinkingLevel: "off",
       tools,
@@ -188,7 +482,9 @@ export async function runPiAgent(
 
   try {
     let nextPrompt = validated.prompt;
+    let continuationPromptCount = 0;
     for (let promptAttempt = 0; promptAttempt < MAX_REQUIRED_TOOL_PROMPTS; promptAttempt += 1) {
+      if (promptAttempt > 0) continuationPromptCount += 1;
       await agent.prompt(nextPrompt);
       const providerFailure = runtime.failureCode?.();
       if (providerFailure) throw new AgentRunFailure(providerFailure);
@@ -202,29 +498,43 @@ export async function runPiAgent(
         `继续完成同一项 HAL100 任务。必须调用 ${missingTool}，` +
         "只能使用现有工具结果中的精确字段；不要只给文字说明。";
     }
+    const providerFailure = runtime.failureCode?.();
+    if (providerFailure) throw new AgentRunFailure(providerFailure);
+
+    if (agent.state.errorMessage) {
+      throw new AgentRunFailure(
+        runtime.failureCode?.() ?? classifyModelFailure(agent.state.errorMessage),
+      );
+    }
+    const answer = [...agent.state.messages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    const answerText = endedAfterActionPlan
+      ? "已生成一次性受控计划，尚未执行。请在 HAL100 原生窗口确认后再执行。"
+      : answer
+        ? contentText(answer.content).trim()
+        : "";
+    if (!answerText) {
+      throw new AgentRunFailure("empty_agent_answer");
+    }
+
+    return {
+      runId,
+      answer: answerText,
+      registeredToolCount: tools.length,
+      completedToolCalls: completedToolNames.length,
+      toolNames: completedToolNames,
+      efficiency: contextMetrics.complete(
+        runtime.model,
+        agent.state.messages,
+        systemPrompt,
+        continuationPromptCount,
+      ),
+    };
   } catch (error) {
+    if (error instanceof AgentRunFailure) throw error;
     throw new AgentRunFailure(runtime.failureCode?.() ?? classifyModelFailure(error));
   }
-  if (agent.state.errorMessage) {
-    throw new AgentRunFailure(
-      runtime.failureCode?.() ?? classifyModelFailure(agent.state.errorMessage),
-    );
-  }
-  const answer = [...agent.state.messages]
-    .reverse()
-    .find((message) => message.role === "assistant");
-  const answerText = answer ? contentText(answer.content).trim() : "";
-  if (!answerText) {
-    throw new AgentRunFailure("empty_agent_answer");
-  }
-
-  return {
-    runId,
-    answer: answerText,
-    registeredToolCount: tools.length,
-    completedToolCalls: completedToolNames.length,
-    toolNames: completedToolNames,
-  };
 }
 
 function classifyModelFailure(error: unknown): AgentRunFailureCode {
@@ -306,6 +616,19 @@ export function validateAgentRunRequest(request: AgentRunRequest): AgentRunReque
   ) {
     throw new TypeError("agent provider protocol is invalid");
   }
+  const localCapacityIsValid =
+    (request.contextWindowTokens === LOCAL_AGENT_BASELINE_CONTEXT_WINDOW_TOKENS ||
+      request.contextWindowTokens === LOCAL_AGENT_STANDARD_CONTEXT_WINDOW_TOKENS) &&
+    request.maxOutputTokens === LOCAL_AGENT_MAX_OUTPUT_TOKENS;
+  const cloudCapacityIsValid =
+    request.contextWindowTokens === CLOUD_AGENT_CONTEXT_WINDOW_TOKENS &&
+    request.maxOutputTokens === CLOUD_AGENT_MAX_OUTPUT_TOKENS;
+  if (
+    (request.providerProtocol === "localOpenAi" && !localCapacityIsValid) ||
+    (request.providerProtocol !== "localOpenAi" && !cloudCapacityIsValid)
+  ) {
+    throw new TypeError("agent capacity profile is invalid");
+  }
   if (
     (request.providerProtocol === "localOpenAi" && request.modelId !== AGENT_MODEL_ALIAS) ||
     (request.providerProtocol !== "localOpenAi" &&
@@ -335,6 +658,8 @@ export function validateAgentRunRequest(request: AgentRunRequest): AgentRunReque
     apiKey: request.apiKey,
     modelId: request.modelId,
     providerProtocol: request.providerProtocol,
+    contextWindowTokens: request.contextWindowTokens,
+    maxOutputTokens: request.maxOutputTokens,
   };
 }
 
@@ -367,8 +692,8 @@ export function createGatewayRuntime(request: AgentRunRequest): AgentRuntimeOver
           reasoning: false,
           input: ["text"] as const,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 128_000,
-          maxTokens: 2_048,
+          contextWindow: CLOUD_AGENT_CONTEXT_WINDOW_TOKENS,
+          maxTokens: CLOUD_AGENT_MAX_OUTPUT_TOKENS,
         }
       : {
           id: request.modelId,
@@ -382,13 +707,14 @@ export function createGatewayRuntime(request: AgentRunRequest): AgentRuntimeOver
           reasoning: false,
           input: ["text"] as const,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          // Pi keeps a fixed 4096-token safety reserve. The local runtime therefore
-          // uses 6144 so a bounded 768-token answer remains possible after tool context.
-          contextWindow: request.providerProtocol === "localOpenAi" ? 6_144 : 128_000,
-          maxTokens: request.providerProtocol === "localOpenAi" ? 768 : 2_048,
+          // Rust selects one contract-listed device tier before process startup. Pi can consume
+          // the selected capacity but cannot request or infer a larger context window.
+          contextWindow: request.contextWindowTokens,
+          maxTokens: request.maxOutputTokens,
           samplingParams:
             request.providerProtocol === "localOpenAi"
               ? {
+                  temperature: 0,
                   top_p: 0.8,
                   top_k: 20,
                   min_p: 0,
@@ -427,30 +753,9 @@ export function createGatewayRuntime(request: AgentRunRequest): AgentRuntimeOver
   const models = createModels();
   models.setProvider(provider);
   const streamFn: StreamFn = (selectedModel, context, options) => {
-    const completedTools = new Set(
-      context.messages
-        .filter((message) => message.role === "toolResult")
-        .map((message) => (message as { toolName?: string }).toolName)
-        .filter((name): name is string => typeof name === "string"),
-    );
-    const nextRequiredTool = nextRequiredAgentTool(request, completedTools);
-    const constrainedContext = {
-      ...context,
-      tools: nextRequiredTool
-        ? context.tools?.filter((tool) => tool.name === nextRequiredTool)
-        : [],
-    };
-    return models.streamSimple(selectedModel, constrainedContext, {
+    return models.streamSimple(selectedModel, context, {
       ...options,
       fetch: monitoredFetch,
-      toolChoice: nextRequiredTool ? (isAnthropic ? "auto" : "required") : "none",
-      onPayload:
-        isAnthropic && nextRequiredTool
-          ? (payload: unknown) => ({
-              ...(typeof payload === "object" && payload !== null ? payload : {}),
-              tool_choice: { type: "tool", name: nextRequiredTool },
-            })
-          : options?.onPayload,
     } as never);
   };
   return {

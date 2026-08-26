@@ -1092,7 +1092,10 @@ mod tests {
         assert_eq!(fragment["authHeader"], true);
         assert_eq!(fragment["models"][0]["id"], "hal100-active");
         assert_eq!(fragment["models"][0]["input"][0], "text");
-        assert_eq!(fragment["models"][0]["contextWindow"], 4_096);
+        assert_eq!(
+            fragment["models"][0]["contextWindow"],
+            crate::AGENT_BASELINE_CONTEXT_WINDOW_TOKENS
+        );
         assert_eq!(fragment["models"][0]["maxTokens"], 1_024);
         assert!(fragment.get("supportsTools").is_none());
     }
@@ -1114,7 +1117,10 @@ mod tests {
             .plan_configuration()
             .expect("configuration plan");
         assert!(plan.preserves_default_model);
-        assert_eq!(plan.model_profile_revision, "managed-route-v1");
+        assert_eq!(
+            plan.model_profile_revision,
+            crate::MANAGED_ROUTE_PROFILE_REVISION
+        );
         let result = fixture
             .adapter
             .apply_configuration(&plan.plan_id)

@@ -9,6 +9,13 @@ import {
   AGENT_MODEL_ALIAS,
   AGENT_TOOL_NAMES,
   AgentRunFailure,
+  buildAgentSystemPrompt,
+  CLOUD_AGENT_CONTEXT_WINDOW_TOKENS,
+  CLOUD_AGENT_MAX_OUTPUT_TOKENS,
+  compactAgentContext,
+  LOCAL_AGENT_BASELINE_CONTEXT_WINDOW_TOKENS,
+  LOCAL_AGENT_MAX_OUTPUT_TOKENS,
+  LOCAL_AGENT_STANDARD_CONTEXT_WINDOW_TOKENS,
   MAX_ACTION_PLANS,
   MAX_REQUIRED_TOOLS,
   nextRequiredAgentTool,
@@ -35,6 +42,7 @@ import {
   PLAN_MODEL_DOWNLOAD_TOOL,
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_MODEL_START_TOOL,
+  PLAN_MODEL_STOP_TOOL,
   RUNTIME_CATALOG_TOOL,
   SYSTEM_SUMMARY_TOOL,
   ToolBrokerBridge,
@@ -47,10 +55,41 @@ const validRequest = {
   apiKey: "hal100_agent_test_key_1234567890",
   modelId: AGENT_MODEL_ALIAS,
   providerProtocol: "localOpenAi",
+  contextWindowTokens: LOCAL_AGENT_STANDARD_CONTEXT_WINDOW_TOKENS,
+  maxOutputTokens: LOCAL_AGENT_MAX_OUTPUT_TOKENS,
 } as const;
 
 describe("real HAL100 Agent run boundary", () => {
-  it("keeps the RPC v9 tool catalog at the eighteen compatible names", () => {
+  it("matches the versioned Agent runtime capacity contract", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        new URL("../../../contracts/agent-runtime/v2-device-capacity.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      localProfiles: {
+        baseline16k: { contextWindowTokens: number; maxOutputTokens: number; temperature: number };
+        standard32k: { contextWindowTokens: number; maxOutputTokens: number; temperature: number };
+      };
+      cloudRuntime: {
+        contextWindowTokens: number;
+        maxOutputTokens: number;
+      };
+    };
+
+    expect(LOCAL_AGENT_BASELINE_CONTEXT_WINDOW_TOKENS).toBe(
+      contract.localProfiles.baseline16k.contextWindowTokens,
+    );
+    expect(LOCAL_AGENT_STANDARD_CONTEXT_WINDOW_TOKENS).toBe(
+      contract.localProfiles.standard32k.contextWindowTokens,
+    );
+    expect(LOCAL_AGENT_MAX_OUTPUT_TOKENS).toBe(contract.localProfiles.standard32k.maxOutputTokens);
+    expect(contract.localProfiles.standard32k.temperature).toBe(0);
+    expect(CLOUD_AGENT_CONTEXT_WINDOW_TOKENS).toBe(contract.cloudRuntime.contextWindowTokens);
+    expect(CLOUD_AGENT_MAX_OUTPUT_TOKENS).toBe(contract.cloudRuntime.maxOutputTokens);
+  });
+
+  it("keeps the RPC v12 tool catalog at the nineteen compatible names", () => {
     const bridge = new ToolBrokerBridge(() => undefined);
     const tools = bridge.createAgentTools("run-contract");
     const registeredTools = tools.map((tool) => tool.name);
@@ -73,9 +112,10 @@ describe("real HAL100 Agent run boundary", () => {
       OPERATIONAL_HEALTH_OBSERVATION_TOOL,
       PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
       PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
+      PLAN_MODEL_STOP_TOOL,
     ]);
     const manifest = JSON.parse(
-      readFileSync(new URL("../../../contracts/agent-rpc/v9-tools.json", import.meta.url), "utf8"),
+      readFileSync(new URL("../../../contracts/agent-rpc/v12-tools.json", import.meta.url), "utf8"),
     ) as {
       protocolVersion: number;
       limits: {
@@ -165,7 +205,7 @@ describe("real HAL100 Agent run boundary", () => {
     expect(faux.state.callCount).toBe(2);
   });
 
-  it("accepts only a loopback v1 endpoint, fixed model alias and bounded prompt", () => {
+  it("accepts only Rust-listed capacity, a loopback endpoint, fixed alias and bounded prompt", () => {
     expect(validateAgentRunRequest(validRequest).gatewayBaseUrl).toBe("http://127.0.0.1:10100/v1");
     expect(() =>
       validateAgentRunRequest({ ...validRequest, gatewayBaseUrl: "https://example.com/v1" }),
@@ -175,6 +215,12 @@ describe("real HAL100 Agent run boundary", () => {
     );
     expect(() => validateAgentRunRequest({ ...validRequest, prompt: "x".repeat(4097) })).toThrow(
       /4096/,
+    );
+    expect(() => validateAgentRunRequest({ ...validRequest, contextWindowTokens: 65_536 })).toThrow(
+      /capacity/,
+    );
+    expect(() => validateAgentRunRequest({ ...validRequest, maxOutputTokens: 4_096 })).toThrow(
+      /capacity/,
     );
     expect(() =>
       validateAgentRunRequest({
@@ -239,7 +285,143 @@ describe("real HAL100 Agent run boundary", () => {
 
     expect(result.toolNames).toEqual([RUNTIME_CATALOG_TOOL, PLAN_MODEL_START_TOOL]);
     expect(result.completedToolCalls).toBe(2);
-    expect(faux.state.callCount).toBe(4);
+    expect(faux.state.callCount).toBe(3);
+  });
+
+  it("assembles only task-scoped instructions and the direct tool dependency", async () => {
+    expect(buildAgentSystemPrompt([SYSTEM_SUMMARY_TOOL])).toContain(SYSTEM_SUMMARY_TOOL);
+    expect(buildAgentSystemPrompt([SYSTEM_SUMMARY_TOOL])).not.toContain(PLAN_MODEL_DOWNLOAD_TOOL);
+    for (const toolName of AGENT_TOOL_NAMES) {
+      const prompt = buildAgentSystemPrompt([toolName]);
+      expect(prompt, `missing task instruction for ${toolName}`).toContain(toolName);
+      expect(prompt).toContain("原生确认");
+      expect(prompt).toContain("通用Shell");
+    }
+
+    const runDownloadChain = async (contextAssemblyMode: "bounded" | "legacyFull") => {
+      const faux = createFauxCore({
+        api: "openai-completions",
+        provider: `hal100-${contextAssemblyMode}`,
+        models: [{ id: AGENT_MODEL_ALIAS }],
+      });
+      faux.setResponses([
+        fauxAssistantMessage(
+          fauxToolCall(MODEL_CATALOG_SEARCH_TOOL, { query: "qwen" }, { id: "tool-search" }),
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage(
+          fauxToolCall(
+            MODEL_REPOSITORY_INSPECTION_TOOL,
+            { repository: "owner/model" },
+            { id: "tool-repository" },
+          ),
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage(
+          fauxToolCall(
+            PLAN_MODEL_DOWNLOAD_TOOL,
+            { remotePath: "model-q4.gguf" },
+            { id: "tool-download" },
+          ),
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage("下载计划已生成，尚未执行，等待原生确认。", { stopReason: "stop" }),
+      ]);
+      let bridge: ToolBrokerBridge;
+      bridge = new ToolBrokerBridge((envelope) => {
+        const request = envelope.payload as { toolCallId: string; toolName: string };
+        const padding = "上下文证据".repeat(128);
+        const output =
+          request.toolName === MODEL_CATALOG_SEARCH_TOOL
+            ? { repositories: [{ repository: "owner/model", summary: padding }] }
+            : request.toolName === MODEL_REPOSITORY_INSPECTION_TOOL
+              ? { files: [{ remotePath: "model-q4.gguf", summary: padding }] }
+              : { planId: "download-plan-1", requiresNativeConfirmation: true, summary: padding };
+        queueMicrotask(() => {
+          bridge.acceptResult({
+            protocolVersion: AGENT_RPC_VERSION,
+            id: envelope.id,
+            kind: "tool.call.result",
+            payload: { toolCallId: request.toolCallId, status: "success", output },
+          });
+        });
+      });
+
+      return runPiAgent(
+        `run-${contextAssemblyMode}`,
+        {
+          ...validRequest,
+          prompt: "搜索Qwen并为model-q4.gguf生成下载计划",
+          requiredTools: [
+            MODEL_CATALOG_SEARCH_TOOL,
+            MODEL_REPOSITORY_INSPECTION_TOOL,
+            PLAN_MODEL_DOWNLOAD_TOOL,
+          ],
+        },
+        bridge,
+        {
+          streamFn: faux.streamSimple,
+          model: faux.getModel() as never,
+          contextAssemblyMode,
+        },
+      );
+    };
+
+    const legacy = await runDownloadChain("legacyFull");
+    const bounded = await runDownloadChain("bounded");
+
+    expect(legacy.efficiency.executionModelTurnCount).toBe(4);
+    expect(legacy.efficiency.repeatedToolResultTokenEstimate).toBeGreaterThan(0);
+    expect(bounded.efficiency).toMatchObject({
+      executionModelTurnCount: 3,
+      continuationPromptCount: 0,
+      providerUsageAvailable: true,
+      repeatedToolResultBytes: 0,
+      repeatedToolResultTokenEstimate: 0,
+      compactedTurnCount: 1,
+    });
+    expect(bounded.efficiency.sentToolResultTokenEstimate).toBeLessThanOrEqual(
+      legacy.efficiency.sentToolResultTokenEstimate * 0.6,
+    );
+    expect(bounded.efficiency.peakEstimatedInputTokens).toBeLessThan(
+      legacy.efficiency.peakEstimatedInputTokens,
+    );
+
+    const verticals = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../../contracts/agent-evals/v9-controlled-action-verticals.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as { actionPaths: Array<{ requiredTools: string[] }> };
+    const legacyTurns = verticals.actionPaths.reduce(
+      (total, path) => total + path.requiredTools.length + 1,
+      0,
+    );
+    const boundedTurns = verticals.actionPaths.reduce((total, path) => {
+      expect(ACTION_PLAN_TOOLS.has(path.requiredTools.at(-1) ?? "")).toBe(true);
+      return total + path.requiredTools.length;
+    }, 0);
+    expect(1 - boundedTurns / legacyTurns).toBeGreaterThanOrEqual(0.3);
+  });
+
+  it("fails safe without detaching a tool result from its assistant call", () => {
+    const malformed = {
+      messages: [
+        { role: "user", content: "test", timestamp: 1 },
+        {
+          role: "toolResult",
+          toolCallId: "missing-call",
+          toolName: SYSTEM_SUMMARY_TOOL,
+          content: [{ type: "text", text: "{}" }],
+          isError: false,
+          timestamp: 2,
+        },
+      ],
+    } as never;
+    expect(compactAgentContext(malformed).messages).toHaveLength(2);
   });
 
   it("forces the exact required tool sequence instead of letting the model choose any tool", () => {
@@ -519,6 +701,7 @@ describe("real HAL100 Agent run boundary", () => {
     const requests: Array<{
       authorization: string | undefined;
       maxTokens: number | undefined;
+      temperature: number | undefined;
       toolChoice: unknown;
       toolNames: string[];
       url: string | undefined;
@@ -528,12 +711,14 @@ describe("real HAL100 Agent run boundary", () => {
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
         max_tokens?: number;
+        temperature?: number;
         tool_choice?: unknown;
         tools?: Array<{ function?: { name?: string } }>;
       };
       requests.push({
         authorization: request.headers.authorization,
         maxTokens: payload.max_tokens,
+        temperature: payload.temperature,
         toolChoice: payload.tool_choice,
         toolNames:
           payload.tools?.flatMap((tool) => (tool.function?.name ? [tool.function.name] : [])) ?? [],
@@ -566,6 +751,7 @@ describe("real HAL100 Agent run boundary", () => {
       expect(captured).toEqual({
         authorization: `Bearer ${validRequest.apiKey}`,
         maxTokens: 768,
+        temperature: 0,
         toolChoice: "required",
         toolNames: [SYSTEM_SUMMARY_TOOL],
         url: "/v1/chat/completions",
@@ -639,6 +825,8 @@ describe("real HAL100 Agent run boundary", () => {
               gatewayBaseUrl: `http://127.0.0.1:${address.port}/v1`,
               modelId,
               providerProtocol: protocol,
+              contextWindowTokens: CLOUD_AGENT_CONTEXT_WINDOW_TOKENS,
+              maxOutputTokens: CLOUD_AGENT_MAX_OUTPUT_TOKENS,
             },
             new ToolBrokerBridge(() => undefined),
           ),

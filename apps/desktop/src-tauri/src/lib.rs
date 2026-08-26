@@ -1,9 +1,13 @@
 mod agent_action;
 mod agent_coordinator;
 mod agent_ecosystem;
+mod agent_intent_observation;
 mod agent_kernel;
 mod agent_provider;
 mod agent_service;
+mod agent_task_evidence;
+mod agent_task_graph_runtime;
+mod agent_task_runtime;
 mod agent_tools;
 
 use std::{
@@ -21,13 +25,14 @@ use std::{
 
 use hal100_core::AppCore;
 use hal100_infra::{
-    BackendConfig, BackendManager, CredentialRegistry, DEFAULT_GATEWAY_ADDRESS, Database,
-    ExternalModelProfileRegistry, GatewayRoutingSnapshot, GatewayState, GenericClientManager,
-    GgufImportManager, HermesAgentIntegrationAdapter, HermesAgentPaths, LlamaCppManager,
-    LocalBackendDiscoveryService, LoggingGuard, ModelDownloadManager, ModelRemovalManager,
-    OpenClawIntegrationAdapter, OpenClawPaths, OpenCodeManager, OpenCodePaths,
-    PiCodingAgentIntegrationAdapter, PiCodingAgentPaths, RemoteModelCatalog, UsageWriter,
-    init_structured_logging, serve_gateway, stored_client_credential,
+    AgentRuntimeCapacityProfile, BackendConfig, BackendManager, CredentialRegistry,
+    DEFAULT_GATEWAY_ADDRESS, Database, ExternalModelProfileRegistry, GatewayRoutingSnapshot,
+    GatewayState, GenericClientManager, GgufImportManager, HermesAgentIntegrationAdapter,
+    HermesAgentPaths, LlamaCppManager, LocalBackendDiscoveryService, LoggingGuard,
+    ModelDownloadManager, ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawPaths,
+    OpenCodeManager, OpenCodePaths, PiCodingAgentIntegrationAdapter, PiCodingAgentPaths,
+    RemoteModelCatalog, UsageWriter, init_structured_logging, serve_gateway,
+    stored_client_credential,
 };
 use hal100_platform::{MacOsKeychainSecretStore, MacOsSystemProbe};
 use hal100_protocol::{
@@ -419,6 +424,60 @@ fn get_agent_status(state: State<'_, AgentState>) -> Result<hal100_protocol::Age
 }
 
 #[tauri::command]
+fn start_agent_task_graph(
+    request: hal100_protocol::AgentTaskGraphStartRequest,
+    state: State<'_, AgentState>,
+) -> Result<hal100_protocol::AgentTaskGraphCheckpoint, String> {
+    state
+        .service
+        .begin_task_graph(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn restore_agent_task_graph(
+    request: hal100_protocol::AgentTaskGraphStartRequest,
+    state: State<'_, AgentState>,
+) -> Result<hal100_protocol::AgentTaskGraphCheckpoint, String> {
+    state
+        .service
+        .restore_task_graph(request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn run_next_agent_task_graph_node(
+    state: State<'_, AgentState>,
+) -> Result<hal100_protocol::AgentRunResult, String> {
+    state
+        .service
+        .run_next_task_graph_node()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn run_next_agent_task_graph_compensation(
+    state: State<'_, AgentState>,
+) -> Result<hal100_protocol::AgentRunResult, String> {
+    state
+        .service
+        .run_next_task_graph_compensation()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn cancel_agent_task_graph(
+    state: State<'_, AgentState>,
+) -> Result<hal100_protocol::AgentStatus, String> {
+    state
+        .service
+        .cancel_task_graph()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn get_environment_diagnostics(
     state: State<'_, AgentState>,
 ) -> Result<hal100_protocol::EnvironmentDiagnosticReport, String> {
@@ -533,6 +592,39 @@ async fn run_agent_prompt(
 }
 
 #[tauri::command]
+async fn continue_agent_clarification(
+    app: tauri::AppHandle,
+    request: hal100_protocol::AgentClarificationAnswerRequest,
+    state: State<'_, AgentState>,
+) -> Result<hal100_protocol::AgentRunResult, String> {
+    if let Some(cloud_target) = request.cloud_target.clone() {
+        let preview_request = hal100_protocol::AgentPromptRequest {
+            prompt: "继续当前 HAL100 有界澄清任务".to_owned(),
+            cloud_target: Some(cloud_target),
+        };
+        let preview = state
+            .service
+            .preview_cloud_run(&preview_request)
+            .map_err(|error| error.to_string())?;
+        require_native_confirmation(
+            app,
+            "确认澄清后的任务继续使用云端 Agent",
+            format!(
+                "后端：{}\n目标：{}\n模型：{}\n\n本次只发送由 Rust 根据固定选择生成的任务说明，不会恢复之前的提示词、回答或授权。失败时不会改用本地模型。",
+                preview.backend_name, preview.api_root, preview.model,
+            ),
+            false,
+        )
+        .await?;
+    }
+    state
+        .service
+        .continue_clarification(request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn stop_agent_runtime(
     state: State<'_, AgentState>,
 ) -> Result<hal100_protocol::AgentStatus, String> {
@@ -565,6 +657,10 @@ async fn apply_agent_action_plan(
         hal100_protocol::AgentActionKind::StartOrSwitchModel => (
             "确认 Agent 的模型启动或切换计划",
             "确认后 Rust Core 会重新校验模型文件，并等待已有请求安全排空；不会强制切换。",
+        ),
+        hal100_protocol::AgentActionKind::StopModel => (
+            "确认 Agent 的当前模型停止计划",
+            "确认后 Rust Core 会等待已有请求安全排空，再停止当前托管推理进程；模型文件、索引和用量记录都会保留。",
         ),
         hal100_protocol::AgentActionKind::DownloadModel => (
             "确认 Agent 的模型下载计划",
@@ -2058,6 +2154,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_app_overview,
             get_agent_status,
+            start_agent_task_graph,
+            restore_agent_task_graph,
+            run_next_agent_task_graph_node,
+            run_next_agent_task_graph_compensation,
+            cancel_agent_task_graph,
             get_environment_diagnostics,
             preview_agent_cloud_run,
             get_agent_cloud_session,
@@ -2065,6 +2166,7 @@ pub fn run() {
             start_agent_cloud_session,
             stop_agent_cloud_session,
             run_agent_prompt,
+            continue_agent_clarification,
             cancel_agent_run,
             apply_agent_action_plan,
             stop_agent_runtime,
@@ -2184,6 +2286,15 @@ pub fn run() {
             }
             let model_storage_path = data_dir.join("models");
             std::fs::create_dir_all(&model_storage_path)?;
+            let agent_capacity = AgentRuntimeCapacityProfile::for_total_unified_memory_bytes(
+                MacOsSystemProbe.total_unified_memory_bytes()?,
+            );
+            tracing::info!(
+                capacity_tier = agent_capacity.tier,
+                context_window_tokens = agent_capacity.context_window_tokens,
+                max_output_tokens = agent_capacity.max_output_tokens,
+                "agent_capacity_selected"
+            );
             let database = Arc::new(Database::open(data_dir.join("hal100.sqlite"))?);
             let schema_version = database.schema_version()?;
             tracing::info!(schema_version, "database_ready");
@@ -2221,7 +2332,7 @@ pub fn run() {
                 gateway_base_url.clone(),
             ));
             let external_model_profiles =
-                ExternalModelProfileRegistry::conservative_managed_route();
+                ExternalModelProfileRegistry::managed_route(agent_capacity);
             let managed_external_agent_deployment = Arc::new(
                 hal100_infra::ManagedExternalAgentDeploymentManager::for_macos(
                     database.clone(),
@@ -2322,15 +2433,17 @@ pub fn run() {
                 database.clone(),
                 model_storage_path.clone(),
             ));
-            let llama_cpp_manager = Arc::new(LlamaCppManager::new(
+            let llama_cpp_manager = Arc::new(LlamaCppManager::with_capacity(
                 database.clone(),
                 engine_gateway,
                 data_dir.join("engines").join("llama.cpp"),
+                agent_capacity,
             )?);
-            let agent_runtime = Arc::new(hal100_infra::AgentModelRuntime::new(
+            let agent_runtime = Arc::new(hal100_infra::AgentModelRuntime::with_capacity(
                 database.clone(),
                 llama_cpp_manager.clone(),
                 agent_gateway,
+                agent_capacity,
             )?);
             let agent_service = Arc::new(AgentService::new(
                 agent_runtime,

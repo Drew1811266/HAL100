@@ -381,7 +381,6 @@ export function BackendsPage({
 
   return (
     <div className="page-content backends-page">
-      <SectionTabs label="模型与运行" tabs={workspaceTabs} />
       <PageHeader
         action={
           view === "services" ? (
@@ -417,6 +416,7 @@ export function BackendsPage({
         eyebrow={view === "runtime" ? "本地推理" : "推理连接"}
         title={view === "runtime" ? "运行" : "推理服务"}
       />
+      <SectionTabs label="模型与运行" tabs={workspaceTabs} />
 
       {operationError && <p className="inline-error">{errorMessage(operationError)}</p>}
 

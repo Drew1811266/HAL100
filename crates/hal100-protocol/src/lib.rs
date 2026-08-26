@@ -14,12 +14,21 @@ mod tool_broker;
 mod usage;
 
 pub use agent::{
-    AgentActionKind, AgentActionPlan, AgentActionResult, AgentCloudRunPreview,
-    AgentCloudSessionPreview, AgentCloudSessionStatus, AgentCloudTarget, AgentComponentState,
-    AgentExternalIntegrationStatus, AgentOperationalEvent, AgentOperationalHealthObservation,
+    AGENT_TASK_CHECKPOINT_SCHEMA_VERSION, AGENT_TASK_GRAPH_CHECKPOINT_SCHEMA_VERSION,
+    AgentActionKind, AgentActionPlan, AgentActionResult, AgentClarification,
+    AgentClarificationAnswerRequest, AgentClarificationChoice, AgentClarificationKind,
+    AgentClarificationOption, AgentCloudRunPreview, AgentCloudSessionPreview,
+    AgentCloudSessionStatus, AgentCloudTarget, AgentComponentState, AgentExternalAgentChoice,
+    AgentExternalIntegrationStatus, AgentIntentShadowAdjudicationOutcome, AgentIntentShadowMetrics,
+    AgentIntentShadowProposalStatus, AgentOperationalEvent, AgentOperationalHealthObservation,
     AgentOperationalHealthSample, AgentOperationalHealthStatus, AgentOperationalHistory,
-    AgentPromptRequest, AgentProviderProtocol, AgentRunResult, AgentRuntimeCatalog,
-    AgentRuntimeModel, AgentStatus, AgentSystemSummary, AgentToolEvent,
+    AgentPromptRequest, AgentProviderProtocol, AgentRunEfficiency, AgentRunResult,
+    AgentRuntimeCatalog, AgentRuntimeModel, AgentStatus, AgentSystemSummary, AgentTaskCheckpoint,
+    AgentTaskCheckpointPhase, AgentTaskEvidenceSource, AgentTaskGraphCheckpoint,
+    AgentTaskGraphCheckpointState, AgentTaskGraphKind, AgentTaskGraphNodeCheckpoint,
+    AgentTaskGraphNodeCheckpointState, AgentTaskGraphStartRequest, AgentTaskRecoveryScope,
+    AgentTaskRoutingDecision, AgentTaskRoutingMetrics, AgentTaskRoutingMode,
+    AgentTaskVerificationState, AgentToolEvent,
 };
 pub use agent_ecosystem::{
     AgentEcosystemCatalog, BuiltInAgentRuntimeSummary, ExternalAgentConfigurationChange,
@@ -31,8 +40,10 @@ pub use agent_ecosystem::{
 };
 pub use agent_rpc::{
     AGENT_RPC_MAX_ACTION_PLANS, AGENT_RPC_MAX_FRAME_BYTES, AGENT_RPC_MAX_REQUIRED_TOOLS,
-    AGENT_RPC_MAX_TOOL_RESULT_BYTES, AGENT_RPC_VERSION, AgentRpcEnvelope, AgentRpcFrameDecoder,
-    AgentRpcFrameError, AgentRunCompletedPayload, AgentRunStartPayload, encode_agent_rpc_frame,
+    AGENT_RPC_MAX_TOOL_RESULT_BYTES, AGENT_RPC_VERSION, AgentIntentCompletedPayload,
+    AgentIntentCompletionStatus, AgentIntentStartPayload, AgentRpcEnvelope, AgentRpcFrameDecoder,
+    AgentRpcFrameError, AgentRunCompletedPayload, AgentRunEfficiencyPayload, AgentRunStartPayload,
+    encode_agent_rpc_frame,
 };
 pub use anthropic::{
     AnthropicError, AnthropicErrorEnvelope, AnthropicMessagesRequestMetadata, AnthropicUsage,
@@ -80,9 +91,9 @@ pub use tool_broker::{
     PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
     PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
     PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, SIMULATED_SYSTEM_SUMMARY_TOOL,
-    SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload, ToolCallRequestPayload, ToolCallResultPayload,
-    ToolCallResultStatus,
+    PLAN_MODEL_START_TOOL, PLAN_MODEL_STOP_TOOL, RUNTIME_CATALOG_TOOL,
+    SIMULATED_SYSTEM_SUMMARY_TOOL, SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload,
+    ToolCallRequestPayload, ToolCallResultPayload, ToolCallResultStatus,
 };
 pub use usage::{
     ModelTestResult, UsageDailySummary, UsageDashboard, UsageDimensionSummary, UsageFilterOption,

@@ -75,10 +75,13 @@ HAL100主进程未来需要下载、模型文件和安装管理，而 Agent Kern
 - 普通 `ProcessBoundaryOnly`模式仍以当前用户权限运行；最小环境不会撤销 POSIX文件权限或网络权限。
 - App Sandbox的通用网络客户端 entitlement不是 HAL100专属端口白名单。若未来要求 Sidecar完全无网络，需要由 Rust通过 RPC代理模型传输。
 
-## 6. 后续正式方向
+## 6. 条件触发方向（不属于当前路线）
+
+项目当前处于开发初期，不规划签名、公证、安装包或正式分发。本节只记录未来若产品范围
+明确扩大时需要重新评审的技术方向，不能据此自动创建当前开发任务。
 
 1. Rust Tool Broker继续作为所有平台的唯一执行与授权权威。
-2. 进入签名阶段后验证原生 XPC服务或独立 helper app包装 Agent Kernel。
+2. 只有未来明确进入签名与分发范围后，才验证原生 XPC服务或独立 helper app包装 Agent Kernel。
 3. 优先评估 Sidecar无网络 entitlement、模型流量通过 Rust RPC传递的方案。
-4. Windows阶段映射到受限令牌、Job Object、显式环境块和进程生命周期控制。
+4. 只有未来明确启动Windows开发后，才映射到受限令牌、Job Object、显式环境块和进程生命周期控制。
 5. 不论 OS沙箱是否可用，都保留当前拒绝测试和应用层故障关闭测试。

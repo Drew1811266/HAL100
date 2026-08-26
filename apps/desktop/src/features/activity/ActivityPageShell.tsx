@@ -20,6 +20,7 @@ export function ActivityPageShell({
 }) {
   return (
     <div className="page-content activity-page">
+      <PageHeader action={action} description={description} title={title} />
       <nav aria-label="活动" className="section-tabs">
         {activityTabs.map((tab) => (
           <NavLink
@@ -31,7 +32,6 @@ export function ActivityPageShell({
           </NavLink>
         ))}
       </nav>
-      <PageHeader action={action} description={description} title={title} />
       {children}
     </div>
   );

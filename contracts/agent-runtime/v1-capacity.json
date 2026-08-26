@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "localRuntime": {
+    "contextWindowTokens": 16384,
+    "piReservedTokens": 4096,
+    "availableInputTokensBeforeReserve": 12288,
+    "maxOutputTokens": 768,
+    "parallel": 1,
+    "reasoning": false,
+    "temperature": 0
+  },
+  "cloudRuntime": {
+    "contextWindowTokens": 128000,
+    "maxOutputTokens": 2048
+  },
+  "transport": {
+    "maxToolResultBytes": 131072,
+    "maxRpcFrameBytes": 1048576
+  }
+}

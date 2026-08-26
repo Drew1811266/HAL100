@@ -595,7 +595,6 @@ export function ModelsPage() {
     searchSource ?? modelLibrary.defaultDownloadSource ?? DownloadSourceValues[0];
   return (
     <div className="page-content models-page">
-      <SectionTabs label="模型与运行" tabs={workspaceTabs} />
       <PageHeader
         action={
           <button
@@ -612,6 +611,7 @@ export function ModelsPage() {
         eyebrow="本地模型"
         title="模型库"
       />
+      <SectionTabs label="模型与运行" tabs={workspaceTabs} />
 
       {planRemovalMutation.isError && (
         <p className="inline-error model-page-error">{errorMessage(planRemovalMutation.error)}</p>

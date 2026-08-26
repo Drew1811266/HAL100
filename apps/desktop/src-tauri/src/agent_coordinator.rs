@@ -5,7 +5,8 @@ use std::sync::{
 
 use hal100_core::{
     AGENT_CAPABILITY_COUNT, AgentCapabilityEffect, AgentCapabilityId, AgentCapabilityRegistry,
-    AgentCapabilitySet, ExternalAgentIntegrationId, ExternalAgentIntegrationRegistry,
+    AgentCapabilitySet, AgentTaskIntentRouter, AgentTaskSpec, AgentTaskTargetKind,
+    ExternalAgentIntegrationId, ExternalAgentIntegrationRegistry,
 };
 use hal100_protocol::{
     AGENT_RPC_MAX_ACTION_PLANS, AGENT_RPC_MAX_REQUIRED_TOOLS, AgentActionKind, AgentActionPlan,
@@ -44,10 +45,30 @@ pub(super) struct AgentRunRequirements {
     external_agent_target: Option<ExternalAgentIntegrationId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AgentRunCapacity {
+    context_window_tokens: u32,
+    max_output_tokens: u32,
+}
+
+impl AgentRunCapacity {
+    pub(super) const fn new(context_window_tokens: u32, max_output_tokens: u32) -> Self {
+        Self {
+            context_window_tokens,
+            max_output_tokens,
+        }
+    }
+}
+
 impl AgentRunRequirements {
     pub(super) fn for_prompt(prompt: &str) -> Self {
+        if AgentTaskIntentRouter::is_explanation_only(prompt) {
+            return Self::default();
+        }
         let model_download = prompt_requires_model_download_plan(prompt);
-        let model_start = !model_download && prompt_requires_model_start_plan(prompt);
+        let model_stop = !model_download && prompt_requires_model_stop_plan(prompt);
+        let model_start =
+            !model_download && !model_stop && prompt_requires_model_start_plan(prompt);
         let model_removal = prompt_requires_model_removal_plan(prompt);
         let engine_install = prompt_requires_engine_install_plan(prompt);
         let engine_remove = prompt_requires_engine_remove_plan(prompt);
@@ -64,6 +85,7 @@ impl AgentRunRequirements {
             && external_agent_target.is_some()
             && prompt_requires_external_agent_disconnection_plan(prompt);
         let has_explicit_action = model_start
+            || model_stop
             || model_removal
             || engine_install
             || engine_remove
@@ -89,6 +111,7 @@ impl AgentRunRequirements {
                 AgentCapabilityId::InspectRuntimeCatalog,
             ),
             (model_start, AgentCapabilityId::PlanModelStart),
+            (model_stop, AgentCapabilityId::PlanModelStop),
             (model_removal, AgentCapabilityId::PlanModelRemoval),
             (
                 prompt_requires_environment_diagnostics(prompt),
@@ -142,6 +165,26 @@ impl AgentRunRequirements {
         requirements
     }
 
+    pub(super) fn for_task_spec(spec: &AgentTaskSpec) -> Result<Self, AgentCoordinationError> {
+        let external_agent_target = if spec.target().kind() == AgentTaskTargetKind::ExternalAgent {
+            Some(
+                spec.target()
+                    .resource_id()
+                    .and_then(ExternalAgentIntegrationRegistry::by_integration_id)
+                    .ok_or(AgentCoordinationError::InvalidProtocol)?
+                    .id,
+            )
+        } else {
+            None
+        };
+        let requirements = Self {
+            capabilities: spec.required_capabilities(),
+            external_agent_target,
+        };
+        requirements.validate()?;
+        Ok(requirements)
+    }
+
     #[cfg(test)]
     pub(super) fn requiring(capabilities: impl IntoIterator<Item = AgentCapabilityId>) -> Self {
         let mut requirements = Self::default();
@@ -157,6 +200,10 @@ impl AgentRunRequirements {
 
     pub(super) fn external_agent_target(&self) -> Option<ExternalAgentIntegrationId> {
         self.external_agent_target
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.capabilities.is_empty()
     }
 
     pub(super) fn validate(&self) -> Result<(), AgentCoordinationError> {
@@ -176,7 +223,6 @@ impl AgentRunRequirements {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.capabilities.len()
     }
@@ -185,13 +231,14 @@ impl AgentRunRequirements {
         self.capabilities.iter()
     }
 
-    pub(super) fn to_rpc_v9(
+    pub(super) fn to_rpc_v12(
         &self,
         prompt: &str,
         gateway_base_url: &str,
         api_key: &str,
         model_id: &str,
         provider_protocol: AgentProviderProtocol,
+        capacity: AgentRunCapacity,
     ) -> AgentRunStartPayload {
         AgentRunStartPayload {
             prompt: prompt.to_owned(),
@@ -207,6 +254,8 @@ impl AgentRunRequirements {
             api_key: api_key.to_owned(),
             model_id: model_id.to_owned(),
             provider_protocol,
+            context_window_tokens: capacity.context_window_tokens,
+            max_output_tokens: capacity.max_output_tokens,
         }
     }
 }
@@ -295,16 +344,44 @@ impl Drop for AgentRunLease {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AgentCompletionValidationContext<'a> {
+    pub(super) task_spec: Option<&'a AgentTaskSpec>,
+    pub(super) diagnostic_repair_available: bool,
+    pub(super) desired_state_satisfied: bool,
+}
+
+impl AgentCompletionValidationContext<'_> {
+    #[cfg(test)]
+    pub(super) const fn legacy(
+        diagnostic_repair_available: bool,
+        desired_state_satisfied: bool,
+    ) -> Self {
+        Self {
+            task_spec: None,
+            diagnostic_repair_available,
+            desired_state_satisfied,
+        }
+    }
+}
+
 pub(super) fn validate_completion(
     run_id: &str,
     requirements: &AgentRunRequirements,
-    diagnostic_repair_available: bool,
+    context: AgentCompletionValidationContext<'_>,
     completed: &AgentRunCompletedPayload,
     tool_events: &[AgentToolEvent],
     action_plans: &[AgentActionPlan],
 ) -> Result<(), AgentCoordinationError> {
+    let AgentCompletionValidationContext {
+        task_spec,
+        diagnostic_repair_available,
+        desired_state_satisfied,
+    } = context;
     let expected_action_kind = if requirements.requires(AgentCapabilityId::PlanModelStart) {
         Some(AgentActionKind::StartOrSwitchModel)
+    } else if requirements.requires(AgentCapabilityId::PlanModelStop) {
+        Some(AgentActionKind::StopModel)
     } else if requirements.requires(AgentCapabilityId::PlanModelRemoval) {
         Some(AgentActionKind::RemoveModel)
     } else if requirements.requires(AgentCapabilityId::PlanEngineInstall) {
@@ -332,6 +409,19 @@ pub(super) fn validate_completion(
                 | AgentActionKind::RemoveModel
         )
     };
+    let task_action_contract_invalid = task_spec.is_some_and(|spec| {
+        let allowed = spec.task_kind().allowed_action_kinds();
+        match action_plans {
+            [] => {
+                !allowed.is_empty()
+                    && !desired_state_satisfied
+                    && !(spec.task_kind() == hal100_core::AgentTaskKind::RepairEnvironment
+                        && !diagnostic_repair_available)
+            }
+            [plan] => !allowed.contains(&plan.action_kind),
+            _ => true,
+        }
+    });
     let expected_external_target = (requirements
         .requires(AgentCapabilityId::PlanExternalAgentConfiguration)
         || requirements.requires(AgentCapabilityId::PlanExternalAgentDisconnection)
@@ -349,8 +439,15 @@ pub(super) fn validate_completion(
             .any(|name| AgentCapabilityRegistry::by_tool_name(name).is_none())
         || completed.answer.trim().is_empty()
         || action_plans.len() > 1
-        || expected_action_kind
-            .is_some_and(|kind| action_plans.len() != 1 || action_plans[0].action_kind != kind)
+        || task_action_contract_invalid
+        || (task_spec.is_none()
+            && expected_action_kind.is_some_and(|kind| {
+                if action_plans.is_empty() {
+                    !desired_state_satisfied
+                } else {
+                    action_plans.len() != 1 || action_plans[0].action_kind != kind
+                }
+            }))
         || expected_external_target.is_some_and(|integration_id| {
             action_plans.first().is_none_or(|plan| {
                 plan.target_id
@@ -369,6 +466,13 @@ pub(super) fn validate_completion(
     }
     for capability in requirements.iter() {
         if capability == AgentCapabilityId::PlanDiagnosticRepair && !diagnostic_repair_available {
+            continue;
+        }
+        if desired_state_satisfied
+            && action_plans.is_empty()
+            && AgentCapabilityRegistry::descriptor(capability).effect
+                == AgentCapabilityEffect::ActionPlan
+        {
             continue;
         }
         let tool_name = AgentCapabilityRegistry::descriptor(capability).tool_name;
@@ -393,9 +497,6 @@ pub(super) fn validate_prompt(prompt: &str) -> Result<String, AgentCoordinationE
         return Err(AgentCoordinationError::InvalidPrompt);
     }
     let normalized = prompt.to_lowercase();
-    if external_agent_targets(prompt).len() > 1 {
-        return Err(AgentCoordinationError::InvalidPrompt);
-    }
     const DOMAIN_MARKERS: &[&str] = &[
         "hal100",
         "本地",
@@ -423,11 +524,21 @@ pub(super) fn validate_prompt(prompt: &str) -> Result<String, AgentCoordinationE
         "hermes",
         "pi coding",
         "pi agent",
+        "pi 副本",
+        "自己维护的 pi",
+        "agent",
+        "智能体",
+        "配好",
+        "接好",
         "api",
         "token",
         "调试",
+        "诊断",
+        "修复",
+        "排查",
         "故障",
         "错误",
+        "出错",
         "失败",
         "日志",
         "运维",
@@ -436,6 +547,8 @@ pub(super) fn validate_prompt(prompt: &str) -> Result<String, AgentCoordinationE
         "部署",
         "就绪",
         "稳定性",
+        "链路",
+        "线路",
     ];
     if !DOMAIN_MARKERS
         .iter()
@@ -552,6 +665,17 @@ pub(super) fn prompt_requires_model_start_plan(prompt: &str) -> bool {
         .iter()
         .any(|marker| normalized.contains(marker));
     refers_to_model && requests_start_or_switch
+}
+
+pub(super) fn prompt_requires_model_stop_plan(prompt: &str) -> bool {
+    let normalized = prompt.to_lowercase();
+    let refers_to_model = ["模型", "qwen", "gguf", "llama"]
+        .iter()
+        .any(|marker| normalized.contains(marker));
+    let requests_stop = ["停止", "停掉", "停下", "关闭当前", "关闭本地模型"]
+        .iter()
+        .any(|marker| normalized.contains(marker));
+    refers_to_model && requests_stop && !prompt_refers_to_llama_cpp_engine(prompt)
 }
 
 pub(super) fn prompt_requires_model_catalog_search(prompt: &str) -> bool {
@@ -785,6 +909,250 @@ pub(super) fn prompt_requires_external_agent_disconnection_plan(prompt: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hal100_core::AgentTaskKind;
+
+    #[derive(Debug)]
+    struct LegacyRoute {
+        disposition: &'static str,
+        task_kind: Option<AgentTaskKind>,
+        target_id: Option<&'static str>,
+        mutating: bool,
+    }
+
+    fn iteration_31_prompt_was_admitted(prompt: &str) -> bool {
+        let prompt = prompt.trim();
+        if prompt.is_empty()
+            || prompt.len() > MAX_PROMPT_BYTES
+            || prompt
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+            || external_agent_targets(prompt).len() > 1
+        {
+            return false;
+        }
+        let normalized = prompt.to_lowercase();
+        [
+            "hal100",
+            "本地",
+            "模型",
+            "推理",
+            "引擎",
+            "后端",
+            "配置",
+            "电脑",
+            "mac",
+            "硬件",
+            "内存",
+            "cpu",
+            "芯片",
+            "安装",
+            "卸载",
+            "删除",
+            "下载",
+            "切换",
+            "停止",
+            "llama",
+            "vllm",
+            "opencode",
+            "openclaw",
+            "open claw",
+            "hermes",
+            "pi coding",
+            "pi agent",
+            "api",
+            "token",
+            "调试",
+            "故障",
+            "错误",
+            "失败",
+            "日志",
+            "运维",
+            "监测",
+            "监控",
+            "部署",
+            "就绪",
+            "稳定性",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    }
+
+    fn legacy_route(prompt: &str) -> LegacyRoute {
+        if !iteration_31_prompt_was_admitted(prompt) {
+            return LegacyRoute {
+                disposition: "reject",
+                task_kind: None,
+                target_id: None,
+                mutating: false,
+            };
+        }
+        let requirements = AgentRunRequirements::for_prompt(prompt);
+        let mapped = [
+            (
+                AgentCapabilityId::PlanModelStart,
+                AgentTaskKind::StartModel,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanModelStop,
+                AgentTaskKind::StopModel,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanModelRemoval,
+                AgentTaskKind::RemoveModel,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanDiagnosticRepair,
+                AgentTaskKind::RepairEnvironment,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanEngineInstall,
+                AgentTaskKind::InstallEngine,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanEngineRemove,
+                AgentTaskKind::RemoveEngine,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanExternalAgentConfiguration,
+                AgentTaskKind::ConfigureExternalAgent,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanExternalAgentDisconnection,
+                AgentTaskKind::DisconnectExternalAgent,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanExternalAgentInstallation,
+                AgentTaskKind::InstallManagedExternalAgent,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanManagedExternalAgentRemoval,
+                AgentTaskKind::RemoveManagedExternalAgent,
+                true,
+            ),
+            (
+                AgentCapabilityId::PlanModelDownload,
+                AgentTaskKind::DownloadModel,
+                true,
+            ),
+            (
+                AgentCapabilityId::InspectEnvironmentDiagnostics,
+                AgentTaskKind::DiagnoseEnvironment,
+                false,
+            ),
+            (
+                AgentCapabilityId::InspectOperationalHistory,
+                AgentTaskKind::AnalyzeOperationalHistory,
+                false,
+            ),
+            (
+                AgentCapabilityId::ObserveOperationalHealth,
+                AgentTaskKind::ObserveDeploymentHealth,
+                false,
+            ),
+            (
+                AgentCapabilityId::InspectModelRepository,
+                AgentTaskKind::InspectModelRepository,
+                false,
+            ),
+            (
+                AgentCapabilityId::SearchModelCatalog,
+                AgentTaskKind::SearchModelCatalog,
+                false,
+            ),
+            (
+                AgentCapabilityId::InspectExternalAgent,
+                AgentTaskKind::InspectExternalAgent,
+                false,
+            ),
+            (
+                AgentCapabilityId::InspectRuntimeCatalog,
+                AgentTaskKind::InspectRuntime,
+                false,
+            ),
+            (
+                AgentCapabilityId::InspectSystemSummary,
+                AgentTaskKind::InspectSystem,
+                false,
+            ),
+        ]
+        .into_iter()
+        .find(|(capability, _, _)| requirements.requires(*capability));
+        let Some((_, task_kind, mutating)) = mapped else {
+            return LegacyRoute {
+                disposition: "reject",
+                task_kind: None,
+                target_id: None,
+                mutating: false,
+            };
+        };
+        LegacyRoute {
+            disposition: "task",
+            task_kind: Some(task_kind),
+            target_id: requirements
+                .external_agent_target()
+                .map(|target| ExternalAgentIntegrationRegistry::descriptor(target).integration_id),
+            mutating,
+        }
+    }
+
+    #[test]
+    fn records_the_iteration_31_legacy_keyword_routing_baseline() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/agent-evals/v1-config-tasks.json"
+        ))
+        .expect("Agent configuration evaluation manifest");
+        let scenarios = manifest["scenarios"]
+            .as_array()
+            .expect("evaluation scenarios");
+        let mut evaluated = 0_u32;
+        let mut matched = 0_u32;
+        let mut adversarial_mutation_plans = 0_u32;
+        let mut mismatch_ids = Vec::new();
+
+        for scenario in scenarios {
+            let Some(prompt) = scenario["input"]["prompt"].as_str() else {
+                continue;
+            };
+            evaluated += 1;
+            let actual = legacy_route(prompt);
+            let expected = &scenario["expected"];
+            let expected_disposition = expected["disposition"]
+                .as_str()
+                .expect("expected disposition");
+            let disposition_matches = actual.disposition == expected_disposition;
+            let task_matches = expected_disposition != "task"
+                || (expected["taskKind"]
+                    .as_str()
+                    .and_then(AgentTaskKind::from_key)
+                    == actual.task_kind
+                    && expected["targetId"].as_str() == actual.target_id);
+            if disposition_matches && task_matches {
+                matched += 1;
+            } else {
+                mismatch_ids.push(scenario["id"].as_str().expect("scenario id").to_owned());
+            }
+            if scenario["category"] == "adversarial" && actual.mutating {
+                adversarial_mutation_plans += 1;
+            }
+        }
+
+        eprintln!(
+            "iteration31 legacy routing baseline: {matched}/{evaluated} matched, {adversarial_mutation_plans} adversarial mutation plan(s), mismatches={mismatch_ids:?}"
+        );
+        assert_eq!(evaluated, 20);
+        assert_eq!(matched, 6);
+        assert_eq!(adversarial_mutation_plans, 1);
+        assert_eq!(mismatch_ids.len(), 14);
+    }
 
     #[test]
     fn active_run_lifecycle_is_exact_and_cancellation_is_observable() {
@@ -831,6 +1199,27 @@ mod tests {
     }
 
     #[test]
+    fn prompt_validation_admits_bounded_clarification_inputs_before_tool_routing() {
+        assert!(validate_prompt("帮我把这个 Agent 配好").is_ok());
+        assert!(validate_prompt("同时配置 OpenCode 和 OpenClaw 接入 HAL100").is_ok());
+    }
+
+    #[test]
+    fn open_chinese_pi_subset_is_admitted_without_broadening_tool_authority() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/agent-evals/v8-open-chinese-inputs.json"
+        ))
+        .expect("open Chinese evaluation manifest");
+        for scenario in manifest["piScenarios"].as_array().expect("Pi scenarios") {
+            let id = scenario["id"].as_str().expect("scenario id");
+            let prompt = scenario["input"]["prompt"].as_str().expect("prompt");
+            validate_prompt(prompt).unwrap_or_else(|error| {
+                panic!("open Pi prompt rejected before routing {id}: {error:?}")
+            });
+        }
+    }
+
+    #[test]
     fn deployment_readiness_requires_only_the_bounded_observation() {
         assert!(validate_prompt("执行 HAL100 部署前检查并观察运行稳定性").is_ok());
         let requirements =
@@ -868,5 +1257,23 @@ mod tests {
         let user_owned = AgentRunRequirements::for_prompt("卸载官方 Pi Coding Agent");
         assert!(!user_owned.requires(AgentCapabilityId::PlanManagedExternalAgentRemoval));
         assert!(user_owned.requires(AgentCapabilityId::InspectExternalAgent));
+    }
+
+    #[test]
+    fn structured_task_requirements_come_only_from_the_rust_workflow() {
+        let route = hal100_core::AgentTaskIntentRouter::route(
+            "请把 OpenCode 重新接好，继续走 HAL100 的本地推理服务",
+            hal100_core::AgentTaskProviderMode::Local,
+        );
+        let spec = route.task_spec().expect("structured OpenCode task");
+        let requirements = AgentRunRequirements::for_task_spec(spec).expect("task requirements");
+
+        assert_eq!(
+            requirements.external_agent_target(),
+            Some(ExternalAgentIntegrationId::OpenCode)
+        );
+        assert!(requirements.requires(AgentCapabilityId::InspectExternalAgent));
+        assert!(requirements.requires(AgentCapabilityId::PlanExternalAgentConfiguration));
+        assert_eq!(requirements.len(), 2);
     }
 }

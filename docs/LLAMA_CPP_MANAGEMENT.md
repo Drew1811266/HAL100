@@ -32,13 +32,20 @@ llama-server
   --alias hal100-active
   --host 127.0.0.1
   --port <随机回环端口>
-  --ctx-size 4096
+  --ctx-size 16384
   --parallel 1
   --reasoning off
   --api-key-file <0600临时会话Key文件>
 ```
 
 标准运行时显式关闭 llama.cpp reasoning模式，保证 OpenAI兼容响应把可见答案放在`message.content`。Qwen3.5等混合推理模型在自动模式下可能先生成`reasoning_content`，当客户端给出较小输出预算时会耗尽预算并留下空正文。首版不把隐式推理模式暴露给 OpenCode或通用客户端；后续若加入思考模式，必须作为明确的模型运行配置，并同步定义 Token展示和内容兼容策略。
+
+上下文与外部Agent模型片段由
+`contracts/external-agent-runtime/v2-device-managed-route-capacity.json`锁定为
+`managed-route-v3`：Rust按统一内存选择16384/32768上下文，1024最大输出、parallel 1、
+reasoning off。Pi Coding Agent和OpenClaw读取同一模型能力；OpenCode走同一实际路由但其配置
+格式不声明容量。Hermes要求至少64000 Token，当前两档都不能接入时明确失败，不会写入虚假的
+64K配置。
 
 子进程清空继承环境、固定工作目录、关闭标准输入输出，并在最多90秒内使用独立Bearer Key验证`/v1/models`。认证就绪并复核子进程仍存活后删除临时Key文件；Key仅保留在Gateway后端配置内存中。启动失败会终止子进程并保留结构化错误码；停止、切换或桌面进程退出都会回收子进程。
 

@@ -7,7 +7,7 @@ use hal100_protocol::{
     PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
     PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
     PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
+    PLAN_MODEL_START_TOOL, PLAN_MODEL_STOP_TOOL, RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
 };
 
 /// Stable business identities for the capabilities exposed to HAL100 Agent.
@@ -35,6 +35,7 @@ pub enum AgentCapabilityId {
     ObserveOperationalHealth = 15,
     PlanExternalAgentInstallation = 16,
     PlanManagedExternalAgentRemoval = 17,
+    PlanModelStop = 18,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,19 @@ pub enum AgentCapabilityDataScope {
     OperationalMetadata,
 }
 
+impl AgentCapabilityDataScope {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::SystemMetadata => "system_metadata",
+            Self::RuntimeMetadata => "runtime_metadata",
+            Self::DiagnosticMetadata => "diagnostic_metadata",
+            Self::IntegrationMetadata => "integration_metadata",
+            Self::PublicCatalogMetadata => "public_catalog_metadata",
+            Self::OperationalMetadata => "operational_metadata",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentCapabilityDescriptor {
     pub id: AgentCapabilityId,
@@ -83,7 +97,7 @@ const MODEL_CATALOG_SEARCH_PREREQUISITE: &[AgentCapabilityId] =
 const MODEL_REPOSITORY_INSPECTION_PREREQUISITE: &[AgentCapabilityId] =
     &[AgentCapabilityId::InspectModelRepository];
 
-const AGENT_CAPABILITIES: [AgentCapabilityDescriptor; 18] = [
+const AGENT_CAPABILITIES: [AgentCapabilityDescriptor; 19] = [
     AgentCapabilityDescriptor {
         id: AgentCapabilityId::InspectSystemSummary,
         tool_name: SYSTEM_SUMMARY_TOOL,
@@ -246,6 +260,15 @@ const AGENT_CAPABILITIES: [AgentCapabilityDescriptor; 18] = [
         prerequisites: EXTERNAL_AGENT_STATUS_PREREQUISITE,
         requires_native_confirmation: true,
     },
+    AgentCapabilityDescriptor {
+        id: AgentCapabilityId::PlanModelStop,
+        tool_name: PLAN_MODEL_STOP_TOOL,
+        effect: AgentCapabilityEffect::ActionPlan,
+        maximum_risk: AgentCapabilityRisk::ControlledChange,
+        data_scope: AgentCapabilityDataScope::RuntimeMetadata,
+        prerequisites: RUNTIME_CATALOG_PREREQUISITE,
+        requires_native_confirmation: true,
+    },
 ];
 
 pub const AGENT_CAPABILITY_COUNT: u8 = AGENT_CAPABILITIES.len() as u8;
@@ -316,8 +339,8 @@ mod tests {
 
     #[test]
     fn registry_has_one_descriptor_for_every_stable_capability() {
-        assert_eq!(AgentCapabilityRegistry::all().len(), 18);
-        assert_eq!(usize::from(AGENT_CAPABILITY_COUNT), 18);
+        assert_eq!(AgentCapabilityRegistry::all().len(), 19);
+        assert_eq!(usize::from(AGENT_CAPABILITY_COUNT), 19);
 
         let ids = AgentCapabilityRegistry::all()
             .iter()
@@ -327,8 +350,8 @@ mod tests {
             .iter()
             .map(|descriptor| descriptor.tool_name)
             .collect::<HashSet<_>>();
-        assert_eq!(ids.len(), 18);
-        assert_eq!(tool_names.len(), 18);
+        assert_eq!(ids.len(), 19);
+        assert_eq!(tool_names.len(), 19);
         for descriptor in AgentCapabilityRegistry::all() {
             assert_eq!(
                 AgentCapabilityRegistry::descriptor(descriptor.id),
@@ -343,13 +366,16 @@ mod tests {
     }
 
     #[test]
-    fn registry_matches_the_shared_rpc_v9_tool_manifest() {
+    fn registry_matches_the_shared_rpc_v12_tool_manifest() {
         let manifest: serde_json::Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v9-tools.json"))
-                .expect("shared Agent RPC v9 tool manifest");
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v12-tools.json"))
+                .expect("shared Agent RPC v12 tool manifest");
         let tools = manifest["tools"].as_array().expect("tool manifest array");
 
-        assert_eq!(manifest["protocolVersion"], 9);
+        assert_eq!(
+            manifest["protocolVersion"].as_u64(),
+            Some(u64::from(hal100_protocol::AGENT_RPC_VERSION))
+        );
         assert_eq!(tools.len(), AgentCapabilityRegistry::all().len());
         for (tool, descriptor) in tools.iter().zip(AgentCapabilityRegistry::all()) {
             assert_eq!(tool["name"], descriptor.tool_name);

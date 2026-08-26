@@ -260,7 +260,7 @@ mod tests {
         );
         assert_eq!(
             reparsed["providers"]["hal100"]["models"]["hal100-active"]["context_length"],
-            4_096
+            crate::AGENT_BASELINE_CONTEXT_WINDOW_TOKENS
         );
     }
 

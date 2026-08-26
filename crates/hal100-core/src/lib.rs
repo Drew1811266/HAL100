@@ -1,4 +1,7 @@
 mod agent_capability;
+mod agent_intent;
+mod agent_task;
+mod agent_task_graph;
 mod external_agent_integration;
 mod tool_broker;
 
@@ -14,6 +17,25 @@ pub use agent_capability::{
     AGENT_CAPABILITY_COUNT, AgentCapabilityDataScope, AgentCapabilityDescriptor,
     AgentCapabilityEffect, AgentCapabilityId, AgentCapabilityRegistry, AgentCapabilityRisk,
     AgentCapabilitySet,
+};
+pub use agent_intent::{
+    AGENT_TASK_INTENT_SCHEMA_VERSION, AgentTaskAdjudication, AgentTaskAdjudicationOutcome,
+    AgentTaskAdjudicator, AgentTaskClarificationKind, AgentTaskClarificationResolution,
+    AgentTaskClarificationSpec, AgentTaskClarificationSpecError, AgentTaskIntentRouter,
+    AgentTaskProposalError, AgentTaskProposalValidator, AgentTaskRejectionReason, AgentTaskRoute,
+};
+pub use agent_task::{
+    AGENT_TASK_KIND_COUNT, AgentTaskConstraints, AgentTaskDesiredState, AgentTaskKind,
+    AgentTaskPhase, AgentTaskProviderMode, AgentTaskSpec, AgentTaskSpecError, AgentTaskState,
+    AgentTaskSuccessPredicate, AgentTaskTarget, AgentTaskTargetKind, AgentTaskTransitionError,
+    AgentTaskWorkflowRegistry, AgentWorkflowDefinition, AgentWorkflowStep,
+};
+pub use agent_task_graph::{
+    AGENT_TASK_GRAPH_MAX_DEPENDENCIES, AGENT_TASK_GRAPH_MAX_NODES, AGENT_TASK_GRAPH_SCHEMA_VERSION,
+    AgentTaskCompletionEffect, AgentTaskGraph, AgentTaskGraphBuildError, AgentTaskGraphCheckpoint,
+    AgentTaskGraphDefinition, AgentTaskGraphError, AgentTaskGraphNodeCheckpoint,
+    AgentTaskGraphNodeDefinition, AgentTaskGraphNodeId, AgentTaskGraphNodeState,
+    AgentTaskGraphState,
 };
 pub use external_agent_integration::{
     BUILT_IN_AGENT_RUNTIME, BuiltInAgentIsolation, BuiltInAgentRuntimeDescriptor,
@@ -94,7 +116,7 @@ where
         AppOverview {
             app_name: "HAL100".to_owned(),
             version: version.to_owned(),
-            phase: "迭代 22 · 版本化受管部署配方".to_owned(),
+            phase: "1.0.4 · 开发初期".to_owned(),
             gateway_state: service_state_from_code(self.gateway_state.load(Ordering::Acquire)),
             database_state: DatabaseState::Ready,
             platform: self.system_probe.platform_summary(),

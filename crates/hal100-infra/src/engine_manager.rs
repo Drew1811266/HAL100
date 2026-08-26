@@ -27,7 +27,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
-use crate::{BackendConfig, Database, DatabaseError, GatewayRouteSwitchError, GatewayState};
+use crate::{
+    AgentRuntimeCapacityProfile, BackendConfig, Database, DatabaseError, GatewayRouteSwitchError,
+    GatewayState,
+};
 
 const LLAMA_CPP_VERSION: &str = "b10218";
 const LLAMA_CPP_ARCHIVE_NAME: &str = "llama-b10218-bin-macos-arm64.tar.gz";
@@ -118,6 +121,7 @@ pub struct LlamaCppManager {
     engine_root: PathBuf,
     release: EngineRelease,
     client: Client,
+    capacity: AgentRuntimeCapacityProfile,
     pending_install: Mutex<Option<EngineInstallPlan>>,
     pending_remove: Mutex<Option<EngineRemovePlan>>,
     lifecycle: AsyncMutex<()>,
@@ -153,6 +157,20 @@ impl LlamaCppManager {
         gateway: GatewayState,
         engine_root: PathBuf,
     ) -> Result<Self, EngineManagerError> {
+        Self::with_capacity(
+            database,
+            gateway,
+            engine_root,
+            AgentRuntimeCapacityProfile::baseline(),
+        )
+    }
+
+    pub fn with_capacity(
+        database: Arc<Database>,
+        gateway: GatewayState,
+        engine_root: PathBuf,
+        capacity: AgentRuntimeCapacityProfile,
+    ) -> Result<Self, EngineManagerError> {
         if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             return Err(EngineManagerError::UnsupportedPlatform);
         }
@@ -167,14 +185,31 @@ impl LlamaCppManager {
             download_url: Url::parse(LLAMA_CPP_DOWNLOAD_URL)
                 .expect("pinned llama.cpp URL is valid"),
         };
-        Self::with_release(database, gateway, engine_root, release)
+        Self::with_release_and_capacity(database, gateway, engine_root, release, capacity)
     }
 
+    #[cfg(test)]
     fn with_release(
         database: Arc<Database>,
         gateway: GatewayState,
         engine_root: PathBuf,
         release: EngineRelease,
+    ) -> Result<Self, EngineManagerError> {
+        Self::with_release_and_capacity(
+            database,
+            gateway,
+            engine_root,
+            release,
+            AgentRuntimeCapacityProfile::baseline(),
+        )
+    }
+
+    fn with_release_and_capacity(
+        database: Arc<Database>,
+        gateway: GatewayState,
+        engine_root: PathBuf,
+        release: EngineRelease,
+        capacity: AgentRuntimeCapacityProfile,
     ) -> Result<Self, EngineManagerError> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -193,6 +228,7 @@ impl LlamaCppManager {
             engine_root,
             release,
             client,
+            capacity,
             pending_install: Mutex::new(None),
             pending_remove: Mutex::new(None),
             lifecycle: AsyncMutex::new(()),
@@ -535,7 +571,7 @@ impl LlamaCppManager {
             .arg("--port")
             .arg(port.to_string())
             .arg("--ctx-size")
-            .arg("4096")
+            .arg(self.capacity.context_window_tokens.to_string())
             .arg("--parallel")
             .arg("1")
             // HAL100's standard OpenAI-compatible route requires assistant text in
@@ -1280,6 +1316,9 @@ key_file = sys.argv[sys.argv.index("--api-key-file") + 1]
 reasoning = sys.argv[sys.argv.index("--reasoning") + 1]
 if reasoning != "off":
     sys.exit(64)
+context_window = sys.argv[sys.argv.index("--ctx-size") + 1]
+if context_window != "16384":
+    sys.exit(65)
 with open(key_file, "r", encoding="utf-8") as handle:
     api_key = handle.read()
 

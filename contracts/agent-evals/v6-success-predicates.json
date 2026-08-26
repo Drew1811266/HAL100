@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "checkpointSchemaVersion": 3,
+  "thresholds": {
+    "workflowPredicateCoverage": 1,
+    "exactEvidenceConclusionRate": 1,
+    "maxReplanAttempts": 1,
+    "modelDeclaredSuccessCount": 0,
+    "persistentSensitiveEvidenceFieldCount": 0
+  },
+  "workflows": [
+    {
+      "taskKind": "inspect_system",
+      "predicate": "evidence_collected",
+      "completionEvidenceSources": ["systemProbe"]
+    },
+    {
+      "taskKind": "inspect_runtime",
+      "predicate": "evidence_collected",
+      "completionEvidenceSources": ["runtimeCatalog"]
+    },
+    {
+      "taskKind": "diagnose_environment",
+      "predicate": "environment_diagnosed",
+      "completionEvidenceSources": ["environmentDiagnostics"]
+    },
+    {
+      "taskKind": "repair_environment",
+      "predicate": "repair_finding_resolved",
+      "completionEvidenceSources": ["environmentDiagnostics", "repairDiagnosticRecheck"]
+    },
+    {
+      "taskKind": "analyze_operational_history",
+      "predicate": "evidence_collected",
+      "completionEvidenceSources": ["operationalHistory"]
+    },
+    {
+      "taskKind": "observe_deployment_health",
+      "predicate": "evidence_collected",
+      "completionEvidenceSources": ["operationalHealth"]
+    },
+    {
+      "taskKind": "start_model",
+      "predicate": "runtime_model_active",
+      "completionEvidenceSources": ["runtimeCatalog", "runtimeRecheck"]
+    },
+    {
+      "taskKind": "stop_model",
+      "predicate": "runtime_model_stopped",
+      "completionEvidenceSources": ["runtimeCatalog", "runtimeRecheck"]
+    },
+    {
+      "taskKind": "remove_model",
+      "predicate": "model_absent",
+      "completionEvidenceSources": ["runtimeCatalog", "modelLibraryRecheck"]
+    },
+    {
+      "taskKind": "search_model_catalog",
+      "predicate": "catalog_results_available",
+      "completionEvidenceSources": ["modelCatalog"]
+    },
+    {
+      "taskKind": "inspect_model_repository",
+      "predicate": "repository_inspected",
+      "completionEvidenceSources": ["modelRepository"]
+    },
+    {
+      "taskKind": "download_model",
+      "predicate": "download_plan_created",
+      "completionEvidenceSources": ["actionPlan"]
+    },
+    {
+      "taskKind": "install_engine",
+      "predicate": "engine_installed",
+      "completionEvidenceSources": ["runtimeCatalog", "engineRecheck"]
+    },
+    {
+      "taskKind": "remove_engine",
+      "predicate": "engine_absent",
+      "completionEvidenceSources": ["runtimeCatalog", "engineRecheck"]
+    },
+    {
+      "taskKind": "inspect_external_agent",
+      "predicate": "evidence_collected",
+      "completionEvidenceSources": ["externalIntegrationStatus"]
+    },
+    {
+      "taskKind": "configure_external_agent",
+      "predicate": "integration_configured",
+      "completionEvidenceSources": ["externalIntegrationStatus", "integrationRecheck"]
+    },
+    {
+      "taskKind": "disconnect_external_agent",
+      "predicate": "integration_disconnected",
+      "completionEvidenceSources": ["externalIntegrationStatus", "integrationRecheck"]
+    },
+    {
+      "taskKind": "install_managed_external_agent",
+      "predicate": "managed_installation_present",
+      "completionEvidenceSources": ["externalIntegrationStatus", "managedInstallationRecheck"]
+    },
+    {
+      "taskKind": "remove_managed_external_agent",
+      "predicate": "managed_installation_absent",
+      "completionEvidenceSources": ["externalIntegrationStatus", "managedInstallationRecheck"]
+    }
+  ],
+  "faultInjections": [
+    {
+      "id": "model-answer-cannot-declare-success",
+      "events": ["beginReadOnly", "modelClaimsSuccess", "evidenceUnavailable"],
+      "expected": {
+        "phase": "blocked",
+        "verificationState": "evidenceUnavailable",
+        "replanAttemptCount": 0
+      }
+    },
+    {
+      "id": "read-only-unsatisfied-fails-closed",
+      "events": ["beginReadOnly", "evidenceUnsatisfied"],
+      "expected": {
+        "phase": "blocked",
+        "verificationState": "unsatisfied",
+        "replanAttemptCount": 0
+      }
+    },
+    {
+      "id": "first-action-miss-enters-one-replan",
+      "events": [
+        "beginControlled",
+        "planReady",
+        "confirmExact",
+        "verificationStarted",
+        "evidenceUnsatisfied"
+      ],
+      "expected": {
+        "phase": "planning",
+        "verificationState": "unsatisfied",
+        "replanAttemptCount": 1
+      }
+    },
+    {
+      "id": "same-task-can-resume-bounded-replan",
+      "events": [
+        "beginControlled",
+        "planReady",
+        "confirmExact",
+        "verificationStarted",
+        "evidenceUnsatisfied",
+        "resumeSameTask"
+      ],
+      "expected": { "phase": "planning", "verificationState": "pending", "replanAttemptCount": 1 }
+    },
+    {
+      "id": "second-action-miss-is-terminal",
+      "events": [
+        "beginControlled",
+        "planReady",
+        "confirmExact",
+        "verificationStarted",
+        "evidenceUnsatisfied",
+        "resumeSameTask",
+        "planReady",
+        "confirmExact",
+        "verificationStarted",
+        "evidenceUnsatisfied"
+      ],
+      "expected": {
+        "phase": "blocked",
+        "verificationState": "unsatisfied",
+        "replanAttemptCount": 1
+      }
+    },
+    {
+      "id": "missing-action-recheck-fails-closed",
+      "events": [
+        "beginControlled",
+        "planReady",
+        "confirmExact",
+        "verificationStarted",
+        "evidenceUnavailable"
+      ],
+      "expected": {
+        "phase": "blocked",
+        "verificationState": "evidenceUnavailable",
+        "replanAttemptCount": 0
+      }
+    }
+  ]
+}

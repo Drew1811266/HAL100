@@ -6,6 +6,7 @@ export const SYSTEM_SUMMARY_TOOL = "hal100.inspect_system_summary";
 export const SIMULATED_SYSTEM_SUMMARY_TOOL = SYSTEM_SUMMARY_TOOL;
 export const RUNTIME_CATALOG_TOOL = "hal100.inspect_runtime_catalog";
 export const PLAN_MODEL_START_TOOL = "hal100.plan_model_start";
+export const PLAN_MODEL_STOP_TOOL = "hal100.plan_model_stop";
 export const PLAN_MODEL_REMOVAL_TOOL = "hal100.plan_model_removal";
 export const ENVIRONMENT_DIAGNOSTICS_TOOL = "hal100.inspect_environment_diagnostics";
 export const OPERATIONAL_HISTORY_TOOL = "hal100.inspect_operational_history";
@@ -186,6 +187,7 @@ export class ToolBrokerBridge {
       this.createOperationalHealthObservationTool(runId),
       this.createExternalAgentInstallationPlanTool(runId),
       this.createManagedExternalAgentRemovalPlanTool(runId),
+      this.createModelStopPlanTool(runId),
     ];
   }
 
@@ -250,6 +252,30 @@ export class ToolBrokerBridge {
           runId,
           toolCallId,
           PLAN_MODEL_START_TOOL,
+          parameters,
+          signal,
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(output) }],
+          details: output,
+        };
+      },
+    };
+  }
+
+  createModelStopPlanTool(runId: string): AgentTool<typeof modelStartParameters, unknown> {
+    return {
+      name: PLAN_MODEL_STOP_TOOL,
+      label: "生成当前模型停止计划",
+      description:
+        "使用运行环境工具返回的精确活动 modelId，请求 Rust 生成一次性停止计划。此工具只生成计划，不停止模型；用户仍需在 HAL100 原生确认窗口批准。",
+      parameters: modelStartParameters,
+      executionMode: "sequential",
+      execute: async (toolCallId, parameters, signal) => {
+        const output = await this.requestTool(
+          runId,
+          toolCallId,
+          PLAN_MODEL_STOP_TOOL,
           parameters,
           signal,
         );

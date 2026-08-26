@@ -15,6 +15,7 @@ mod jsonc_patch;
 mod logging;
 mod managed_deployment;
 mod managed_file;
+mod model_capacity;
 mod model_download;
 mod model_import;
 mod model_removal;
@@ -66,6 +67,12 @@ pub use managed_file::{
     existing_mode as managed_file_mode, read_bounded as read_managed_file,
     reject_symlink as reject_managed_file_symlink, sync_directory as sync_managed_directory,
     write_new_file as write_new_managed_file,
+};
+pub use model_capacity::{
+    AGENT_BASELINE_CONTEXT_WINDOW_TOKENS, AGENT_CAPACITY_PROFILE_REVISION, AGENT_MAX_OUTPUT_TOKENS,
+    AGENT_PI_RESERVED_TOKENS, AGENT_STANDARD_CONTEXT_WINDOW_TOKENS,
+    AGENT_STANDARD_MIN_UNIFIED_MEMORY_BYTES, AgentRuntimeCapacityProfile,
+    MANAGED_ROUTE_MAX_OUTPUT_TOKENS, MANAGED_ROUTE_PROFILE_REVISION,
 };
 pub use model_download::{ModelDownloadError, ModelDownloadManager};
 pub use model_import::{GgufImportError, GgufImportManager};

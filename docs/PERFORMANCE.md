@@ -54,20 +54,18 @@ HAL100是长期后台软件。性能不是发布前优化项，而是每次迭�
 - 请求结束后产生一条 Usage事件。
 - SQLite由单写入器消费有界队列。
 - 使用 WAL和短事务批量提交。
-- 为常见统计维度建立索引和每日聚合表。
-- 保留策略清理使用小批量，避免长时间锁库。
+- 为常见统计维度和开始时间建立索引；日/小时数据从同一Usage事实表按范围聚合。
+- 保留策略不运行后台清理；用户预览并原生确认后才显式删除过期记录。
 - 数据库维护不得在主请求路径执行。
 
-## 6. 监测频率
+## 6. 当前监测策略
 
-建议初始策略：
-
-| 状态 | 硬件/后端监测 |
+| 状态 | 当前策略 |
 | --- | --- |
-| 后台空闲 | 30–60秒，能事件驱动则不轮询 |
-| 有推理请求 | 5–10秒 |
-| 性能页面可见 | 1–2秒 |
-| 下载/安装任务 | 只监测相关任务和磁盘 |
+| 后台空闲 | 不轮询 |
+| 有推理请求 | 使用请求和流式事件，不另开指标轮询 |
+| Usage页面可见 | 用户进入页面或显式刷新时查询，不后台轮询 |
+| 下载/安装任务 | 只在窗口活跃且任务进行中轮询相关任务 |
 
 禁止为了读取指标而每秒启动 `system_profiler`、`ioreg`、PowerShell或其他外部进程。优先使用原生 API和已有子进程状态。
 
@@ -84,6 +82,16 @@ HAL100是长期后台软件。性能不是发布前优化项，而是每次迭�
 - Pi Agent Core只存在于按需 Agent Kernel Sidecar，不进入长期常驻 Rust Core。
 - Kernel Sidecar和本地 Agent Model Runtime均懒加载。
 - Sidecar按单任务启动并在RPC shutdown后立即退出；本地 Model Runtime在最后一次任务后空闲两分钟释放模型与 KV Cache。
+- 确定性路由已明确任务、澄清或拒绝时不调用Pi意图分类；只有`Unresolved`请求最多增加一次零工具模型回合。意图模型固定`temperature=0`和128输出Token上限；真实Qwen在6场景×3轮热模型验收中的p95与最大推理延迟均约2.61秒。该数字不包含首次模型Runtime启动，不应外推为完整任务延迟。
+- 确定性澄清与拒绝由Rust固定回答，不启动Kernel、Agent Model Runtime或临时Gateway路由；真实模型只用于需要工具编排、零工具解释或确定性入口未解析的Pi意图任务。
+- 结构化任务只下发工作流叶能力及其前置闭包，不与旧关键词工具求并集；这限制无关工具定义、模型回合和工具结果Token。含工具未解析时不进行额外回退模型调用。
+- 执行系统指令只装配当前任务工具，Provider上下文只保留最新直接工具依赖；最终计划成功后固定
+  收口，不再调用模型复述计划。v9的18条动作路径最小模型回合由55降到37（-32.7%），三工具
+  隔离对照重复结果Token归零且发送量至少下降40%。
+- RPC v12只在任务结束时计算有界数值指标；Provider精确Usage与`ceil(可见字符数/4)`工具结果
+  对照估算分开，不保留正文，不新增后台线程、计时器或采样循环。
+- 任务检查点是单个小型Rust内存对象，只在既有运行、确认、执行或显式状态读取路径更新；计划
+  到期在状态读取时惰性回收，不新增后台timer、轮询、SQLite写入或Sidecar回合。
 - Agent模型选择同时考虑工具正确率、冷启动和峰值内存。
 - 云端模式只启动 Kernel Sidecar，不得启动本地 Agent Model Runtime。
 - Agent工具执行不得占用网关异步线程。
@@ -142,5 +150,8 @@ macOS开发期使用 Instruments、Activity Monitor、Energy Log和 `powermetric
 - [2026-08-18：迭代7本地Agent纵向闭环](benchmarks/2026-08-18-iteration-7-local-agent.md)
 - [2026-08-18：迭代7 Agent状态、计划与取消](benchmarks/2026-08-18-iteration-7-agent-actions.md)
 - [2026-08-18：迭代8云端Agent双范围纵向闭环](benchmarks/2026-08-18-iteration-8-cloud-agent.md)
+- [2026-08-25：迭代36任务状态机与脱敏检查点](benchmarks/2026-08-25-iteration-36-task-checkpoints.md)
+- [2026-08-25：迭代41 Agent效率与长上下文装配](benchmarks/2026-08-25-iteration-41-agent-efficiency-and-context.md)
+- [2026-08-26：迭代43设备感知Agent长上下文与连续任务稳定性](benchmarks/2026-08-26-iteration-43-device-aware-agent-context.md)
 - [2026-08-18—19：迭代9稳定性与内部测试准备验收](benchmarks/2026-08-18-iteration-9-stability.md)
 - [2026-08-18：迭代4 Alpha核心闭环基准](benchmarks/2026-08-18-iteration-4-alpha-core.md)

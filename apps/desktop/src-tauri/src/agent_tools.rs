@@ -9,8 +9,8 @@ use std::{
 };
 
 use hal100_core::{
-    AgentToolPolicy, AuthorizedAgentTool, BUILT_IN_AGENT_RUNTIME, ExternalAgentIntegrationId,
-    ExternalAgentIntegrationRegistry,
+    AgentTaskSpec, AgentToolPolicy, AuthorizedAgentTool, BUILT_IN_AGENT_RUNTIME,
+    ExternalAgentIntegrationId, ExternalAgentIntegrationRegistry,
 };
 use hal100_infra::{
     Database, DatabaseError, EngineManagerError, EnvironmentDiagnosticError,
@@ -29,23 +29,26 @@ use hal100_protocol::{
     AgentRuntimeCatalog, AgentRuntimeModel, AgentSystemSummary, AgentToolEvent,
     DiagnosticRepairKind, DiagnosticSeverity, ENVIRONMENT_DIAGNOSTICS_TOOL,
     EXTERNAL_AGENT_STATUS_TOOL, EngineInstallState, EnvironmentDiagnosticReport,
-    ExternalAgentGatewayProtocol, ExternalAgentIntegrationState, LocalModelState,
+    ExternalAgentGatewayProtocol, ExternalAgentIntegrationState, LlamaCppStatus, LocalModelState,
     MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL, ModelDownloadSnapshot,
     ModelRemovalKind, OPERATIONAL_HEALTH_OBSERVATION_TOOL, OPERATIONAL_HISTORY_TOOL,
     OpenCodeIntegrationState, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
     PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
     PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
     PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, RUNTIME_CATALOG_TOOL, RemoteModelRepository, RemoteModelSearchResults,
-    SYSTEM_SUMMARY_TOOL, ToolCallRequestPayload, ToolCallResultPayload,
+    PLAN_MODEL_START_TOOL, PLAN_MODEL_STOP_TOOL, RUNTIME_CATALOG_TOOL, RemoteModelRepository,
+    RemoteModelSearchResults, SYSTEM_SUMMARY_TOOL, ToolCallRequestPayload, ToolCallResultPayload,
 };
 use serde_json::json;
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::agent_action::{
-    AgentActionExecutor, AgentActionPlanError, AgentActionPlanStore, PendingAgentAction,
-    action_kind_key,
+    AgentActionExecutor, AgentActionPlanError, AgentActionPlanStore, AgentRepairVerification,
+    PendingAgentAction, action_kind_key,
+};
+use crate::agent_task_evidence::{
+    AgentTaskEvidence, AgentTaskToolObservation, evaluate_tool_observation,
 };
 
 const ACTION_PLAN_TTL_MS: i64 = 5 * 60 * 1_000;
@@ -216,6 +219,7 @@ impl AgentToolExecutor {
         &self,
         run_id: String,
         external_agent_target: Option<ExternalAgentIntegrationId>,
+        task_spec: Option<AgentTaskSpec>,
         runtime_handle: tokio::runtime::Handle,
         cancellation: Arc<AtomicBool>,
     ) -> AgentToolRun {
@@ -223,6 +227,8 @@ impl AgentToolExecutor {
             executor: self.clone(),
             run_id,
             external_agent_target,
+            task_spec,
+            evidence: None,
             tool_events: Vec::new(),
             action_plans: Vec::new(),
             diagnostic_report: None,
@@ -256,6 +262,8 @@ pub(super) struct AgentToolRun {
     executor: AgentToolExecutor,
     run_id: String,
     external_agent_target: Option<ExternalAgentIntegrationId>,
+    task_spec: Option<AgentTaskSpec>,
+    evidence: Option<AgentTaskEvidence>,
     tool_events: Vec<AgentToolEvent>,
     action_plans: Vec<AgentActionPlan>,
     diagnostic_report: Option<EnvironmentDiagnosticReport>,
@@ -296,6 +304,9 @@ impl AgentToolRun {
             }
             Ok(AuthorizedAgentTool::PlanModelStart { model_id }) => {
                 self.plan_model_start(request, &model_id)?
+            }
+            Ok(AuthorizedAgentTool::PlanModelStop { model_id }) => {
+                self.plan_model_stop(request, &model_id)?
             }
             Ok(AuthorizedAgentTool::PlanModelRemoval { model_id }) => {
                 self.plan_model_removal(request, &model_id)?
@@ -354,6 +365,15 @@ impl AgentToolRun {
         })
     }
 
+    pub(super) fn evidence(&self) -> AgentTaskEvidence {
+        self.evidence
+            .unwrap_or_else(|| AgentTaskEvidence::unavailable(None))
+    }
+
+    pub(super) fn desired_state_satisfied(&self) -> bool {
+        self.evidence().is_satisfied()
+    }
+
     pub(super) fn finish(self) -> AgentToolRunOutput {
         AgentToolRunOutput {
             tool_events: self.tool_events,
@@ -380,6 +400,7 @@ impl AgentToolRun {
             recommended_parameter_range: profile.recommendation.parameter_range,
             recommended_quantization: profile.recommendation.quantization,
         };
+        self.observe(AgentTaskToolObservation::SystemSummary);
         self.record_completed(
             request,
             SYSTEM_SUMMARY_TOOL,
@@ -394,6 +415,7 @@ impl AgentToolRun {
         request: &ToolCallRequestPayload,
     ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
         let catalog = build_runtime_catalog(&self.executor)?;
+        self.observe(AgentTaskToolObservation::RuntimeCatalog(&catalog));
         self.record_completed(
             request,
             RUNTIME_CATALOG_TOOL,
@@ -412,6 +434,7 @@ impl AgentToolRun {
     ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
         match self.executor.diagnostics.run() {
             Ok(report) => {
+                self.observe(AgentTaskToolObservation::EnvironmentDiagnostics(&report));
                 self.record_completed(
                     request,
                     ENVIRONMENT_DIAGNOSTICS_TOOL,
@@ -459,6 +482,7 @@ impl AgentToolRun {
             returned_event_count: saturating_u32(events.len()),
             events,
         };
+        self.observe(AgentTaskToolObservation::OperationalHistory);
         self.record_completed(
             request,
             OPERATIONAL_HISTORY_TOOL,
@@ -557,6 +581,7 @@ impl AgentToolRun {
             blocking_codes,
             samples,
         };
+        self.observe(AgentTaskToolObservation::OperationalHealth);
         self.record_completed(
             request,
             OPERATIONAL_HEALTH_OBSERVATION_TOOL,
@@ -641,6 +666,42 @@ impl AgentToolRun {
                 "Rust refused to create an unsafe model removal plan",
             )),
         }
+    }
+
+    fn plan_model_stop(
+        &mut self,
+        request: &ToolCallRequestPayload,
+        model_id: &str,
+    ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
+        if !self.completed(RUNTIME_CATALOG_TOOL) {
+            return Ok(tool_error(
+                request,
+                "runtime_catalog_required",
+                "inspect_runtime_catalog must complete before planning a model stop",
+            ));
+        }
+        if self.has_action_plan() {
+            return Ok(action_already_planned(request));
+        }
+        let Some(pending) = build_model_stop_plan(&self.executor, &self.run_id, model_id)? else {
+            return Ok(tool_error(
+                request,
+                "model_stop_unavailable",
+                "the requested model is not the currently active managed model",
+            ));
+        };
+        let target_name = pending.plan.target_name.clone();
+        self.register_pending_action(
+            pending,
+            request,
+            PendingActionPresentation {
+                tool_name: PLAN_MODEL_STOP_TOOL,
+                label: "生成当前模型停止计划",
+                summary: format!(
+                    "已为当前活动模型“{target_name}”生成一次性停止计划；尚未执行，必须通过 Rust 原生确认。"
+                ),
+            },
+        )
     }
 
     fn plan_diagnostic_repair(
@@ -785,6 +846,7 @@ impl AgentToolRun {
         let descriptor = ExternalAgentIntegrationRegistry::descriptor(integration_id);
         match build_external_agent_status(&self.executor, integration_id) {
             Ok(status) => {
+                self.observe(AgentTaskToolObservation::ExternalIntegration(&status));
                 self.external_agent_inspection = Some(integration_id);
                 self.record_completed(
                     request,
@@ -880,6 +942,7 @@ impl AgentToolRun {
                         integration_id,
                         deployment_plan_id: deployment.plan_id,
                     },
+                    repair_verification: None,
                     plan: AgentActionPlan {
                         plan_id: next_plan_id(),
                         run_id: self.run_id.clone(),
@@ -966,6 +1029,7 @@ impl AgentToolRun {
                         integration_id,
                         deployment_plan_id: removal.plan_id,
                     },
+                    repair_verification: None,
                     plan: AgentActionPlan {
                         plan_id: next_plan_id(),
                         run_id: self.run_id.clone(),
@@ -1088,6 +1152,7 @@ impl AgentToolRun {
         };
         results.items.retain(|item| !item.gated && !item.private);
         results.items.truncate(8);
+        self.observe(AgentTaskToolObservation::ModelCatalog(&results));
         self.record_completed(
             request,
             MODEL_CATALOG_SEARCH_TOOL,
@@ -1156,6 +1221,7 @@ impl AgentToolRun {
                 "repository has no GGUF file with a trusted SHA-256",
             ));
         }
+        self.observe(AgentTaskToolObservation::ModelRepository(&detail));
         self.record_completed(
             request,
             MODEL_REPOSITORY_INSPECTION_TOOL,
@@ -1235,6 +1301,7 @@ impl AgentToolRun {
             executor: AgentActionExecutor::DownloadModel {
                 download_plan_id: download.plan_id.clone(),
             },
+            repair_verification: None,
             plan: AgentActionPlan {
                 plan_id: next_plan_id(),
                 run_id: self.run_id.clone(),
@@ -1265,6 +1332,7 @@ impl AgentToolRun {
             },
         };
         let target_name = pending.plan.target_name.clone();
+        self.observe(AgentTaskToolObservation::DownloadPlan);
         self.register_pending_action(
             pending,
             request,
@@ -1288,13 +1356,9 @@ impl AgentToolRun {
         self.executor.action_plans.register(pending)?;
         self.executor.database.insert_audit_event(
             "agent_action_planned",
-            "agent_action_plan",
-            &plan.plan_id,
-            &json!({
-                "action": action_kind_key(plan.action_kind),
-                "targetId": plan.target_id,
-            })
-            .to_string(),
+            "agent_action",
+            action_kind_key(plan.action_kind),
+            &json!({ "action": action_kind_key(plan.action_kind) }).to_string(),
             now_ms(),
         )?;
         self.tool_events.push(AgentToolEvent {
@@ -1332,6 +1396,15 @@ impl AgentToolRun {
 
     fn has_action_plan(&self) -> bool {
         !self.action_plans.is_empty()
+    }
+
+    fn observe(&mut self, observation: AgentTaskToolObservation<'_>) {
+        let Some(spec) = self.task_spec.as_ref() else {
+            return;
+        };
+        if let Some(evidence) = evaluate_tool_observation(spec, observation) {
+            self.evidence = Some(evidence);
+        }
     }
 
     fn await_remote<F, T>(&self, future: F) -> Result<T, AgentToolExecutionError>
@@ -1451,6 +1524,7 @@ fn build_model_start_plan(
         executor: AgentActionExecutor::StartOrSwitchModel {
             model_id: target_id.clone(),
         },
+        repair_verification: None,
         plan: AgentActionPlan {
             plan_id: next_plan_id(),
             run_id: run_id.to_owned(),
@@ -1509,6 +1583,7 @@ fn build_model_removal_plan(
             removal_plan_id: removal_plan.plan_id.clone(),
             model_id: removal_plan.model_id.clone(),
         },
+        repair_verification: None,
         plan: AgentActionPlan {
             plan_id: next_plan_id(),
             run_id: run_id.to_owned(),
@@ -1519,6 +1594,54 @@ fn build_model_removal_plan(
             details,
             expires_at_ms: removal_plan.expires_at_ms,
             action_summary: removal_plan.action_summary,
+            requires_native_confirmation: true,
+        },
+    })
+}
+
+fn build_model_stop_plan(
+    executor: &AgentToolExecutor,
+    run_id: &str,
+    model_id: &str,
+) -> Result<Option<PendingAgentAction>, AgentToolExecutionError> {
+    let engine = executor.engine.status()?;
+    Ok(build_model_stop_plan_from_status(run_id, model_id, &engine))
+}
+
+fn build_model_stop_plan_from_status(
+    run_id: &str,
+    model_id: &str,
+    engine: &LlamaCppStatus,
+) -> Option<PendingAgentAction> {
+    if engine.install_state != EngineInstallState::Installed
+        || engine.runtime_state != hal100_protocol::EngineRuntimeState::Running
+        || engine.active_model_id.as_deref() != Some(model_id)
+    {
+        return None;
+    }
+    let target_name = engine
+        .active_model_name
+        .clone()
+        .unwrap_or_else(|| model_id.to_owned());
+    Some(PendingAgentAction {
+        executor: AgentActionExecutor::StopModel {
+            model_id: model_id.to_owned(),
+        },
+        repair_verification: None,
+        plan: AgentActionPlan {
+            plan_id: next_plan_id(),
+            run_id: run_id.to_owned(),
+            action_kind: AgentActionKind::StopModel,
+            target_id: model_id.to_owned(),
+            target_name,
+            current_state: Some("当前模型正在由 HAL100 托管运行".to_owned()),
+            details: vec![
+                "执行前重新确认该 modelId 仍是当前活动模型".to_owned(),
+                "等待已有请求安全排空；保留模型文件、索引和用量记录".to_owned(),
+            ],
+            expires_at_ms: now_ms().saturating_add(ACTION_PLAN_TTL_MS),
+            action_summary: "等待当前推理请求安全排空后停止托管模型，并恢复 Gateway 的既有路由"
+                .to_owned(),
             requires_native_confirmation: true,
         },
     })
@@ -1537,6 +1660,7 @@ fn build_engine_install_plan(
         executor: AgentActionExecutor::InstallLlamaCpp {
             engine_plan_id: engine_plan.plan_id.clone(),
         },
+        repair_verification: None,
         plan: AgentActionPlan {
             plan_id: next_plan_id(),
             run_id: run_id.to_owned(),
@@ -1569,6 +1693,7 @@ fn build_engine_remove_plan(
         executor: AgentActionExecutor::RemoveLlamaCpp {
             engine_plan_id: engine_plan.plan_id.clone(),
         },
+        repair_verification: None,
         plan: AgentActionPlan {
             plan_id: next_plan_id(),
             run_id: run_id.to_owned(),
@@ -1587,7 +1712,7 @@ fn build_engine_remove_plan(
     }))
 }
 
-fn build_external_agent_status(
+pub(super) fn build_external_agent_status(
     executor: &AgentToolExecutor,
     integration_id: ExternalAgentIntegrationId,
 ) -> Result<AgentExternalIntegrationStatus, AgentToolExecutionError> {
@@ -1722,6 +1847,7 @@ fn build_external_agent_configuration_plan(
             integration_id,
             integration_plan_id,
         },
+        repair_verification: None,
         plan: AgentActionPlan {
             plan_id: next_plan_id(),
             run_id: run_id.to_owned(),
@@ -1803,6 +1929,7 @@ fn build_external_agent_disconnection_plan(
             integration_id,
             integration_plan_id,
         },
+        repair_verification: None,
         plan: AgentActionPlan {
             plan_id: next_plan_id(),
             run_id: run_id.to_owned(),
@@ -1887,6 +2014,11 @@ fn build_diagnostic_repair_plan(
         .plan
         .details
         .push("执行前由 Rust 重新校验当前状态；执行完成后返回一份新的环境诊断报告。".to_owned());
+    pending.repair_verification = Some(AgentRepairVerification {
+        code: finding.code.clone(),
+        component: finding.component,
+        target_id: finding.target_id.clone(),
+    });
     Ok(pending)
 }
 

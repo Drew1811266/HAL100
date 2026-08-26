@@ -214,7 +214,7 @@ mod tests {
         let profile = ExternalAgentModelProfile {
             model_id: "hal100-active".to_owned(),
             display_name: "HAL100 当前模型".to_owned(),
-            context_window_tokens: 6_144,
+            context_window_tokens: 16_384,
             max_output_tokens: 768,
             input_modalities: vec![ExternalAgentInputModality::Text],
             supports_tools: true,
@@ -223,7 +223,7 @@ mod tests {
         };
 
         let value = serde_json::to_value(profile).expect("profile JSON");
-        assert_eq!(value["contextWindowTokens"], 6_144);
+        assert_eq!(value["contextWindowTokens"], 16_384);
         assert_eq!(value["maxOutputTokens"], 768);
         assert_eq!(value["inputModalities"][0], "text");
     }
@@ -266,13 +266,13 @@ mod tests {
             creates_backup: true,
             preserves_default_model: true,
             requires_confirmation: true,
-            model_profile_revision: "managed-route-v1".to_owned(),
+            model_profile_revision: "managed-route-v3".to_owned(),
             warnings: Vec::new(),
         };
 
         let value = serde_json::to_value(plan).expect("configuration plan JSON");
         assert_eq!(value["integrationId"], "pi-coding-agent");
-        assert_eq!(value["modelProfileRevision"], "managed-route-v1");
+        assert_eq!(value["modelProfileRevision"], "managed-route-v3");
         assert!(value.to_string().find("hal100_pi_").is_none());
     }
 }

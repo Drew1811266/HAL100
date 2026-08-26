@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "suite": "hal100-composite-task-graphs",
+  "purpose": "Keep composite configuration execution Rust-owned, bounded, evidence-gated, non-authorizing across restart, and explicitly compensated only for newly changed HAL100-owned state.",
+  "thresholds": {
+    "maxNodes": 8,
+    "maxDependenciesPerNode": 4,
+    "cycleAcceptanceCount": 0,
+    "modelDefinedNodeCount": 0,
+    "modelDefinedDependencyCount": 0,
+    "automaticCompensationCount": 0,
+    "restoredPlanAuthorityCount": 0,
+    "terminalEvidenceRate": 1
+  },
+  "requiredNodeStates": [
+    "blocked",
+    "ready",
+    "running",
+    "awaiting_confirmation",
+    "succeeded",
+    "failed",
+    "compensating",
+    "compensated",
+    "cancelled"
+  ],
+  "scenarios": [
+    {
+      "id": "prepare-external-agent",
+      "semantics": "rustFactory",
+      "expectedTaskKinds": ["install_engine", "start_model", "configure_external_agent"]
+    },
+    {
+      "id": "prepare-managed-pi",
+      "semantics": "rustFactory",
+      "expectedTaskKinds": [
+        "install_engine",
+        "start_model",
+        "install_managed_external_agent",
+        "configure_external_agent"
+      ]
+    },
+    {
+      "id": "dependency-order",
+      "semantics": "unlockOnlyAfterSatisfiedEvidence",
+      "expectedGraphState": "active"
+    },
+    {
+      "id": "idempotent-satisfied",
+      "semantics": "skipWithoutCompensationEligibility",
+      "expectedGraphState": "active"
+    },
+    {
+      "id": "wrong-evidence",
+      "semantics": "rejectEvidenceAndKeepDependentBlocked",
+      "expectedError": "evidenceRejected"
+    },
+    {
+      "id": "native-confirmation-cancelled",
+      "semantics": "cancelForwardGraphWithoutExecution",
+      "expectedGraphState": "cancelled"
+    },
+    {
+      "id": "confirmation-expired",
+      "semantics": "failClosedWithoutExecution",
+      "expectedGraphState": "failed"
+    },
+    {
+      "id": "restart-awaiting-confirmation",
+      "semantics": "dropPlanAndConfirmationAuthority",
+      "expectedRestoredAuthority": false
+    },
+    {
+      "id": "downstream-failure",
+      "semantics": "blockAllForwardWork",
+      "expectedGraphState": "failed"
+    },
+    {
+      "id": "reverse-compensation",
+      "semantics": "explicitSingleAttemptReverseOrder",
+      "expectedGraphState": "compensated"
+    },
+    {
+      "id": "compensation-failure",
+      "semantics": "failClosedWithoutRetry",
+      "expectedGraphState": "failed"
+    },
+    {
+      "id": "redacted-checkpoint",
+      "semantics": "omitPromptAnswerResourcePlanRunPathCredentialAndRawEvidence",
+      "expectedRestoredAuthority": false
+    }
+  ]
+}

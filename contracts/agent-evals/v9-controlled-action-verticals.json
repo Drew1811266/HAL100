@@ -1,0 +1,337 @@
+{
+  "schemaVersion": 1,
+  "suite": "hal100-controlled-action-verticals",
+  "purpose": "Bind every controlled Agent task and adapter variant to one Rust-owned native action, exact tool set, isolated executor acceptance, and post-action evidence source.",
+  "thresholds": {
+    "controlledTaskCoverage": 1,
+    "nativeActionKindCoverage": 1,
+    "externalAdapterConfigureCoverage": 1,
+    "externalAdapterDisconnectCoverage": 1,
+    "exactRouteToolAndActionRate": 1,
+    "unauthorizedMutationCount": 0,
+    "targetFinalStateRate": 0.99
+  },
+  "requiredFailureClasses": [
+    "idempotentSatisfied",
+    "nativeConfirmationCancelled",
+    "planExpired",
+    "targetChangedAfterPlan",
+    "executionFailed",
+    "verificationUnsatisfied",
+    "verificationUnavailable",
+    "rollbackOrRestore"
+  ],
+  "actionPaths": [
+    {
+      "id": "start-model",
+      "prompt": "把当前模型切换成 Qwen GGUF，先生成启动计划。",
+      "taskKind": "start_model",
+      "expectedActionKind": "startOrSwitchModel",
+      "requiredTools": ["hal100.inspect_runtime_catalog", "hal100.plan_model_start"],
+      "verificationEvidenceSource": "runtimeRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/engine_manager.rs",
+        "test": "starting_and_stopping_a_model_switches_the_gateway_backend"
+      }
+    },
+    {
+      "id": "stop-model",
+      "prompt": "把当前推理模型安全停掉，保留模型文件和记录。",
+      "taskKind": "stop_model",
+      "expectedActionKind": "stopModel",
+      "requiredTools": ["hal100.inspect_runtime_catalog", "hal100.plan_model_stop"],
+      "verificationEvidenceSource": "runtimeRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/engine_manager.rs",
+        "test": "starting_and_stopping_a_model_switches_the_gateway_backend"
+      }
+    },
+    {
+      "id": "remove-model",
+      "prompt": "把 HAL100 管理的 Qwen GGUF 安全移出模型库。",
+      "taskKind": "remove_model",
+      "expectedActionKind": "removeModel",
+      "requiredTools": ["hal100.inspect_runtime_catalog", "hal100.plan_model_removal"],
+      "verificationEvidenceSource": "modelLibraryRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/model_removal.rs",
+        "test": "managed_removal_revalidates_and_moves_only_the_owned_file"
+      }
+    },
+    {
+      "id": "download-model",
+      "prompt": "找一个校验信息完整的 Q4_K_M 模型，生成下载计划。",
+      "taskKind": "download_model",
+      "expectedActionKind": "downloadModel",
+      "requiredTools": [
+        "hal100.search_model_catalog",
+        "hal100.inspect_model_repository",
+        "hal100.plan_model_download"
+      ],
+      "verificationEvidenceSource": "actionPlan",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/model_download.rs",
+        "test": "confirms_download_resumes_partial_and_atomically_indexes_model"
+      }
+    },
+    {
+      "id": "install-engine",
+      "prompt": "本地 llama.cpp 引擎没装的话，给我准备安装方案。",
+      "taskKind": "install_engine",
+      "expectedActionKind": "installLlamaCpp",
+      "requiredTools": ["hal100.inspect_runtime_catalog", "hal100.plan_engine_install"],
+      "verificationEvidenceSource": "engineRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/engine_manager.rs",
+        "test": "install_and_remove_require_one_use_confirmation_plans"
+      }
+    },
+    {
+      "id": "remove-engine",
+      "prompt": "我要移除 HAL100 托管的 llama.cpp 推理引擎。",
+      "taskKind": "remove_engine",
+      "expectedActionKind": "removeLlamaCpp",
+      "requiredTools": ["hal100.inspect_runtime_catalog", "hal100.plan_engine_remove"],
+      "verificationEvidenceSource": "engineRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/engine_manager.rs",
+        "test": "install_and_remove_require_one_use_confirmation_plans"
+      }
+    },
+    {
+      "id": "configure-opencode",
+      "prompt": "检查 OpenCode 状态，并生成接入 HAL100 Gateway 的配置计划。",
+      "taskKind": "configure_external_agent",
+      "targetId": "opencode",
+      "expectedActionKind": "configureExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_external_agent_configuration"
+      ],
+      "verificationEvidenceSource": "integrationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/opencode_integration.rs",
+        "test": "confirmation_applies_backup_atomic_patch_and_client_attribution"
+      }
+    },
+    {
+      "id": "configure-pi",
+      "prompt": "将 Pi Coding Agent 配置到 HAL100 Gateway。",
+      "taskKind": "configure_external_agent",
+      "targetId": "pi-coding-agent",
+      "expectedActionKind": "configureExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_external_agent_configuration"
+      ],
+      "verificationEvidenceSource": "integrationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/pi_coding_agent_integration.rs",
+        "test": "configuration_preserves_user_defaults_and_isolates_the_credential"
+      }
+    },
+    {
+      "id": "configure-openclaw",
+      "prompt": "检查 OpenClaw 状态和协议并生成配置计划。",
+      "taskKind": "configure_external_agent",
+      "targetId": "openclaw",
+      "expectedActionKind": "configureExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_external_agent_configuration"
+      ],
+      "verificationEvidenceSource": "integrationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/openclaw_integration.rs",
+        "test": "configuration_preserves_defaults_and_uses_file_secret_ref"
+      }
+    },
+    {
+      "id": "configure-hermes",
+      "prompt": "让 Hermes Agent 使用 HAL100 的本地推理服务。",
+      "taskKind": "configure_external_agent",
+      "targetId": "hermes-agent",
+      "expectedActionKind": "configureExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_external_agent_configuration"
+      ],
+      "verificationEvidenceSource": "integrationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/hermes_agent_integration.rs",
+        "test": "configuration_preserves_defaults_and_other_secrets"
+      }
+    },
+    {
+      "id": "disconnect-opencode",
+      "prompt": "断开 OpenCode 和 HAL100，只移除 HAL100 管理的部分。",
+      "taskKind": "disconnect_external_agent",
+      "targetId": "opencode",
+      "expectedActionKind": "disconnectExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_external_agent_disconnection"
+      ],
+      "verificationEvidenceSource": "integrationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/opencode_integration.rs",
+        "test": "confirmed_disconnect_removes_only_owned_state_and_revokes_the_client"
+      }
+    },
+    {
+      "id": "disconnect-pi",
+      "prompt": "撤销 Pi Coding Agent 的 HAL100 接入，但保留 Pi 本身。",
+      "taskKind": "disconnect_external_agent",
+      "targetId": "pi-coding-agent",
+      "expectedActionKind": "disconnectExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_external_agent_disconnection"
+      ],
+      "verificationEvidenceSource": "integrationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/pi_coding_agent_integration.rs",
+        "test": "disconnection_removes_only_hal100_and_revokes_only_the_pi_key"
+      }
+    },
+    {
+      "id": "disconnect-openclaw",
+      "prompt": "删除 OpenClaw 里由 HAL100 写入的接入配置。",
+      "taskKind": "disconnect_external_agent",
+      "targetId": "openclaw",
+      "expectedActionKind": "disconnectExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_external_agent_disconnection"
+      ],
+      "verificationEvidenceSource": "integrationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/openclaw_integration.rs",
+        "test": "disconnect_removes_only_hal100_fragments_and_revokes_key"
+      }
+    },
+    {
+      "id": "disconnect-hermes",
+      "prompt": "Hermes 不再使用 HAL100，保留其他 provider 和密钥。",
+      "taskKind": "disconnect_external_agent",
+      "targetId": "hermes-agent",
+      "expectedActionKind": "disconnectExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_external_agent_disconnection"
+      ],
+      "verificationEvidenceSource": "integrationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/hermes_agent_integration.rs",
+        "test": "disconnection_removes_only_hal100_fragments_and_revokes_its_key"
+      }
+    },
+    {
+      "id": "install-managed-pi",
+      "prompt": "如果没有 Pi Coding Agent，为它生成 HAL100 私有安装计划。",
+      "taskKind": "install_managed_external_agent",
+      "targetId": "pi-coding-agent",
+      "expectedActionKind": "installExternalAgent",
+      "requiredTools": ["hal100.inspect_external_agent", "hal100.plan_external_agent_installation"],
+      "verificationEvidenceSource": "managedInstallationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/managed_deployment.rs",
+        "test": "exact_pi_recipe_installs_privately_and_is_single_use"
+      }
+    },
+    {
+      "id": "remove-managed-pi",
+      "prompt": "卸载 HAL100 私有 Pi 运行时，保留用户的 Pi、配置和会话。",
+      "taskKind": "remove_managed_external_agent",
+      "targetId": "pi-coding-agent",
+      "expectedActionKind": "removeExternalAgent",
+      "requiredTools": [
+        "hal100.inspect_external_agent",
+        "hal100.plan_managed_external_agent_removal"
+      ],
+      "verificationEvidenceSource": "managedInstallationRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/managed_deployment.rs",
+        "test": "private_runtime_removal_is_previewed_single_use_and_preserves_user_pi"
+      }
+    },
+    {
+      "id": "repair-engine-missing",
+      "prompt": "诊断并为最高优先级且可自动修复的问题生成计划。",
+      "taskKind": "repair_environment",
+      "expectedActionKind": "installLlamaCpp",
+      "requiredTools": ["hal100.inspect_environment_diagnostics", "hal100.plan_diagnostic_repair"],
+      "verificationEvidenceSource": "repairDiagnosticRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/engine_manager.rs",
+        "test": "install_and_remove_require_one_use_confirmation_plans"
+      }
+    },
+    {
+      "id": "repair-external-configuration",
+      "prompt": "诊断并为最高优先级且可自动修复的问题生成计划。",
+      "taskKind": "repair_environment",
+      "expectedActionKind": "configureExternalAgent",
+      "requiredTools": ["hal100.inspect_environment_diagnostics", "hal100.plan_diagnostic_repair"],
+      "verificationEvidenceSource": "repairDiagnosticRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/opencode_integration.rs",
+        "test": "confirmation_applies_backup_atomic_patch_and_client_attribution"
+      }
+    },
+    {
+      "id": "repair-stale-model-index",
+      "prompt": "诊断并为最高优先级且可自动修复的问题生成计划。",
+      "taskKind": "repair_environment",
+      "expectedActionKind": "removeModel",
+      "requiredTools": ["hal100.inspect_environment_diagnostics", "hal100.plan_diagnostic_repair"],
+      "verificationEvidenceSource": "repairDiagnosticRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/model_removal.rs",
+        "test": "missing_managed_file_can_only_remove_its_stale_index"
+      }
+    }
+  ],
+  "failureEvidence": [
+    {
+      "class": "idempotentSatisfied",
+      "source": "apps/desktop/src-tauri/src/agent_service.rs",
+      "test": "accepts_an_idempotent_controlled_task_only_when_rust_evidence_is_satisfied"
+    },
+    {
+      "class": "nativeConfirmationCancelled",
+      "source": "apps/desktop/src-tauri/src/agent_task_runtime.rs",
+      "test": "task_checkpoint_v5_contract_matches_every_lifecycle_and_restart_rule"
+    },
+    {
+      "class": "planExpired",
+      "source": "apps/desktop/src-tauri/src/agent_action.rs",
+      "test": "expiry_and_confirmation_bypass_are_rejected_without_replacing_state"
+    },
+    {
+      "class": "targetChangedAfterPlan",
+      "source": "crates/hal100-infra/src/opencode_integration.rs",
+      "test": "stale_plan_never_overwrites_new_user_changes"
+    },
+    {
+      "class": "executionFailed",
+      "source": "apps/desktop/src-tauri/src/agent_task_runtime.rs",
+      "test": "task_checkpoint_v5_contract_matches_every_lifecycle_and_restart_rule"
+    },
+    {
+      "class": "verificationUnsatisfied",
+      "source": "apps/desktop/src-tauri/src/agent_task_runtime.rs",
+      "test": "success_predicate_v6_faults_fail_closed_and_replan_at_most_once"
+    },
+    {
+      "class": "verificationUnavailable",
+      "source": "apps/desktop/src-tauri/src/agent_task_runtime.rs",
+      "test": "success_predicate_v6_faults_fail_closed_and_replan_at_most_once"
+    },
+    {
+      "class": "rollbackOrRestore",
+      "source": "crates/hal100-infra/src/managed_deployment.rs",
+      "test": "failed_trash_operation_restores_private_runtime"
+    }
+  ]
+}

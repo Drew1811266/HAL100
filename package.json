@@ -1,6 +1,6 @@
 {
   "name": "hal100",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "HAL100 local AI control plane",
   "license": "MIT",
@@ -18,9 +18,10 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build && cargo build --workspace",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && pnpm --filter @hal100/agent-kernel build && cargo test --workspace",
+    "check": "pnpm docs:check && pnpm lint && pnpm typecheck && pnpm test && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && pnpm --filter @hal100/agent-kernel build && cargo test --workspace",
     "desktop:open": "pnpm tauri dev",
     "dev": "pnpm --filter @hal100/desktop dev",
+    "docs:check": "node scripts/check-doc-consistency.mjs",
     "format": "biome check --write . && cargo fmt --all",
     "lint": "biome check .",
     "stability:1h": "bash tests/stability/monitor_hal100_background.sh --duration-seconds 3600 --interval-seconds 30",

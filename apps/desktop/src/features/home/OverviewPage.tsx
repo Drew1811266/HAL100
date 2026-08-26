@@ -41,26 +41,20 @@ export function OverviewPage({ setupRequired }: { setupRequired: boolean }) {
         title="今天需要处理什么"
       />
 
-      <StatusSummary status={status} />
-
-      <section className="overview-recommendation" aria-labelledby="overview-recommendation-title">
-        <div>
-          <p className="eyebrow">推荐下一步</p>
-          <h2 id="overview-recommendation-title">{status.recommendationTitle}</h2>
-          <p>{status.recommendationDescription}</p>
-        </div>
-        <Link className="primary-button" to={status.actionPath}>
-          {status.actionLabel}
-          <ChevronRight size={14} />
-        </Link>
-        <div className="overview-secondary-links">
-          {secondaryLinks.map((link) => (
-            <Link key={link.path} to={link.path}>
-              {link.label}
-            </Link>
-          ))}
-        </div>
-      </section>
+      <StatusSummary
+        action={
+          <Link className="primary-button" to={status.actionPath}>
+            {status.actionLabel}
+            <ChevronRight size={14} />
+          </Link>
+        }
+        secondaryActions={secondaryLinks.map((link) => (
+          <Link key={link.path} to={link.path}>
+            {link.label}
+          </Link>
+        ))}
+        status={status}
+      />
     </div>
   );
 }

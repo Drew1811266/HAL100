@@ -19,8 +19,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use crate::{
-    BackendConfig, Database, DatabaseError, EngineManagerError, GatewayRouteError, GatewayState,
-    LlamaCppManager,
+    AgentRuntimeCapacityProfile, BackendConfig, Database, DatabaseError, EngineManagerError,
+    GatewayRouteError, GatewayState, LlamaCppManager,
 };
 
 pub const AGENT_MODEL_ALIAS: &str = "hal100-agent";
@@ -32,7 +32,6 @@ const AGENT_MODEL_SIZE_BYTES: u64 = 1_280_835_840;
 pub const AGENT_MODEL_ID: &str =
     "managed-aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223";
 const AGENT_START_TIMEOUT: Duration = Duration::from_secs(90);
-const AGENT_CONTEXT_SIZE: &str = "6144";
 const PI_VERSION: &str = "0.84.2";
 pub const AGENT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -69,6 +68,7 @@ pub struct AgentModelRuntime {
     engine: Arc<LlamaCppManager>,
     gateway: GatewayState,
     client: Client,
+    capacity: AgentRuntimeCapacityProfile,
     lifecycle: AsyncMutex<()>,
     runtime: Mutex<RuntimeState>,
 }
@@ -90,6 +90,20 @@ impl AgentModelRuntime {
         engine: Arc<LlamaCppManager>,
         gateway: GatewayState,
     ) -> Result<Self, AgentRuntimeError> {
+        Self::with_capacity(
+            database,
+            engine,
+            gateway,
+            AgentRuntimeCapacityProfile::baseline(),
+        )
+    }
+
+    pub fn with_capacity(
+        database: Arc<Database>,
+        engine: Arc<LlamaCppManager>,
+        gateway: GatewayState,
+        capacity: AgentRuntimeCapacityProfile,
+    ) -> Result<Self, AgentRuntimeError> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
@@ -101,6 +115,7 @@ impl AgentModelRuntime {
             engine,
             gateway,
             client,
+            capacity,
             lifecycle: AsyncMutex::new(()),
             runtime: Mutex::new(RuntimeState {
                 state: AgentComponentState::Stopped,
@@ -108,6 +123,10 @@ impl AgentModelRuntime {
                 last_error_code: None,
             }),
         })
+    }
+
+    pub const fn capacity(&self) -> AgentRuntimeCapacityProfile {
+        self.capacity
     }
 
     pub fn status(&self) -> Result<AgentStatus, AgentRuntimeError> {
@@ -128,10 +147,22 @@ impl AgentModelRuntime {
             model_name: "Qwen3.5-2B Q4_K_M".to_owned(),
             model_prepared: model.is_some(),
             model_size_bytes: AGENT_MODEL_SIZE_BYTES,
+            capacity_tier: self.capacity.tier.to_owned(),
+            context_window_tokens: self.capacity.context_window_tokens,
+            available_input_tokens_before_reserve: self
+                .capacity
+                .available_input_tokens_before_reserve,
+            max_output_tokens: self.capacity.max_output_tokens,
             idle_timeout_seconds: AGENT_IDLE_TIMEOUT.as_secs() as u32,
             active_run_id: None,
             cancellation_requested: false,
             last_error_code: runtime.last_error_code.clone(),
+            intent_shadow_metrics: hal100_protocol::AgentIntentShadowMetrics::default(),
+            task_routing_mode: hal100_protocol::AgentTaskRoutingMode::default(),
+            task_routing_metrics: hal100_protocol::AgentTaskRoutingMetrics::default(),
+            task_checkpoint: None,
+            task_graph_checkpoint: None,
+            recoverable_task_graph_checkpoint: None,
         })
     }
 
@@ -216,7 +247,7 @@ impl AgentModelRuntime {
             .arg("--port")
             .arg(port.to_string())
             .arg("--ctx-size")
-            .arg(AGENT_CONTEXT_SIZE)
+            .arg(self.capacity.context_window_tokens.to_string())
             .arg("--parallel")
             .arg("1")
             .arg("--reasoning")
@@ -495,4 +526,44 @@ fn now_ms() -> i64 {
         .ok()
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use hal100_protocol::{AGENT_RPC_MAX_FRAME_BYTES, AGENT_RPC_MAX_TOOL_RESULT_BYTES};
+
+    use super::*;
+
+    #[test]
+    fn local_agent_capacity_matches_the_versioned_runtime_contract() {
+        let contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../contracts/agent-runtime/v2-device-capacity.json"
+        ))
+        .expect("Agent runtime capacity contract");
+        let capacity = AgentRuntimeCapacityProfile::baseline();
+        assert_eq!(contract["schemaVersion"], 2);
+        assert_eq!(
+            contract["localProfiles"][capacity.tier]["contextWindowTokens"],
+            capacity.context_window_tokens
+        );
+        assert_eq!(
+            contract["localProfiles"][capacity.tier]["maxOutputTokens"],
+            capacity.max_output_tokens
+        );
+        assert_eq!(
+            contract["localProfiles"][capacity.tier]["piReservedTokens"],
+            capacity.pi_reserved_tokens
+        );
+        assert_eq!(contract["localProfiles"][capacity.tier]["parallel"], 1);
+        assert_eq!(contract["localProfiles"][capacity.tier]["reasoning"], false);
+        assert_eq!(contract["localProfiles"][capacity.tier]["temperature"], 0);
+        assert_eq!(
+            contract["transport"]["maxToolResultBytes"],
+            AGENT_RPC_MAX_TOOL_RESULT_BYTES
+        );
+        assert_eq!(
+            contract["transport"]["maxRpcFrameBytes"],
+            AGENT_RPC_MAX_FRAME_BYTES
+        );
+    }
 }

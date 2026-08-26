@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "revision": "managed-route-v2",
+  "modelId": "hal100-active",
+  "contextWindowTokens": 16384,
+  "maxOutputTokens": 1024,
+  "parallel": 1,
+  "reasoning": false,
+  "inputModalities": ["text"]
+}
