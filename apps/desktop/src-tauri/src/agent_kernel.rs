@@ -23,6 +23,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const PINNED_NODE_VERSION: &str = "v24.18.0";
+#[cfg(not(windows))]
+const PINNED_NODE_RELATIVE_PATH: &str = "node_modules/node/bin/node";
+#[cfg(windows)]
+const PINNED_NODE_RELATIVE_PATH: &str = "node_modules/node/bin/node.exe";
 const SIDECAR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 const SIDECAR_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIDECAR_CANCELLATION_POLL: Duration = Duration::from_millis(100);
@@ -272,7 +276,7 @@ fn read_envelope(reader: &mut impl Read) -> Result<AgentRpcEnvelope, std::io::Er
 fn resolve_node_binary(workspace_root: &Path) -> Result<PathBuf, AgentKernelError> {
     let candidate = env::var_os("HAL100_AGENT_NODE_BINARY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| workspace_root.join("node_modules/node/bin/node"));
+        .unwrap_or_else(|| workspace_root.join(PINNED_NODE_RELATIVE_PATH));
     let candidate = candidate
         .canonicalize()
         .map_err(|_| AgentKernelError::Unavailable)?;

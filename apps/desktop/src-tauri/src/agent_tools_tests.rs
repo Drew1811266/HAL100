@@ -452,6 +452,7 @@ fn model_stop_plan_binds_only_the_exact_current_rust_runtime_state() {
     assert!(build_model_stop_plan_from_status("run-stop", "model-a", &stopped).is_none());
 }
 
+#[cfg(unix)]
 #[test]
 fn external_agent_tools_bind_the_prompt_target_and_never_return_local_paths() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
