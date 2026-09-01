@@ -1,6 +1,7 @@
+#[cfg(unix)]
+use std::{fs, path::PathBuf};
 use std::{
-    fs, future,
-    path::PathBuf,
+    future,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -17,32 +18,39 @@ use axum::{
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
     routing::get,
 };
+#[cfg(unix)]
 use hal100_core::ExternalAgentIntegrationId;
+#[cfg(unix)]
 use hal100_infra::{
-    CredentialRegistry, Database, EnvironmentDiagnostics, ExternalInferenceEngineRegistry,
-    ExternalModelProfileRegistry, GatewayState, HermesAgentIntegrationAdapter, HermesAgentPaths,
-    LlamaCppManager, ManagedExternalAgentDeploymentManager, ModelDownloadError,
-    ModelDownloadManager, ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawPaths,
-    OpenCodeManager, OpenCodePaths, PiCodingAgentIntegrationAdapter, PiCodingAgentPaths,
-    RemoteModelCatalog, RemoteModelCatalogError, UsageWriter,
+    CredentialRegistry, Database, EnvironmentDiagnostics, ExternalModelProfileRegistry,
+    GatewayState, HermesAgentIntegrationAdapter, HermesAgentPaths, LlamaCppManager,
+    ManagedExternalAgentDeploymentManager, ModelDownloadManager, ModelRemovalManager,
+    OpenClawIntegrationAdapter, OpenClawPaths, OpenCodeManager, OpenCodePaths,
+    PiCodingAgentIntegrationAdapter, PiCodingAgentPaths, RemoteModelCatalog, UsageWriter,
 };
+use hal100_infra::{ExternalInferenceEngineRegistry, ModelDownloadError, RemoteModelCatalogError};
 use hal100_protocol::{
-    AGENT_RPC_MAX_TOOL_RESULT_BYTES, EXTERNAL_AGENT_STATUS_TOOL, HostCapabilitySnapshot,
-    InferenceAccelerator, InferenceArchitecture, InferencePlatform,
-    OPERATIONAL_HEALTH_OBSERVATION_TOOL, OPERATIONAL_HISTORY_TOOL,
-    PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
-    RuntimeProfileActivationPlan, RuntimeProfileAdapterBinding, RuntimeProfileCatalog,
-    RuntimeProfileEvidence, RuntimeProfileEvidenceKind, RuntimeProfileModelDigestKind,
-    RuntimeProfileReadiness, RuntimeProfileSummary, ToolCallRequestPayload, ToolCallResultStatus,
+    AGENT_RPC_MAX_TOOL_RESULT_BYTES, HostCapabilitySnapshot, InferenceAccelerator,
+    InferenceArchitecture, InferencePlatform, RuntimeProfileActivationPlan,
+    RuntimeProfileAdapterBinding, RuntimeProfileCatalog, RuntimeProfileEvidence,
+    RuntimeProfileEvidenceKind, RuntimeProfileModelDigestKind, RuntimeProfileReadiness,
+    RuntimeProfileSummary, ToolCallRequestPayload,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use hal100_protocol::{
     DownloadSource, MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL,
     ModelDownloadState, PLAN_MODEL_DOWNLOAD_TOOL,
 };
+#[cfg(unix)]
+use hal100_protocol::{
+    EXTERNAL_AGENT_STATUS_TOOL, OPERATIONAL_HEALTH_OBSERVATION_TOOL, OPERATIONAL_HISTORY_TOOL,
+    PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
+    ToolCallResultStatus,
+};
 use serde_json::{Value, json};
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use uuid::Uuid;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -50,8 +58,10 @@ use std::path::Path;
 
 use super::*;
 
+#[cfg(unix)]
 struct TestDirectory(PathBuf);
 
+#[cfg(unix)]
 impl TestDirectory {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
@@ -63,6 +73,7 @@ impl TestDirectory {
     }
 }
 
+#[cfg(unix)]
 impl Drop for TestDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
