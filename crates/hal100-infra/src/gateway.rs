@@ -25,8 +25,9 @@ use axum::{
 use futures_util::{Stream, StreamExt};
 use hal100_protocol::{
     AnthropicError, AnthropicErrorEnvelope, AnthropicMessagesRequestMetadata, AnthropicUsage,
-    BackendProbeResult, BackendProbeStatus, GatewayHealth, OpenAiChatRequestMetadata, OpenAiError,
-    OpenAiErrorEnvelope, OpenAiResponsesRequestMetadata, OpenAiResponsesUsage, OpenAiUsage,
+    BackendProbeResult, BackendProbeStatus, GatewayHealth, InferenceEngineKind,
+    OpenAiChatRequestMetadata, OpenAiError, OpenAiErrorEnvelope, OpenAiResponsesRequestMetadata,
+    OpenAiResponsesUsage, OpenAiUsage,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,51 @@ pub struct BackendConfig {
     api_root: Url,
     api_key: Option<String>,
     auth_style: BackendAuthStyle,
+    response_compatibility: BackendResponseCompatibility,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BackendResponseCompatibility {
+    #[default]
+    Strict,
+    /// Official MLC LLM currently serializes `function.arguments` as an object instead of the
+    /// JSON string required by OpenAI clients. HAL100 normalizes only the qualified unary shape.
+    MlcLlmStructuredToolArguments,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActiveGatewayRoute {
+    backend: BackendConfig,
+    resolved_model: Option<String>,
+}
+
+impl ActiveGatewayRoute {
+    pub fn passthrough(backend: BackendConfig) -> Self {
+        Self {
+            backend,
+            resolved_model: None,
+        }
+    }
+
+    pub fn resolved(
+        backend: BackendConfig,
+        resolved_model: impl Into<String>,
+    ) -> Result<Self, GatewayRouteError> {
+        let resolved_model = resolved_model.into();
+        validate_resolved_model(&resolved_model)?;
+        Ok(Self {
+            backend,
+            resolved_model: Some(resolved_model),
+        })
+    }
+
+    pub fn backend(&self) -> &BackendConfig {
+        &self.backend
+    }
+
+    pub fn resolved_model(&self) -> Option<&str> {
+        self.resolved_model.as_deref()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -86,6 +132,7 @@ impl fmt::Debug for BackendConfig {
             .field("api_root", &self.api_root)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("auth_style", &self.auth_style)
+            .field("response_compatibility", &self.response_compatibility)
             .finish()
     }
 }
@@ -119,11 +166,26 @@ impl BackendConfig {
             api_root,
             api_key,
             auth_style: BackendAuthStyle::Bearer,
+            response_compatibility: BackendResponseCompatibility::Strict,
         })
     }
 
     pub fn with_auth_style(mut self, auth_style: BackendAuthStyle) -> Self {
         self.auth_style = auth_style;
+        self
+    }
+
+    /// Bind protocol compatibility behavior to a Rust-validated engine identity.
+    ///
+    /// Generic or unknown OpenAI backends remain byte-for-byte strict. This method does not infer
+    /// an engine from a URL or model name.
+    pub fn with_engine_kind(mut self, engine: Option<InferenceEngineKind>) -> Self {
+        self.response_compatibility = match engine {
+            Some(InferenceEngineKind::MlcLlm) => {
+                BackendResponseCompatibility::MlcLlmStructuredToolArguments
+            }
+            _ => BackendResponseCompatibility::Strict,
+        };
         self
     }
 
@@ -150,6 +212,97 @@ impl BackendConfig {
             BackendAuthStyle::AnthropicApiKey => request.header("x-api-key", api_key),
         }
     }
+
+    fn validate_protocol_request(
+        &self,
+        protocol: InferenceProtocol,
+        body: &[u8],
+        streaming: bool,
+    ) -> Result<(), GatewayError> {
+        if self.response_compatibility
+            != BackendResponseCompatibility::MlcLlmStructuredToolArguments
+            || protocol != InferenceProtocol::OpenAiChatCompletions
+            || !streaming
+        {
+            return Ok(());
+        }
+        let request = serde_json::from_slice::<serde_json::Value>(body)
+            .map_err(|_| GatewayError::InvalidRequest(protocol))?;
+        if request
+            .get("tools")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|tools| !tools.is_empty())
+        {
+            // MLC's unary structured arguments have a bounded compatibility transform below.
+            // Streaming tool-call deltas have not passed the HAL100 protocol contract, so do not
+            // forward a shape that standard OpenAI clients may misparse.
+            return Err(GatewayError::InvalidRequest(protocol));
+        }
+        Ok(())
+    }
+
+    fn normalize_success_response(
+        &self,
+        protocol: InferenceProtocol,
+        body: Bytes,
+    ) -> Result<Bytes, GatewayError> {
+        if self.response_compatibility
+            != BackendResponseCompatibility::MlcLlmStructuredToolArguments
+            || protocol != InferenceProtocol::OpenAiChatCompletions
+        {
+            return Ok(body);
+        }
+        normalize_mlc_llm_unary_tool_arguments(body)
+    }
+}
+
+fn normalize_mlc_llm_unary_tool_arguments(body: Bytes) -> Result<Bytes, GatewayError> {
+    let mut response = serde_json::from_slice::<serde_json::Value>(&body)
+        .map_err(|_| GatewayError::BackendProtocol)?;
+    let mut changed = false;
+    if let Some(choices) = response
+        .get_mut("choices")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for tool_call in choices
+            .iter_mut()
+            .filter_map(|choice| choice.get_mut("message"))
+            .filter_map(|message| message.get_mut("tool_calls"))
+            .filter_map(serde_json::Value::as_array_mut)
+            .flatten()
+        {
+            let Some(arguments) = tool_call
+                .get_mut("function")
+                .and_then(|function| function.get_mut("arguments"))
+            else {
+                return Err(GatewayError::BackendProtocol);
+            };
+            match arguments {
+                serde_json::Value::String(value) => {
+                    if !serde_json::from_str::<serde_json::Value>(value)
+                        .is_ok_and(|value| value.is_object())
+                    {
+                        return Err(GatewayError::BackendProtocol);
+                    }
+                }
+                serde_json::Value::Object(object) => {
+                    let encoded =
+                        serde_json::to_string(object).map_err(|_| GatewayError::BackendProtocol)?;
+                    *arguments = serde_json::Value::String(encoded);
+                    changed = true;
+                }
+                _ => return Err(GatewayError::BackendProtocol),
+            }
+        }
+    }
+    if !changed {
+        return Ok(body);
+    }
+    let normalized = serde_json::to_vec(&response).map_err(|_| GatewayError::BackendProtocol)?;
+    if normalized.len() > MAX_NON_STREAM_RESPONSE_BYTES {
+        return Err(GatewayError::BackendResponseTooLarge);
+    }
+    Ok(Bytes::from(normalized))
 }
 
 #[derive(Debug, Error)]
@@ -214,6 +367,7 @@ pub struct ModelRouteSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct GatewayRoutingSnapshot {
     pub active_backend_id: Option<String>,
+    pub active_resolved_model: Option<String>,
     pub backend_ids: Vec<String>,
     pub model_routes: Vec<ModelRouteSnapshot>,
     pub backend_health: Vec<BackendHealthSnapshot>,
@@ -334,7 +488,7 @@ impl Drop for BackendRequestLease {
 }
 
 struct GatewayRoutes {
-    active_backend: Option<BackendConfig>,
+    active_route: Option<ActiveGatewayRoute>,
     backends: HashMap<String, BackendConfig>,
     model_routes: HashMap<String, ModelRoute>,
     activities: HashMap<String, Arc<BackendActivity>>,
@@ -348,7 +502,7 @@ impl GatewayRoutes {
             activities.insert(backend.id.clone(), Arc::new(BackendActivity::new()));
         }
         Self {
-            active_backend,
+            active_route: active_backend.map(ActiveGatewayRoute::passthrough),
             backends: HashMap::new(),
             model_routes: HashMap::new(),
             activities,
@@ -364,8 +518,9 @@ impl GatewayRoutes {
     }
 
     fn backend(&self, backend_id: &str) -> Option<BackendConfig> {
-        self.active_backend
+        self.active_route
             .as_ref()
+            .map(ActiveGatewayRoute::backend)
             .filter(|backend| backend.id == backend_id)
             .cloned()
             .or_else(|| self.backends.get(backend_id).cloned())
@@ -373,9 +528,13 @@ impl GatewayRoutes {
 
     fn snapshot(&self, now_ms: u64) -> GatewayRoutingSnapshot {
         let active_backend_id = self
-            .active_backend
+            .active_route
             .as_ref()
-            .map(|backend| backend.id.clone());
+            .map(|route| route.backend.id.clone());
+        let active_resolved_model = self
+            .active_route
+            .as_ref()
+            .and_then(|route| route.resolved_model.clone());
         let mut backend_ids = self.backends.keys().cloned().collect::<HashSet<_>>();
         if let Some(active_backend_id) = &active_backend_id {
             backend_ids.insert(active_backend_id.clone());
@@ -405,6 +564,7 @@ impl GatewayRoutes {
         backend_health.sort_by(|left, right| left.backend_id.cmp(&right.backend_id));
         GatewayRoutingSnapshot {
             active_backend_id,
+            active_resolved_model,
             backend_ids,
             model_routes,
             backend_health,
@@ -464,24 +624,36 @@ impl GatewayState {
     }
 
     pub fn backend_config(&self) -> Option<BackendConfig> {
+        self.active_route().map(|route| route.backend)
+    }
+
+    pub fn active_route(&self) -> Option<ActiveGatewayRoute> {
         self.inner
             .routes
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active_backend
+            .active_route
             .clone()
     }
 
     pub fn replace_backend(&self, backend: Option<BackendConfig>) -> Option<BackendConfig> {
+        self.replace_active_route(backend.map(ActiveGatewayRoute::passthrough))
+            .map(|route| route.backend)
+    }
+
+    pub fn replace_active_route(
+        &self,
+        route: Option<ActiveGatewayRoute>,
+    ) -> Option<ActiveGatewayRoute> {
         let mut routes = self
             .inner
             .routes
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(backend) = &backend {
-            routes.activity(&backend.id);
+        if let Some(route) = &route {
+            routes.activity(&route.backend.id);
         }
-        std::mem::replace(&mut routes.active_backend, backend)
+        std::mem::replace(&mut routes.active_route, route)
     }
 
     pub async fn replace_backend_when_idle(
@@ -489,8 +661,21 @@ impl GatewayState {
         backend: Option<BackendConfig>,
         drain_timeout: Duration,
     ) -> Result<Option<BackendConfig>, GatewayRouteSwitchError> {
-        if let Some(backend) = &backend {
-            validate_backend_id(&backend.id)
+        self.replace_active_route_when_idle(
+            backend.map(ActiveGatewayRoute::passthrough),
+            drain_timeout,
+        )
+        .await
+        .map(|route| route.map(|route| route.backend))
+    }
+
+    pub async fn replace_active_route_when_idle(
+        &self,
+        route: Option<ActiveGatewayRoute>,
+        drain_timeout: Duration,
+    ) -> Result<Option<ActiveGatewayRoute>, GatewayRouteSwitchError> {
+        if let Some(route) = &route {
+            validate_backend_id(&route.backend.id)
                 .map_err(|_| GatewayRouteSwitchError::InvalidBackendId)?;
         }
         let _switch_guard = self.inner.route_switch.lock().await;
@@ -500,13 +685,13 @@ impl GatewayState {
                 .routes
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(backend) = &backend {
-                routes.activity(&backend.id);
+            if let Some(route) = &route {
+                routes.activity(&route.backend.id);
             }
             let active_id = routes
-                .active_backend
+                .active_route
                 .as_ref()
-                .map(|active| active.id.clone());
+                .map(|active| active.backend.id.clone());
             active_id.map(|active_id| {
                 let activity = routes.activity(&active_id);
                 routes.draining_backends.insert(active_id.clone());
@@ -544,15 +729,24 @@ impl GatewayState {
         if let Some((backend_id, _)) = &draining {
             routes.draining_backends.remove(backend_id);
         }
-        Ok(std::mem::replace(&mut routes.active_backend, backend))
+        Ok(std::mem::replace(&mut routes.active_route, route))
     }
 
     pub async fn force_replace_backend(
         &self,
         backend: Option<BackendConfig>,
     ) -> Result<Option<BackendConfig>, GatewayRouteSwitchError> {
-        if let Some(backend) = &backend {
-            validate_backend_id(&backend.id)
+        self.force_replace_active_route(backend.map(ActiveGatewayRoute::passthrough))
+            .await
+            .map(|route| route.map(|route| route.backend))
+    }
+
+    pub async fn force_replace_active_route(
+        &self,
+        route: Option<ActiveGatewayRoute>,
+    ) -> Result<Option<ActiveGatewayRoute>, GatewayRouteSwitchError> {
+        if let Some(route) = &route {
+            validate_backend_id(&route.backend.id)
                 .map_err(|_| GatewayRouteSwitchError::InvalidBackendId)?;
         }
         let _switch_guard = self.inner.route_switch.lock().await;
@@ -561,18 +755,18 @@ impl GatewayState {
             .routes
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(backend) = &backend {
-            routes.activity(&backend.id);
+        if let Some(route) = &route {
+            routes.activity(&route.backend.id);
         }
         if let Some(active_id) = routes
-            .active_backend
+            .active_route
             .as_ref()
-            .map(|active| active.id.clone())
+            .map(|active| active.backend.id.clone())
         {
             routes.activity(&active_id).cancel_request_generation();
             routes.draining_backends.remove(&active_id);
         }
-        Ok(std::mem::replace(&mut routes.active_backend, backend))
+        Ok(std::mem::replace(&mut routes.active_route, route))
     }
 
     pub fn upsert_routed_backend(&self, backend: BackendConfig) -> Result<(), GatewayRouteError> {
@@ -585,11 +779,12 @@ impl GatewayState {
         let activity = routes.activity(&backend.id);
         activity.reset_health();
         if routes
-            .active_backend
+            .active_route
             .as_ref()
-            .is_some_and(|active| active.id == backend.id)
+            .is_some_and(|active| active.backend.id == backend.id)
+            && let Some(active) = routes.active_route.as_mut()
         {
-            routes.active_backend = Some(backend.clone());
+            active.backend = backend.clone();
         }
         routes.backends.insert(backend.id.clone(), backend);
         Ok(())
@@ -603,9 +798,9 @@ impl GatewayState {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if routes
-            .active_backend
+            .active_route
             .as_ref()
-            .is_some_and(|active| active.id == backend_id)
+            .is_some_and(|active| active.backend.id == backend_id)
         {
             return Err(GatewayRouteError::BackendActive);
         }
@@ -835,21 +1030,26 @@ impl GatewayState {
             .routes
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (backend, resolved_model) = if requested_model != "hal100-active"
-            && let Some(route) = routes.model_routes.get(requested_model)
-        {
+        let (backend, resolved_model) = if requested_model == "hal100-active" {
+            let route = routes
+                .active_route
+                .clone()
+                .ok_or(GatewayError::BackendUnavailable)?;
+            let resolved_model = route
+                .resolved_model
+                .unwrap_or_else(|| requested_model.to_owned());
+            (route.backend, resolved_model)
+        } else if let Some(route) = routes.model_routes.get(requested_model) {
             let backend = routes
                 .backend(&route.backend_id)
                 .ok_or(GatewayError::BackendUnavailable)?;
             (backend, route.resolved_model.clone())
         } else {
-            (
-                routes
-                    .active_backend
-                    .clone()
-                    .ok_or(GatewayError::BackendUnavailable)?,
-                requested_model.to_owned(),
-            )
+            let route = routes
+                .active_route
+                .clone()
+                .ok_or(GatewayError::BackendUnavailable)?;
+            (route.backend, requested_model.to_owned())
         };
         if routes.draining_backends.contains(&backend.id) {
             return Err(GatewayError::RouteDraining);
@@ -1170,6 +1370,7 @@ async fn proxy_inference(
         resolved_model,
         lease,
     } = state.route_backend(&requested_model)?;
+    backend.validate_protocol_request(protocol, &body, metadata.stream)?;
     let body = rewrite_request_model(body, &resolved_model, protocol)?;
     let route_cancellation = lease.cancellation.clone();
     let mut route_lease = Some(lease);
@@ -1249,6 +1450,18 @@ async fn proxy_inference(
                 }
                 return Err(error);
             }
+        };
+        let bytes = if successful_status {
+            match backend.normalize_success_response(protocol, bytes) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    state.record_backend_failure(backend.id());
+                    usage.finish_failed("backend_protocol");
+                    return Err(error);
+                }
+            }
+        } else {
+            bytes
         };
         usage.finish_http_status(successful_status);
         Response::builder()
@@ -1413,7 +1626,7 @@ struct AnthropicStreamEvent {
     message: Option<AnthropicStreamMessage>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InferenceProtocol {
     OpenAiChatCompletions,
     OpenAiResponses,
@@ -1886,6 +2099,7 @@ enum GatewayError {
     BackendConfiguration,
     BackendTransport,
     BackendStream,
+    BackendProtocol,
     BackendResponseTooLarge,
     RequestTimeout,
     TooManyStreams,
@@ -1926,6 +2140,11 @@ impl GatewayError {
                 StatusCode::BAD_GATEWAY,
                 "backend_stream",
                 "推理后端响应流异常终止。",
+            ),
+            Self::BackendProtocol => (
+                StatusCode::BAD_GATEWAY,
+                "backend_protocol",
+                "推理后端返回了不兼容的协议响应。",
             ),
             Self::BackendResponseTooLarge => (
                 StatusCode::BAD_GATEWAY,
@@ -1970,6 +2189,7 @@ impl GatewayError {
             | Self::BackendConfiguration
             | Self::BackendTransport
             | Self::BackendStream
+            | Self::BackendProtocol
             | Self::BackendResponseTooLarge
             | Self::RouteDraining
             | Self::BackendCircuitOpen
@@ -2060,6 +2280,70 @@ mod tests {
     use crate::{Database, stored_client_credential};
 
     const TEST_KEY: &str = "hal100_test_0123456789abcdef";
+
+    #[test]
+    fn mlc_llm_backend_normalizes_only_unary_structured_tool_arguments() {
+        let backend = BackendConfig::new("mlc", "http://127.0.0.1:8000/v1/", None)
+            .expect("MLC backend")
+            .with_engine_kind(Some(InferenceEngineKind::MlcLlm));
+        let normalized = backend
+            .normalize_success_response(
+                InferenceProtocol::OpenAiChatCompletions,
+                Bytes::from_static(
+                    br#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"probe","arguments":{"value":"ok"}}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+                ),
+            )
+            .expect("normalize MLC response");
+        let response = serde_json::from_slice::<serde_json::Value>(&normalized)
+            .expect("normalized response JSON");
+        let arguments = response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .expect("OpenAI string arguments");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(arguments).expect("argument JSON"),
+            serde_json::json!({"value":"ok"})
+        );
+
+        let strict = BackendConfig::new("strict", "http://127.0.0.1:8000/v1/", None)
+            .expect("strict backend");
+        let original = Bytes::from_static(br#"{"choices":[]}"#);
+        assert_eq!(
+            strict
+                .normalize_success_response(
+                    InferenceProtocol::OpenAiChatCompletions,
+                    original.clone()
+                )
+                .expect("strict pass-through"),
+            original
+        );
+    }
+
+    #[test]
+    fn mlc_llm_backend_rejects_unqualified_streaming_tool_calls() {
+        let backend = BackendConfig::new("mlc", "http://127.0.0.1:8000/v1/", None)
+            .expect("MLC backend")
+            .with_engine_kind(Some(InferenceEngineKind::MlcLlm));
+        let request = br#"{"model":"model","stream":true,"tools":[{"type":"function"}]}"#;
+        assert!(matches!(
+            backend.validate_protocol_request(
+                InferenceProtocol::OpenAiChatCompletions,
+                request,
+                true,
+            ),
+            Err(GatewayError::InvalidRequest(
+                InferenceProtocol::OpenAiChatCompletions
+            ))
+        ));
+        assert!(
+            backend
+                .validate_protocol_request(
+                    InferenceProtocol::OpenAiChatCompletions,
+                    br#"{"model":"model","stream":true}"#,
+                    true,
+                )
+                .is_ok()
+        );
+    }
 
     #[tokio::test]
     async fn health_endpoint_is_reachable_without_authentication() {
@@ -2309,6 +2593,63 @@ mod tests {
         );
         assert_eq!(snapshot.model_routes[0].alias, "stable-alias");
         assert_eq!(snapshot.model_routes[0].resolved_model, "actual-model");
+    }
+
+    #[tokio::test]
+    async fn active_route_resolves_hal100_active_and_restores_as_one_value() {
+        let database = Arc::new(Database::open_in_memory().expect("database"));
+        let usage_writer = UsageWriter::start(database);
+        let original_backend = BackendConfig::new("original", "http://127.0.0.1:8000/v1", None)
+            .expect("original backend");
+        let state = GatewayState::new(None, CredentialRegistry::new(Vec::new()), usage_writer)
+            .expect("gateway state");
+        state.replace_active_route(Some(
+            ActiveGatewayRoute::resolved(original_backend, "qwen3.5:9b")
+                .expect("resolved original route"),
+        ));
+
+        let routed = state
+            .route_backend("hal100-active")
+            .expect("resolved active route");
+        assert_eq!(routed.backend.id(), "original");
+        assert_eq!(routed.resolved_model, "qwen3.5:9b");
+        drop(routed);
+        let snapshot = state.routing_snapshot();
+        assert_eq!(snapshot.active_backend_id.as_deref(), Some("original"));
+        assert_eq!(
+            snapshot.active_resolved_model.as_deref(),
+            Some("qwen3.5:9b")
+        );
+
+        let managed_backend = BackendConfig::new("managed", "http://127.0.0.1:8001/v1", None)
+            .expect("managed backend");
+        let previous = state
+            .replace_active_route_when_idle(
+                Some(ActiveGatewayRoute::passthrough(managed_backend)),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("switch to managed")
+            .expect("previous complete route");
+        assert_eq!(previous.backend().id(), "original");
+        assert_eq!(previous.resolved_model(), Some("qwen3.5:9b"));
+        assert_eq!(
+            state
+                .route_backend("hal100-active")
+                .expect("managed passthrough")
+                .resolved_model,
+            "hal100-active"
+        );
+
+        state
+            .replace_active_route_when_idle(Some(previous), Duration::from_secs(1))
+            .await
+            .expect("restore complete route");
+        let restored = state
+            .route_backend("hal100-active")
+            .expect("restored external route");
+        assert_eq!(restored.backend.id(), "original");
+        assert_eq!(restored.resolved_model, "qwen3.5:9b");
     }
 
     #[tokio::test]

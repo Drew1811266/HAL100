@@ -18,19 +18,23 @@ use axum::{
 };
 use hal100_core::ExternalAgentIntegrationId;
 use hal100_infra::{
-    CredentialRegistry, Database, EnvironmentDiagnostics, ExternalModelProfileRegistry,
-    GatewayState, HermesAgentIntegrationAdapter, HermesAgentPaths, LlamaCppManager,
-    ManagedExternalAgentDeploymentManager, ModelDownloadError, ModelDownloadManager,
-    ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawPaths, OpenCodeManager, OpenCodePaths,
-    PiCodingAgentIntegrationAdapter, PiCodingAgentPaths, RemoteModelCatalog,
-    RemoteModelCatalogError, UsageWriter,
+    CredentialRegistry, Database, EnvironmentDiagnostics, ExternalInferenceEngineRegistry,
+    ExternalModelProfileRegistry, GatewayState, HermesAgentIntegrationAdapter, HermesAgentPaths,
+    LlamaCppManager, ManagedExternalAgentDeploymentManager, ModelDownloadError,
+    ModelDownloadManager, ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawPaths,
+    OpenCodeManager, OpenCodePaths, PiCodingAgentIntegrationAdapter, PiCodingAgentPaths,
+    RemoteModelCatalog, RemoteModelCatalogError, UsageWriter,
 };
 use hal100_protocol::{
     AGENT_RPC_MAX_TOOL_RESULT_BYTES, DownloadSource, EXTERNAL_AGENT_STATUS_TOOL,
+    HostCapabilitySnapshot, InferenceAccelerator, InferenceArchitecture, InferencePlatform,
     MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL, ModelDownloadState,
     OPERATIONAL_HEALTH_OBSERVATION_TOOL, OPERATIONAL_HISTORY_TOOL,
     PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
-    PLAN_MODEL_DOWNLOAD_TOOL, ToolCallRequestPayload, ToolCallResultStatus,
+    PLAN_MODEL_DOWNLOAD_TOOL, RuntimeProfileActivationPlan, RuntimeProfileAdapterBinding,
+    RuntimeProfileCatalog, RuntimeProfileEvidence, RuntimeProfileEvidenceKind,
+    RuntimeProfileModelDigestKind, RuntimeProfileReadiness, RuntimeProfileSummary,
+    ToolCallRequestPayload, ToolCallResultStatus,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -121,6 +125,295 @@ fn remote_failures_keep_safe_actionable_codes() {
         .code(),
         "insufficient_storage"
     );
+    assert_eq!(
+        AgentToolExecutionError::RuntimeProfile(RuntimeProfileManagerError::ProfileChanged).code(),
+        "runtime_profile_changed"
+    );
+    assert_eq!(
+        AgentToolExecutionError::RuntimeProfile(RuntimeProfileManagerError::ProfileNeedsRepair)
+            .code(),
+        "runtime_profile_needs_repair"
+    );
+    assert_eq!(
+        AgentToolExecutionError::RuntimeProfile(RuntimeProfileManagerError::SupportCellNotProven)
+            .code(),
+        "runtime_profile_runtime_device_unproven"
+    );
+    assert_eq!(
+        AgentToolExecutionError::RuntimeProfile(RuntimeProfileManagerError::ExternalEngine(
+            hal100_infra::ExternalEngineAdapterError::Unreachable,
+        ))
+        .code(),
+        "runtime_profile_engine_unreachable"
+    );
+}
+
+#[test]
+fn agent_runtime_catalog_keeps_managed_and_external_profiles_without_sensitive_identity() {
+    let common = |id: &str,
+                  ownership: InferenceEngineOwnership,
+                  backend_id: Option<&str>,
+                  context_window_tokens: Option<u32>| RuntimeProfileSummary {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        description: "verified fixture".to_owned(),
+        spec_version: 3,
+        ownership,
+        backend_id: backend_id.map(str::to_owned),
+        backend_api_root: backend_id.map(|_| "http://127.0.0.1:11434/v1/".to_owned()),
+        model_id: format!("model-{id}"),
+        model_display_name: format!("Model {id}"),
+        model_digest_kind: if ownership == InferenceEngineOwnership::Managed {
+            RuntimeProfileModelDigestKind::Sha256
+        } else {
+            RuntimeProfileModelDigestKind::OllamaDigest
+        },
+        engine: if ownership == InferenceEngineOwnership::Managed {
+            "llama_cpp".to_owned()
+        } else {
+            "ollama".to_owned()
+        },
+        engine_version: "test".to_owned(),
+        capacity_tier: context_window_tokens.map(|_| "standard".to_owned()),
+        context_window_tokens,
+        capacity_revision: context_window_tokens.map(|_| "test".to_owned()),
+        adapter_binding: RuntimeProfileAdapterBinding {
+            variant: if ownership == InferenceEngineOwnership::Managed {
+                "hal100-managed-metal".to_owned()
+            } else {
+                "official-loopback-api".to_owned()
+            },
+            contract_revision: hal100_protocol::ENGINE_ADAPTER_CONTRACT_REVISION.to_owned(),
+            backend_config_revision: backend_id.map(|_| 1),
+            origin_fingerprint: backend_id.map(|_| "a".repeat(64)),
+            protocol_capability_hash: Some("b".repeat(64)),
+            support_cell: None,
+        },
+        evidence: RuntimeProfileEvidence {
+            kind: RuntimeProfileEvidenceKind::ContentDigest,
+            algorithm: if ownership == InferenceEngineOwnership::Managed {
+                "sha256".to_owned()
+            } else {
+                "ollama-digest".to_owned()
+            },
+            value: "c".repeat(64),
+        },
+        reviewed_performance: (ownership == InferenceEngineOwnership::External).then_some(
+            hal100_protocol::RuntimeProfileReviewedPerformance {
+                workload_revision: "openai-short-chat-v1".to_owned(),
+                attempts: 20,
+                concurrency: 4,
+                p95_latency_ms: 90,
+                max_latency_ms: 100,
+                total_prompt_tokens: 40,
+                total_completion_tokens: 20,
+                wall_time_ms: 500,
+                sample_completion_tokens_per_second_milli: 40_000,
+                reviewed_at_ms: 1,
+            },
+        ),
+        readiness: RuntimeProfileReadiness::Ready,
+        issues: Vec::new(),
+        verified_at_ms: 1,
+        last_activated_at_ms: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+    };
+    let profiles = build_agent_runtime_profiles(RuntimeProfileCatalog {
+        profiles: vec![
+            common(
+                "managed",
+                InferenceEngineOwnership::Managed,
+                None,
+                Some(32_768),
+            ),
+            common(
+                "external",
+                InferenceEngineOwnership::External,
+                Some("saved-ollama"),
+                None,
+            ),
+        ],
+        active_profile_id: Some("external".to_owned()),
+        can_save_current: false,
+    });
+
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(profiles[0].context_window_tokens, Some(32_768));
+    assert_eq!(profiles[1].ownership, InferenceEngineOwnership::External);
+    assert_eq!(profiles[1].backend_id.as_deref(), Some("saved-ollama"));
+    assert_eq!(profiles[1].adapter_variant, "official-loopback-api");
+    assert_eq!(
+        profiles[1].adapter_contract_revision,
+        hal100_protocol::ENGINE_ADAPTER_CONTRACT_REVISION
+    );
+    assert_eq!(profiles[1].context_window_tokens, None);
+    assert_eq!(
+        profiles[1]
+            .reviewed_performance
+            .as_ref()
+            .map(|performance| performance.p95_latency_ms),
+        Some(90)
+    );
+    assert!(profiles[1].active);
+    let rendered = serde_json::to_string(&profiles).expect("Agent profile catalog JSON");
+    assert!(rendered.contains("reviewedPerformance"));
+    assert!(!rendered.contains("127.0.0.1"));
+    assert!(!rendered.to_ascii_lowercase().contains("digest"));
+}
+
+#[test]
+fn agent_runtime_engine_capabilities_project_the_full_registry_without_endpoints_or_digests() {
+    let registry = ExternalInferenceEngineRegistry::standard()
+        .expect("standard external engine registry")
+        .manifest_registry();
+    let host = HostCapabilitySnapshot {
+        platform: InferencePlatform::MacOs,
+        architecture: InferenceArchitecture::Aarch64,
+        cpu_brand: "Apple".to_owned(),
+        device_model: "Apple M1".to_owned(),
+        total_memory_bytes: 16 * 1024 * 1024 * 1024,
+        physical_cpu_cores: 8,
+        logical_cpu_cores: 8,
+        accelerators: vec![InferenceAccelerator::Metal],
+        model_storage_path: "/private/should-not-leak".to_owned(),
+        model_storage_available_bytes: 1,
+        probe_revision: "test".to_owned(),
+    };
+    let capabilities = build_agent_engine_capabilities(registry, &host, &[]);
+
+    assert_eq!(capabilities.len(), 13);
+    assert_eq!(
+        capabilities
+            .iter()
+            .map(|capability| capability.engine)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        8,
+        "adapter variants must not be conflated with engine kinds"
+    );
+    assert_eq!(
+        capabilities
+            .iter()
+            .filter(|capability| capability.engine.storage_key() == "openvino")
+            .count(),
+        3
+    );
+    assert_eq!(
+        capabilities
+            .iter()
+            .filter(|capability| capability.engine.storage_key() == "mlc-llm")
+            .map(|capability| capability.adapter_variant.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            "official-openai-cuda",
+            "official-openai-metal",
+            "official-openai-rocm",
+            "official-openai-vulkan",
+        ])
+    );
+    assert!(capabilities.iter().any(|capability| capability.compatible));
+    let ollama = capabilities
+        .iter()
+        .find(|capability| capability.engine.storage_key() == "ollama")
+        .expect("Ollama capability");
+    assert_eq!(ollama.adapter_variant, "official-loopback-api");
+    assert_eq!(ollama.engine_key, "ollama");
+    assert_eq!(ollama.saved_profile_count, 0);
+    assert!(
+        ollama
+            .support_cells
+            .iter()
+            .any(|cell| cell.accelerator == InferenceAccelerator::Metal)
+    );
+    let vllm = capabilities
+        .iter()
+        .find(|capability| capability.engine.storage_key() == "vllm")
+        .expect("vLLM capability");
+    assert!(!vllm.compatible);
+
+    let rendered = serde_json::to_string(&capabilities).expect("Agent capability JSON");
+    for forbidden in [
+        "apiRoot",
+        "digest",
+        "credential",
+        "apiKey",
+        "command",
+        "path",
+        "private/should-not-leak",
+    ] {
+        assert!(
+            !rendered
+                .to_ascii_lowercase()
+                .contains(&forbidden.to_ascii_lowercase())
+        );
+    }
+}
+
+#[test]
+fn external_runtime_profile_plan_keeps_live_verification_and_unknown_capacity_explicit() {
+    let pending = build_runtime_profile_activation_agent_plan(
+        "agent-run-external-profile",
+        RuntimeProfileActivationPlan {
+            plan_id: "rust-plan-external".to_owned(),
+            expires_at_ms: 50_000,
+            profile_id: "runtime-profile-external".to_owned(),
+            profile_name: "外部代码助手".to_owned(),
+            model_id: "qwen3:8b".to_owned(),
+            model_display_name: "qwen3:8b".to_owned(),
+            ownership: InferenceEngineOwnership::External,
+            backend_id: Some("saved-ollama".to_owned()),
+            engine: "ollama".to_owned(),
+            engine_version: "0.12.6".to_owned(),
+            support_cell: None,
+            context_window_tokens: None,
+            current_backend_id: None,
+            current_model_id: None,
+            current_model_name: None,
+            issues: Vec::new(),
+            action_summary: "切换到外部方案".to_owned(),
+            requires_confirmation: true,
+        },
+    )
+    .expect("external Agent plan");
+
+    assert!(matches!(
+        pending.executor,
+        AgentActionExecutor::ActivateRuntimeProfile {
+            ref profile_id,
+            ref activation_plan_id,
+        } if profile_id == "runtime-profile-external"
+            && activation_plan_id == "rust-plan-external"
+    ));
+    assert!(pending.plan.requires_native_confirmation);
+    assert_eq!(
+        pending.plan.current_state.as_deref(),
+        Some("当前没有活动模型")
+    );
+    assert!(
+        pending
+            .plan
+            .details
+            .iter()
+            .any(|detail| detail == "上下文窗口：由外部引擎决定")
+    );
+    assert!(
+        pending
+            .plan
+            .details
+            .iter()
+            .any(|detail| detail.contains("用户外部后端 saved-ollama"))
+    );
+    assert!(
+        pending
+            .plan
+            .details
+            .iter()
+            .any(|detail| detail.contains("Rust 实时复检"))
+    );
+    let rendered = serde_json::to_string(&pending.plan).expect("Agent plan JSON");
+    assert!(!rendered.contains("127.0.0.1"));
+    assert!(!rendered.to_ascii_lowercase().contains("digest"));
 }
 
 #[test]
@@ -279,6 +572,7 @@ exit 9
         temp.0.join("managed-external-agents"),
         vec![fake_npm],
     ));
+    let runtime_profiles = Arc::new(RuntimeProfileManager::new(database.clone(), engine.clone()));
     let executor = AgentToolExecutor::new(
         model_storage_path,
         database.clone(),
@@ -294,6 +588,7 @@ exit 9
         managed_deployment,
         gateway,
         AgentActionPlanStore::new(),
+        runtime_profiles,
     );
     let mut run = executor.start_run(
         "agent-model-download-run".to_owned(),
@@ -515,6 +810,7 @@ fn agent_model_discovery_plan_and_confirm_use_one_deterministic_download_manager
         gateway.clone(),
     ));
     let action_plans = AgentActionPlanStore::new();
+    let runtime_profiles = Arc::new(RuntimeProfileManager::new(database.clone(), engine.clone()));
     let executor = AgentToolExecutor::new(
         model_storage_path,
         database.clone(),
@@ -534,6 +830,7 @@ fn agent_model_discovery_plan_and_confirm_use_one_deterministic_download_manager
         )),
         gateway,
         action_plans.clone(),
+        runtime_profiles,
     );
     let cancellation = Arc::new(AtomicBool::new(false));
     let mut run = executor.start_run(

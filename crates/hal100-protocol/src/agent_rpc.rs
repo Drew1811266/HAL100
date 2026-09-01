@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::AgentProviderProtocol;
 
-pub const AGENT_RPC_VERSION: u16 = 12;
+pub const AGENT_RPC_VERSION: u16 = 13;
 pub const AGENT_RPC_MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const AGENT_RPC_MAX_REQUIRED_TOOLS: usize = 4;
 pub const AGENT_RPC_MAX_ACTION_PLANS: usize = 1;
@@ -247,19 +247,19 @@ mod tests {
     }
 
     #[test]
-    fn rpc_version_matches_the_shared_v12_envelope_schema() {
+    fn rpc_version_matches_the_shared_v13_envelope_schema() {
         let schema: serde_json::Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v12.schema.json"))
-                .expect("shared Agent RPC v12 schema");
-        assert_eq!(schema["properties"]["protocolVersion"]["const"], 12);
-        assert_eq!(AGENT_RPC_VERSION, 12);
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v13.schema.json"))
+                .expect("shared Agent RPC v13 schema");
+        assert_eq!(schema["properties"]["protocolVersion"]["const"], 13);
+        assert_eq!(AGENT_RPC_VERSION, 13);
     }
 
     #[test]
-    fn rpc_limits_match_the_shared_v12_tool_policy() {
+    fn rpc_limits_match_the_shared_v13_tool_policy() {
         let manifest: serde_json::Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v12-tools.json"))
-                .expect("shared Agent RPC v12 tool policy");
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v13-tools.json"))
+                .expect("shared Agent RPC v13 tool policy");
         assert_eq!(manifest["protocolVersion"], AGENT_RPC_VERSION);
         assert_eq!(
             manifest["limits"]["maxRequiredTools"],

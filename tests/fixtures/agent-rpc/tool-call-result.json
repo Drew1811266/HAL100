@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 12,
+  "protocolVersion": 13,
   "id": "broker-call-1",
   "kind": "tool.call.result",
   "payload": {

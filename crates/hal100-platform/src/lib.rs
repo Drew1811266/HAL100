@@ -1,10 +1,13 @@
 mod keychain;
 mod sidecar_launch;
+mod system_probe;
 
-use std::{path::Path, process::Command};
+use std::path::Path;
 
 use hal100_core::SystemProbe;
-use hal100_protocol::{HardwareProfile, HardwareRecommendation, PlatformSummary};
+use hal100_protocol::{
+    HardwareProfile, HardwareRecommendation, HostCapabilitySnapshot, PlatformSummary,
+};
 use thiserror::Error;
 
 pub use keychain::{DEFAULT_KEYCHAIN_SERVICE, MacOsKeychainSecretStore};
@@ -13,11 +16,11 @@ pub use sidecar_launch::{
 };
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct MacOsSystemProbe;
+pub struct NativeSystemProbe;
 
 #[derive(Debug, Error)]
 pub enum HardwareProbeError {
-    #[error("当前构建不支持 Apple Silicon 硬件检测")]
+    #[error("当前构建尚未实现此平台的完整硬件能力检测")]
     UnsupportedPlatform,
     #[error("无法读取系统字段 {field}：{message}")]
     SystemField {
@@ -30,139 +33,95 @@ pub enum HardwareProbeError {
     Storage(String),
 }
 
-impl SystemProbe for MacOsSystemProbe {
+impl SystemProbe for NativeSystemProbe {
     fn platform_summary(&self) -> PlatformSummary {
         PlatformSummary {
-            os: "macOS".to_owned(),
-            architecture: if cfg!(target_arch = "aarch64") {
-                "Apple Silicon".to_owned()
-            } else {
-                std::env::consts::ARCH.to_owned()
-            },
-            supported: cfg!(all(target_os = "macos", target_arch = "aarch64")),
+            os: compiled_platform_name().to_owned(),
+            architecture: compiled_architecture_name().to_owned(),
+            supported: system_probe::compiled_host_identity().is_some(),
         }
     }
 }
 
-impl MacOsSystemProbe {
+impl NativeSystemProbe {
+    /// Produces one immutable capability snapshot for compatibility and policy decisions.
+    /// The probe is invoked on demand and never starts a sampler or retains a device identifier.
+    pub fn capability_snapshot(
+        &self,
+        model_storage_path: &Path,
+    ) -> Result<HostCapabilitySnapshot, HardwareProbeError> {
+        let facts = system_probe::probe_host()?;
+        Ok(HostCapabilitySnapshot {
+            platform: facts.platform,
+            architecture: facts.architecture,
+            cpu_brand: facts.cpu_brand,
+            device_model: facts.device_model,
+            total_memory_bytes: facts.total_memory_bytes,
+            physical_cpu_cores: facts.physical_cpu_cores,
+            logical_cpu_cores: facts.logical_cpu_cores,
+            accelerators: facts.accelerators,
+            model_storage_path: model_storage_path.display().to_string(),
+            model_storage_available_bytes: system_probe::available_storage_bytes(
+                model_storage_path,
+            )?,
+            probe_revision: "host-capabilities-v3".to_owned(),
+        })
+    }
+
     /// Reads unified memory once for startup policy selection. This does not start a sampler or
     /// retain any hardware identifier.
     pub fn total_unified_memory_bytes(&self) -> Result<u64, HardwareProbeError> {
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return Err(HardwareProbeError::UnsupportedPlatform);
-        }
-        let values = sysctl_values(&["hw.memsize"])?;
-        parse_u64("hw.memsize", &values[0])
+        system_probe::total_memory_bytes()
     }
 
     pub fn model_storage_available_bytes(
         &self,
         model_storage_path: &Path,
     ) -> Result<u64, HardwareProbeError> {
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return Err(HardwareProbeError::UnsupportedPlatform);
-        }
-        available_storage_bytes(model_storage_path)
+        system_probe::available_storage_bytes(model_storage_path)
     }
 
     pub fn hardware_profile(
         &self,
         model_storage_path: &Path,
     ) -> Result<HardwareProfile, HardwareProbeError> {
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return Err(HardwareProbeError::UnsupportedPlatform);
+        let snapshot = self.capability_snapshot(model_storage_path)?;
+
+        Ok(Self::hardware_profile_from_capabilities(snapshot))
+    }
+
+    pub fn hardware_profile_from_capabilities(snapshot: HostCapabilitySnapshot) -> HardwareProfile {
+        HardwareProfile {
+            chip: snapshot.cpu_brand,
+            model_identifier: snapshot.device_model,
+            total_unified_memory_bytes: snapshot.total_memory_bytes,
+            physical_cpu_cores: snapshot.physical_cpu_cores,
+            logical_cpu_cores: snapshot.logical_cpu_cores,
+            model_storage_path: snapshot.model_storage_path,
+            model_storage_available_bytes: snapshot.model_storage_available_bytes,
+            recommendation: recommendation_for_memory(snapshot.total_memory_bytes),
         }
-
-        let values = sysctl_values(&[
-            "hw.memsize",
-            "hw.physicalcpu",
-            "hw.logicalcpu",
-            "machdep.cpu.brand_string",
-            "hw.model",
-        ])?;
-        let total_unified_memory_bytes = parse_u64("hw.memsize", &values[0])?;
-        let physical_cpu_cores = parse_u32("hw.physicalcpu", &values[1])?;
-        let logical_cpu_cores = parse_u32("hw.logicalcpu", &values[2])?;
-        let model_storage_available_bytes = available_storage_bytes(model_storage_path)?;
-
-        Ok(HardwareProfile {
-            chip: values[3].clone(),
-            model_identifier: values[4].clone(),
-            total_unified_memory_bytes,
-            physical_cpu_cores,
-            logical_cpu_cores,
-            model_storage_path: model_storage_path.display().to_string(),
-            model_storage_available_bytes,
-            recommendation: recommendation_for_memory(total_unified_memory_bytes),
-        })
     }
 }
 
-fn sysctl_values(fields: &[&'static str]) -> Result<Vec<String>, HardwareProbeError> {
-    let output = Command::new("/usr/sbin/sysctl")
-        .arg("-n")
-        .args(fields)
-        .output()
-        .map_err(|error| HardwareProbeError::SystemField {
-            field: "sysctl",
-            message: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(HardwareProbeError::SystemField {
-            field: "sysctl",
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+const fn compiled_platform_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS"
+    } else if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else {
+        std::env::consts::OS
     }
-    let values = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if values.len() != fields.len() || values.iter().any(String::is_empty) {
-        return Err(HardwareProbeError::SystemField {
-            field: "sysctl",
-            message: "系统返回的字段数量不完整".to_owned(),
-        });
+}
+
+const fn compiled_architecture_name() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "Apple Silicon"
+    } else {
+        std::env::consts::ARCH
     }
-    Ok(values)
-}
-
-fn parse_u64(field: &'static str, value: &str) -> Result<u64, HardwareProbeError> {
-    value
-        .parse()
-        .map_err(|_| HardwareProbeError::InvalidNumber { field })
-}
-
-fn parse_u32(field: &'static str, value: &str) -> Result<u32, HardwareProbeError> {
-    value
-        .parse()
-        .map_err(|_| HardwareProbeError::InvalidNumber { field })
-}
-
-fn available_storage_bytes(path: &Path) -> Result<u64, HardwareProbeError> {
-    let output = Command::new("/bin/df")
-        .args(["-Pk"])
-        .arg(path)
-        .output()
-        .map_err(|error| HardwareProbeError::Storage(error.to_string()))?;
-    if !output.status.success() {
-        return Err(HardwareProbeError::Storage(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
-    }
-    parse_available_storage_bytes(&String::from_utf8_lossy(&output.stdout))
-}
-
-fn parse_available_storage_bytes(output: &str) -> Result<u64, HardwareProbeError> {
-    let available_kib = output
-        .lines()
-        .rfind(|line| !line.trim().is_empty())
-        .and_then(|line| line.split_whitespace().nth(3))
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| HardwareProbeError::Storage("df 输出格式无法识别".to_owned()))?;
-    available_kib
-        .checked_mul(1024)
-        .ok_or_else(|| HardwareProbeError::Storage("可用空间数值溢出".to_owned()))
 }
 
 fn recommendation_for_memory(total_bytes: u64) -> HardwareRecommendation {
@@ -190,23 +149,16 @@ fn recommendation_for_memory(total_bytes: u64) -> HardwareRecommendation {
 
 #[cfg(test)]
 mod tests {
+    use hal100_protocol::{InferenceAccelerator, InferenceArchitecture, InferencePlatform};
+
     use super::*;
 
     #[test]
     fn reports_the_compiled_platform_without_runtime_polling() {
-        let summary = MacOsSystemProbe.platform_summary();
+        let summary = NativeSystemProbe.platform_summary();
 
         assert!(!summary.os.is_empty());
         assert!(!summary.architecture.is_empty());
-    }
-
-    #[test]
-    fn parses_posix_df_available_space() {
-        let output = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3 100 20 80 20% /tmp\n";
-        assert_eq!(
-            parse_available_storage_bytes(output).expect("available"),
-            81_920
-        );
     }
 
     #[test]
@@ -223,7 +175,7 @@ mod tests {
     #[test]
     fn probes_total_memory_once_for_runtime_policy() {
         assert!(
-            MacOsSystemProbe
+            NativeSystemProbe
                 .total_unified_memory_bytes()
                 .expect("total unified memory")
                 >= 8 * 1024 * 1024 * 1024
@@ -233,11 +185,43 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn probes_real_apple_silicon_hardware_on_demand() {
-        let profile = MacOsSystemProbe
+        let profile = NativeSystemProbe
             .hardware_profile(Path::new("/tmp"))
             .expect("hardware profile");
         assert!(profile.chip.starts_with("Apple "));
         assert!(profile.total_unified_memory_bytes >= 8 * 1024 * 1024 * 1024);
         assert!(profile.model_storage_available_bytes > 0);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn capability_snapshot_reports_typed_platform_architecture_and_accelerators() {
+        let snapshot = NativeSystemProbe
+            .capability_snapshot(Path::new("/tmp"))
+            .expect("host capabilities");
+        assert_eq!(snapshot.platform, InferencePlatform::MacOs);
+        assert_eq!(snapshot.architecture, InferenceArchitecture::Aarch64);
+        assert_eq!(
+            snapshot.accelerators,
+            vec![InferenceAccelerator::Cpu, InferenceAccelerator::Metal]
+        );
+        assert_eq!(snapshot.probe_revision, "host-capabilities-v3");
+    }
+
+    #[test]
+    fn linux_cuda_evidence_requires_both_nvidia_driver_and_pci_vendor() {
+        let driver = "NVRM version: NVIDIA UNIX Open Kernel Module 580.65";
+        assert!(system_probe::nvidia_cuda_evidence_from(
+            driver,
+            &["0x10de\n".to_owned()]
+        ));
+        assert!(!system_probe::nvidia_cuda_evidence_from(
+            driver,
+            &["0x8086\n".to_owned()]
+        ));
+        assert!(!system_probe::nvidia_cuda_evidence_from(
+            "unknown driver",
+            &["0x10de\n".to_owned()]
+        ));
     }
 }

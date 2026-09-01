@@ -21,7 +21,7 @@
 - 引擎：固定官方llama.cpp供应链安装、启动、停止、切换、卸载；所有变更必须出现原生确认。
 - Gateway：OpenAI Chat/Responses、Anthropic Messages、SSE、取消、工具结构和精确Usage。
 - 接入：OpenCode、Pi Coding Agent、OpenClaw、Hermes Agent、通用OpenAI客户端和通用Anthropic客户端；每个客户端独立Key，专用适配器必须验证预览、确认、回滚与精确断开。
-- Agent：本地Qwen、单次云端、当前内存会话、取消、RPC v12按需Pi意图提案、Rust双路裁决和结构化任务工具接管、任务级上下文/效率指标、18项固定工具、环境诊断、模型搜索/下载、四类外部Agent配置/断开，以及Pi私有安装/移除计划。Agent不提供通用聊天，所有变更只生成一次性计划，必须由Rust原生确认、复验和确定性执行。
+- Agent：本地Qwen、单次云端、当前内存会话、取消、RPC v13按需Pi意图提案、Rust双路裁决和结构化任务工具接管、任务级上下文/效率指标、20项固定工具、环境诊断、模型搜索/下载、托管与外部个人运行方案实时预检/切换、四类外部Agent配置/断开，以及Pi私有安装/移除计划。Agent不提供通用聊天，所有变更只生成一次性计划，必须由Rust原生确认、复验和确定性执行；外部方案最终证据还必须实时核对引擎版本、模型digest和完整活动路由。
 - 后台：关闭主窗口后进程和Gateway继续运行；托盘可恢复窗口；只有明确“退出HAL100”才结束进程。
 
 ## 3. 自动验收
@@ -74,7 +74,7 @@ cargo test -p hal100-desktop real_qwen_controlled_long_tail_inspection_uses_stru
 ```
 
 期望只调用`hal100.inspect_external_agent`，操作计划为0，路由指标为`structuredPi`。日常自动测试
-中的v4合同必须达到13/13决策和13/13精确工具集合。开发期需要验证回退时，可以用
+中的v4合同必须达到14/14决策和14/14精确工具集合。开发期需要验证回退时，可以用
 `HAL100_AGENT_TASK_ROUTING_MODE=safe-legacy`启动；状态必须显示`safeLegacy`，且Pi独有任务应
 故障关闭，不能回退旧关键词工具执行。
 
@@ -91,7 +91,7 @@ cargo test -p hal100-desktop real_agent_creates_a_nonexecuting_engine_remove_pla
 字段。伪造、过期、确认取消、新任务替换、执行/复验失败与进程重启都必须有固定终态；测试和
 日志不得输出私有计划ID、具体目标或用户内容。
 
-迭代37的日常v6合同还必须达到18/18成功谓词来源覆盖和6/6故障注入；受控任务非终态重规划
+迭代37的日常v6合同还必须达到20/20成功谓词来源覆盖和6/6故障注入；受控任务非终态重规划
 最多1次。动作专属执行后复验使用临时模型索引，不操作真实开发引擎：
 
 ```bash

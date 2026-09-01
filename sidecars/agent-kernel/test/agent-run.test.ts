@@ -43,6 +43,7 @@ import {
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_MODEL_START_TOOL,
   PLAN_MODEL_STOP_TOOL,
+  PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
   RUNTIME_CATALOG_TOOL,
   SYSTEM_SUMMARY_TOOL,
   ToolBrokerBridge,
@@ -89,7 +90,7 @@ describe("real HAL100 Agent run boundary", () => {
     expect(CLOUD_AGENT_MAX_OUTPUT_TOKENS).toBe(contract.cloudRuntime.maxOutputTokens);
   });
 
-  it("keeps the RPC v12 tool catalog at the nineteen compatible names", () => {
+  it("keeps the RPC v13 tool catalog at the twenty compatible names", () => {
     const bridge = new ToolBrokerBridge(() => undefined);
     const tools = bridge.createAgentTools("run-contract");
     const registeredTools = tools.map((tool) => tool.name);
@@ -113,9 +114,10 @@ describe("real HAL100 Agent run boundary", () => {
       PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
       PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
       PLAN_MODEL_STOP_TOOL,
+      PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
     ]);
     const manifest = JSON.parse(
-      readFileSync(new URL("../../../contracts/agent-rpc/v12-tools.json", import.meta.url), "utf8"),
+      readFileSync(new URL("../../../contracts/agent-rpc/v13-tools.json", import.meta.url), "utf8"),
     ) as {
       protocolVersion: number;
       limits: {

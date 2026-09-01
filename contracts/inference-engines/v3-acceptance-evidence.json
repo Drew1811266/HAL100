@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 3,
+  "records": [
+    {
+      "id": "acceptance-run-c3c9f2742e584ab19b613d32255bea82",
+      "adapterId": {
+        "engine": "ollama",
+        "variant": "official-loopback-api",
+        "contractRevision": "engine-contract-v1"
+      },
+      "instanceId": "acceptance:ollama",
+      "originFingerprint": "a011dab98f4a88726a96b79ae340393423d5dd2874e494bbccb77cca1656d86f",
+      "configRevision": 1,
+      "protocolCapabilityHash": "7d47cfab64649c9dc0b559e2bbe292294529c5e9d66095e7f0771015708a5b33",
+      "platform": "macOs",
+      "architecture": "aarch64",
+      "accelerator": "metal",
+      "deployment": "local",
+      "status": "verifiedExternal",
+      "verifiedAtMs": 1788145725668,
+      "engineVersion": "0.33.2",
+      "deploymentFingerprint": "a197a17784d3d308405380272ee224269e2899faebceaa23f1da8dfe7bce4473",
+      "modelRevision": "f6d5376be1edb4d416d56da11e5397a961aca8ae",
+      "hostSummary": "macos/aarch64/metal",
+      "resilience": {
+        "cancellationVerified": true,
+        "failedSwitchRollbackVerified": true,
+        "restartCompensationVerified": true
+      },
+      "evidence": [
+        {
+          "kind": "officialContract",
+          "source": "contracts/inference-engines/v1-support-matrix.json",
+          "assertion": "adapter manifest support cell resolved"
+        },
+        {
+          "kind": "protocolQualification",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "required OpenAI protocol capabilities passed; hash=7d47cfab64649c9dc0b559e2bbe292294529c5e9d66095e7f0771015708a5b33"
+        },
+        {
+          "kind": "platformRuntime",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "running host matched the declared platform/architecture/accelerator cell"
+        },
+        {
+          "kind": "modelDeploymentIdentity",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "served model matched the requested model identity"
+        },
+        {
+          "kind": "runtimeProfileLifecycle",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "save/revalidate/activate/verify runtime profile lifecycle passed"
+        },
+        {
+          "kind": "stability",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "bounded repeated/concurrent inference probe passed"
+        },
+        {
+          "kind": "engineIdentity",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "exact engine or deployment identity was observed by the live inspection"
+        }
+      ],
+      "hostAttestation": {
+        "kind": "legacyHostSummaryV1",
+        "platform": "macOs",
+        "architecture": "aarch64",
+        "accelerator": "metal"
+      }
+    },
+    {
+      "id": "acceptance-run-6a5e1d232cb644b2a7ba7db85b1b910c",
+      "adapterId": {
+        "engine": "mlxLm",
+        "variant": "official-http-server",
+        "contractRevision": "engine-contract-v1"
+      },
+      "instanceId": "acceptance:mlx-lm",
+      "originFingerprint": "7cebba29faaea69142c09ae2ea5436b29b490aff9f2840ce0c9a3d34e6f05315",
+      "configRevision": 1,
+      "protocolCapabilityHash": "7d47cfab64649c9dc0b559e2bbe292294529c5e9d66095e7f0771015708a5b33",
+      "platform": "macOs",
+      "architecture": "aarch64",
+      "accelerator": "metal",
+      "deployment": "local",
+      "status": "verifiedExternal",
+      "verifiedAtMs": 1788144651619,
+      "engineVersion": "0.31.3",
+      "deploymentFingerprint": "27b37f109cb21684eec52bc44a52291561762b522caf1f7b9789145146cd88f6",
+      "modelRevision": "674aaa7240b91e8012fcad5d791b7dfe5ba90207",
+      "hostSummary": "macos/aarch64/metal",
+      "resilience": {
+        "cancellationVerified": true,
+        "failedSwitchRollbackVerified": true,
+        "restartCompensationVerified": true
+      },
+      "evidence": [
+        {
+          "kind": "officialContract",
+          "source": "contracts/inference-engines/v1-support-matrix.json",
+          "assertion": "adapter manifest support cell resolved"
+        },
+        {
+          "kind": "protocolQualification",
+          "source": "crates/hal100-infra/tests/mlx_lm_live_acceptance.rs",
+          "assertion": "required OpenAI protocol capabilities passed; hash=7d47cfab64649c9dc0b559e2bbe292294529c5e9d66095e7f0771015708a5b33"
+        },
+        {
+          "kind": "platformRuntime",
+          "source": "crates/hal100-infra/tests/mlx_lm_live_acceptance.rs",
+          "assertion": "running host matched the declared platform/architecture/accelerator cell"
+        },
+        {
+          "kind": "modelDeploymentIdentity",
+          "source": "crates/hal100-infra/tests/mlx_lm_live_acceptance.rs",
+          "assertion": "served model matched the requested model identity"
+        },
+        {
+          "kind": "runtimeProfileLifecycle",
+          "source": "crates/hal100-infra/tests/mlx_lm_live_acceptance.rs",
+          "assertion": "save/revalidate/activate/verify runtime profile lifecycle passed"
+        },
+        {
+          "kind": "stability",
+          "source": "crates/hal100-infra/tests/mlx_lm_live_acceptance.rs",
+          "assertion": "bounded repeated/concurrent inference probe passed"
+        },
+        {
+          "kind": "engineIdentity",
+          "source": "crates/hal100-infra/tests/mlx_lm_live_acceptance.rs",
+          "assertion": "exact engine or deployment identity was observed by the live inspection"
+        }
+      ],
+      "hostAttestation": {
+        "kind": "legacyHostSummaryV1",
+        "platform": "macOs",
+        "architecture": "aarch64",
+        "accelerator": "metal"
+      }
+    },
+    {
+      "id": "acceptance-run-6a23349a43514f41bf8bfa8b811ac69f",
+      "adapterId": {
+        "engine": "ollama",
+        "variant": "official-loopback-api",
+        "contractRevision": "engine-contract-v1"
+      },
+      "instanceId": "acceptance:ollama",
+      "originFingerprint": "a011dab98f4a88726a96b79ae340393423d5dd2874e494bbccb77cca1656d86f",
+      "configRevision": 1,
+      "protocolCapabilityHash": "7d47cfab64649c9dc0b559e2bbe292294529c5e9d66095e7f0771015708a5b33",
+      "platform": "macOs",
+      "architecture": "aarch64",
+      "accelerator": "cpu",
+      "deployment": "local",
+      "status": "verifiedExternal",
+      "verifiedAtMs": 1788145651933,
+      "engineVersion": "0.33.2",
+      "deploymentFingerprint": "104b3ab01c8c5aaf00fd70bd339ef37ee1315f3752da01b174a29ad7dc130d36",
+      "modelRevision": "f6d5376be1edb4d416d56da11e5397a961aca8ae",
+      "hostSummary": "macos/aarch64/cpu",
+      "resilience": {
+        "cancellationVerified": true,
+        "failedSwitchRollbackVerified": true,
+        "restartCompensationVerified": true
+      },
+      "evidence": [
+        {
+          "kind": "officialContract",
+          "source": "contracts/inference-engines/v1-support-matrix.json",
+          "assertion": "adapter manifest support cell resolved"
+        },
+        {
+          "kind": "protocolQualification",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "required OpenAI protocol capabilities passed; hash=7d47cfab64649c9dc0b559e2bbe292294529c5e9d66095e7f0771015708a5b33"
+        },
+        {
+          "kind": "platformRuntime",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "running host matched the declared platform/architecture/accelerator cell"
+        },
+        {
+          "kind": "modelDeploymentIdentity",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "served model matched the requested model identity"
+        },
+        {
+          "kind": "runtimeProfileLifecycle",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "save/revalidate/activate/verify runtime profile lifecycle passed"
+        },
+        {
+          "kind": "stability",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "bounded repeated/concurrent inference probe passed"
+        },
+        {
+          "kind": "engineIdentity",
+          "source": "crates/hal100-infra/tests/ollama_live_acceptance.rs",
+          "assertion": "exact engine or deployment identity was observed by the live inspection"
+        }
+      ],
+      "hostAttestation": {
+        "kind": "legacyHostSummaryV1",
+        "platform": "macOs",
+        "architecture": "aarch64",
+        "accelerator": "cpu"
+      }
+    }
+  ]
+}

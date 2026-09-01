@@ -1,0 +1,205 @@
+name: HAL100 live engine acceptance
+run-name: Accept ${{ inputs.engine }} on ${{ inputs.target_platform }} / ${{ inputs.accelerator }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: Prepared inference engine
+        required: true
+        type: choice
+        options:
+          - ollama
+          - mlx-lm
+          - mlc-llm
+          - openvino
+          - vllm
+          - sglang
+          - lmdeploy
+          - tensorrt-llm
+      target_platform:
+        description: Isolated self-hosted acceptance runner
+        required: true
+        type: choice
+        options:
+          - macos-arm64
+          - linux-x64
+          - linux-arm64
+          - windows-x64
+      accelerator:
+        description: Exact support-cell accelerator storage key
+        required: true
+        type: choice
+        options:
+          - cpu
+          - metal
+          - cuda
+          - rocm
+          - vulkan
+          - intel_gpu
+          - intel_npu
+permissions:
+  contents: read
+
+concurrency:
+  group: hal100-live-acceptance-${{ inputs.target_platform }}
+  cancel-in-progress: false
+
+jobs:
+  validate-coordinate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      ACCEPTANCE_ENGINE: ${{ inputs.engine }}
+      ACCEPTANCE_TARGET_PLATFORM: ${{ inputs.target_platform }}
+      ACCEPTANCE_ACCELERATOR: ${{ inputs.accelerator }}
+    steps:
+      - name: Checkout reviewed source without acceptance secrets
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+
+      - name: Resolve exact manifest support cell
+        shell: bash
+        run: |
+          node scripts/validate-engine-acceptance-coordinate.mjs \
+            --engine "$ACCEPTANCE_ENGINE" \
+            --target-platform "$ACCEPTANCE_TARGET_PLATFORM" \
+            --accelerator "$ACCEPTANCE_ACCELERATOR"
+
+  macos-arm64:
+    needs: validate-coordinate
+    if: inputs.target_platform == 'macos-arm64'
+    runs-on: [self-hosted, macOS, ARM64, hal100-acceptance]
+    timeout-minutes: 120
+    environment:
+      name: hal100-acceptance-${{ inputs.target_platform }}-${{ inputs.engine }}-${{ inputs.accelerator }}
+    env: &acceptance-environment
+      ACCEPTANCE_ENGINE: ${{ inputs.engine }}
+      ACCEPTANCE_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      ACCEPTANCE_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      ACCEPTANCE_ENGINE_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
+      HAL100_RUN_REAL_ACCEPTANCE: "1"
+      HAL100_ACCEPTANCE_EVIDENCE_OUT: ${{ runner.temp }}/hal100-${{ inputs.engine }}-${{ github.run_id }}-${{ github.run_attempt }}.json
+      HAL100_OLLAMA_ACCELERATOR: ${{ inputs.accelerator }}
+      HAL100_OLLAMA_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      HAL100_OLLAMA_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      HAL100_OLLAMA_EXPECTED_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
+      HAL100_MLX_LM_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      HAL100_MLX_LM_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      HAL100_MLX_LM_EXPECTED_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
+      HAL100_MLC_LLM_ACCELERATOR: ${{ inputs.accelerator }}
+      HAL100_MLC_LLM_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      HAL100_MLC_LLM_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      HAL100_MLC_LLM_ENGINE_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
+      HAL100_OPENVINO_ACCELERATOR: ${{ inputs.accelerator }}
+      HAL100_OPENVINO_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      HAL100_OPENVINO_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      HAL100_OPENVINO_EXPECTED_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
+      HAL100_VLLM_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      HAL100_VLLM_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      HAL100_VLLM_EXPECTED_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
+      HAL100_VLLM_API_KEY: ${{ inputs.engine == 'vllm' && secrets.HAL100_VLLM_API_KEY || '' }}
+      HAL100_SGLANG_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      HAL100_SGLANG_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      HAL100_SGLANG_EXPECTED_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
+      HAL100_LMDEPLOY_ACCELERATOR: ${{ inputs.accelerator }}
+      HAL100_LMDEPLOY_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      HAL100_LMDEPLOY_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      HAL100_TENSORRT_LLM_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
+      HAL100_TENSORRT_LLM_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
+      HAL100_TENSORRT_LLM_EXPECTED_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
+    steps: &unix-acceptance-steps
+      - name: Validate protected acceptance configuration
+        shell: bash
+        run: |
+          if [[ -z "$ACCEPTANCE_API_ROOT" || -z "$ACCEPTANCE_MODEL_ID" ]]; then
+            printf '%s\n' 'Protected acceptance API root and model ID are required.' >&2
+            exit 2
+          fi
+          if [[ "$ACCEPTANCE_ENGINE" != "lmdeploy" && -z "$ACCEPTANCE_ENGINE_VERSION" ]]; then
+            printf '%s\n' 'Protected engine version is required for this engine.' >&2
+            exit 2
+          fi
+
+      - name: Checkout reviewed source
+        uses: actions/checkout@v4
+
+      - name: Validate exact engine environment without requests
+        shell: bash
+        run: node scripts/validate-engine-acceptance-environment.mjs --engine "$ACCEPTANCE_ENGINE"
+
+      - name: Run bounded live acceptance
+        shell: bash
+        run: scripts/run-engine-live-acceptance.sh "$ACCEPTANCE_ENGINE"
+
+      - name: Upload create-new evidence artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hal100-${{ inputs.engine }}-${{ inputs.target_platform }}-${{ inputs.accelerator }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.HAL100_ACCEPTANCE_EVIDENCE_OUT }}
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-x64:
+    needs: validate-coordinate
+    if: inputs.target_platform == 'linux-x64'
+    runs-on: [self-hosted, Linux, X64, hal100-acceptance]
+    timeout-minutes: 120
+    environment:
+      name: hal100-acceptance-${{ inputs.target_platform }}-${{ inputs.engine }}-${{ inputs.accelerator }}
+    env: *acceptance-environment
+    steps: *unix-acceptance-steps
+
+  linux-arm64:
+    needs: validate-coordinate
+    if: inputs.target_platform == 'linux-arm64'
+    runs-on: [self-hosted, Linux, ARM64, hal100-acceptance]
+    timeout-minutes: 120
+    environment:
+      name: hal100-acceptance-${{ inputs.target_platform }}-${{ inputs.engine }}-${{ inputs.accelerator }}
+    env: *acceptance-environment
+    steps: *unix-acceptance-steps
+
+  windows-x64:
+    needs: validate-coordinate
+    if: inputs.target_platform == 'windows-x64'
+    runs-on: [self-hosted, Windows, X64, hal100-acceptance]
+    timeout-minutes: 120
+    environment:
+      name: hal100-acceptance-${{ inputs.target_platform }}-${{ inputs.engine }}-${{ inputs.accelerator }}
+    env: *acceptance-environment
+    steps:
+      - name: Validate protected acceptance configuration
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ACCEPTANCE_API_ROOT) -or [string]::IsNullOrWhiteSpace($env:ACCEPTANCE_MODEL_ID)) {
+              throw 'Protected acceptance API root and model ID are required.'
+          }
+          if ($env:ACCEPTANCE_ENGINE -ne 'lmdeploy' -and [string]::IsNullOrWhiteSpace($env:ACCEPTANCE_ENGINE_VERSION)) {
+              throw 'Protected engine version is required for this engine.'
+          }
+
+      - name: Checkout reviewed source
+        uses: actions/checkout@v4
+
+      - name: Validate exact engine environment without requests
+        shell: pwsh
+        run: node scripts/validate-engine-acceptance-environment.mjs --engine $env:ACCEPTANCE_ENGINE
+
+      - name: Run bounded live acceptance
+        shell: pwsh
+        run: ./scripts/run-engine-live-acceptance.ps1 $env:ACCEPTANCE_ENGINE
+
+      - name: Upload create-new evidence artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hal100-${{ inputs.engine }}-${{ inputs.target_platform }}-${{ inputs.accelerator }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.HAL100_ACCEPTANCE_EVIDENCE_OUT }}
+          if-no-files-found: error
+          retention-days: 14

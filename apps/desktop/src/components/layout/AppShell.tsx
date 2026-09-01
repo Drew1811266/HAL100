@@ -1,4 +1,4 @@
-import { Activity, Bot, Boxes, Cable, CircleGauge, Settings } from "lucide-react";
+import { Activity, Bookmark, Bot, Boxes, Cable, CircleGauge, Settings } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { isTauriRuntime } from "../../lib/desktop-api";
@@ -26,6 +26,7 @@ const navigation: NavigationItem[] = [
     icon: Activity,
     activePrefixes: ["/activity", "/usage", "/audit"],
   },
+  { label: "运行方案", path: "/profiles", icon: Bookmark },
 ];
 
 function Sidebar({ setupRequired }: { setupRequired: boolean }) {

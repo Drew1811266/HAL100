@@ -7,6 +7,7 @@ export const SIMULATED_SYSTEM_SUMMARY_TOOL = SYSTEM_SUMMARY_TOOL;
 export const RUNTIME_CATALOG_TOOL = "hal100.inspect_runtime_catalog";
 export const PLAN_MODEL_START_TOOL = "hal100.plan_model_start";
 export const PLAN_MODEL_STOP_TOOL = "hal100.plan_model_stop";
+export const PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL = "hal100.plan_runtime_profile_activation";
 export const PLAN_MODEL_REMOVAL_TOOL = "hal100.plan_model_removal";
 export const ENVIRONMENT_DIAGNOSTICS_TOOL = "hal100.inspect_environment_diagnostics";
 export const OPERATIONAL_HISTORY_TOOL = "hal100.inspect_operational_history";
@@ -45,6 +46,13 @@ const runtimeCatalogParameters = Type.Object(
 const modelStartParameters = Type.Object(
   {
     modelId: Type.String({ minLength: 1, maxLength: 128 }),
+  },
+  { additionalProperties: false },
+);
+
+const runtimeProfileActivationParameters = Type.Object(
+  {
+    profileId: Type.String({ minLength: 1, maxLength: 128 }),
   },
   { additionalProperties: false },
 );
@@ -188,6 +196,7 @@ export class ToolBrokerBridge {
       this.createExternalAgentInstallationPlanTool(runId),
       this.createManagedExternalAgentRemovalPlanTool(runId),
       this.createModelStopPlanTool(runId),
+      this.createRuntimeProfileActivationPlanTool(runId),
     ];
   }
 
@@ -220,7 +229,7 @@ export class ToolBrokerBridge {
       name: RUNTIME_CATALOG_TOOL,
       label: "读取 HAL100 运行环境",
       description:
-        "请求 Rust Tool Broker 返回 llama.cpp 安装/运行状态、当前活动模型、后端数量与可用本地模型摘要。不返回文件路径或凭据。",
+        "请求 Rust Tool Broker 返回 llama.cpp 安装/运行状态、当前活动模型、后端数量、本地模型摘要、已保存的托管/外部运行方案最小身份，以及静态引擎能力、支持格和推荐摘要。不返回 API 根、模型 digest、文件路径、命令或凭据。",
       parameters: runtimeCatalogParameters,
       executionMode: "sequential",
       execute: async (toolCallId, parameters, signal) => {
@@ -276,6 +285,32 @@ export class ToolBrokerBridge {
           runId,
           toolCallId,
           PLAN_MODEL_STOP_TOOL,
+          parameters,
+          signal,
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(output) }],
+          details: output,
+        };
+      },
+    };
+  }
+
+  createRuntimeProfileActivationPlanTool(
+    runId: string,
+  ): AgentTool<typeof runtimeProfileActivationParameters, unknown> {
+    return {
+      name: PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
+      label: "生成运行方案切换计划",
+      description:
+        "使用运行环境工具返回的精确 profileId，请求 Rust 复验已保存方案并生成一次性切换计划。外部方案会实时复检后端身份、API 根、引擎版本与模型摘要；此工具不直接切换模型，仍需在 HAL100 原生窗口确认。",
+      parameters: runtimeProfileActivationParameters,
+      executionMode: "sequential",
+      execute: async (toolCallId, parameters, signal) => {
+        const output = await this.requestTool(
+          runId,
+          toolCallId,
+          PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
           parameters,
           signal,
         );

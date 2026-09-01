@@ -4,13 +4,15 @@ use hal100_protocol::{
     AuditDetail, AuditEventSummary, AuditLog, DataCleanupPreview, DataCleanupResult,
     DownloadSource, GenericClientSummary, LocalModelState, LocalModelSummary, ModelDownloadState,
     ModelLibrary, ModelOwnership, ModelRemovalKind, ModelSource, RetentionSettingsDraft,
-    UsageDailySummary, UsageDashboard, UsageDimensionSummary, UsageFilterOption,
-    UsageFilterOptions, UsageHourlySummary, UsageRequestSummary, UsageScopeQuery,
-    UsageScopeSummary, UsageTotals,
+    RuntimeProfileSupportCell, UsageDailySummary, UsageDashboard, UsageDimensionSummary,
+    UsageFilterOption, UsageFilterOptions, UsageHourlySummary, UsageRequestSummary,
+    UsageScopeQuery, UsageScopeSummary, UsageTotals,
 };
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{M, Migrations};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -48,6 +50,8 @@ pub struct StoredBackendRecord {
     pub id: String,
     pub display_name: String,
     pub kind: String,
+    pub engine_kind: Option<String>,
+    pub adapter_variant: Option<String>,
     pub api_root: String,
     pub auth_style: String,
     pub credential_id: Option<String>,
@@ -57,10 +61,91 @@ pub struct StoredBackendRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredBackendEngineBinding {
+    pub engine_kind: String,
+    pub adapter_variant: String,
+    pub deployment: String,
+    pub config_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredModelRouteRecord {
     pub alias: String,
     pub backend_id: String,
     pub resolved_model: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StoredActiveGatewayRoute {
+    pub backend_id: String,
+    pub resolved_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRuntimeProfileRecord {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub spec_version: u16,
+    pub ownership: String,
+    pub backend_id: Option<String>,
+    pub backend_api_root: Option<String>,
+    pub model_id: String,
+    pub model_display_name: String,
+    pub model_digest: String,
+    pub model_digest_kind: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub capacity_tier: Option<String>,
+    pub context_window_tokens: Option<u32>,
+    pub capacity_revision: Option<String>,
+    pub adapter_variant: String,
+    pub adapter_contract_revision: String,
+    pub backend_config_revision: Option<u64>,
+    pub origin_fingerprint: Option<String>,
+    pub evidence_kind: String,
+    pub evidence_algorithm: String,
+    pub evidence_value: String,
+    pub protocol_capability_hash: String,
+    pub support_cell: Option<RuntimeProfileSupportCell>,
+    pub verified_at_ms: i64,
+    pub last_activated_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRuntimeProfileVerification {
+    pub model_digest: String,
+    pub evidence_kind: String,
+    pub evidence_algorithm: String,
+    pub evidence_value: String,
+    pub engine_version: String,
+    pub capacity_tier: Option<String>,
+    pub context_window_tokens: Option<u32>,
+    pub capacity_revision: Option<String>,
+    pub support_cell: Option<RuntimeProfileSupportCell>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeActivationPhase {
+    Journaled,
+    Quiesced,
+    RouteSwitched,
+    Compensating,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRuntimeActivationJournal {
+    pub id: String,
+    pub profile_id: String,
+    pub phase: RuntimeActivationPhase,
+    pub previous_route: Option<StoredActiveGatewayRoute>,
+    pub previous_managed_model_id: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -335,6 +420,22 @@ impl Database {
     }
 
     pub fn upsert_backend(&self, backend: &StoredBackendRecord) -> Result<(), DatabaseError> {
+        let (legacy_engine_kind, legacy_adapter_variant) = stored_backend_binding(&backend.kind);
+        let engine_kind = backend.engine_kind.as_deref().or(legacy_engine_kind);
+        let adapter_variant = backend
+            .adapter_variant
+            .as_deref()
+            .or(legacy_adapter_variant);
+        if engine_kind.is_some() != adapter_variant.is_some() {
+            return Err(DatabaseError::InvalidData(
+                "backend engine binding must contain both engine kind and adapter variant"
+                    .to_owned(),
+            ));
+        }
+        let deployment = reqwest::Url::parse(&backend.api_root)
+            .ok()
+            .filter(|url| url.scheme() == "http" && url.host_str() == Some("127.0.0.1"))
+            .map_or("remote", |_| "local");
         let connection = self
             .connection
             .lock()
@@ -342,8 +443,9 @@ impl Database {
         connection.execute(
             "INSERT INTO backends (
                 id, display_name, kind, api_root, auth_style, credential_id,
-                enabled, created_at_ms, updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                enabled, created_at_ms, updated_at_ms, engine_kind,
+                adapter_variant, deployment, config_revision
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1)
              ON CONFLICT(id) DO UPDATE SET
                 display_name = excluded.display_name,
                 kind = excluded.kind,
@@ -351,6 +453,21 @@ impl Database {
                 auth_style = excluded.auth_style,
                 credential_id = excluded.credential_id,
                 enabled = excluded.enabled,
+                engine_kind = excluded.engine_kind,
+                adapter_variant = excluded.adapter_variant,
+                deployment = excluded.deployment,
+                config_revision = CASE WHEN
+                    backends.kind IS NOT excluded.kind
+                    OR backends.api_root IS NOT excluded.api_root
+                    OR backends.auth_style IS NOT excluded.auth_style
+                    OR backends.credential_id IS NOT excluded.credential_id
+                    OR backends.enabled IS NOT excluded.enabled
+                    OR backends.engine_kind IS NOT excluded.engine_kind
+                    OR backends.adapter_variant IS NOT excluded.adapter_variant
+                    OR backends.deployment IS NOT excluded.deployment
+                    THEN backends.config_revision + 1
+                    ELSE backends.config_revision
+                END,
                 updated_at_ms = excluded.updated_at_ms",
             params![
                 backend.id,
@@ -362,9 +479,67 @@ impl Database {
                 backend.enabled,
                 backend.created_at_ms,
                 backend.updated_at_ms,
+                engine_kind,
+                adapter_variant,
+                deployment,
             ],
         )?;
         Ok(())
+    }
+
+    pub fn backend_config_revision(&self, backend_id: &str) -> Result<u64, DatabaseError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let revision = connection.query_row(
+            "SELECT config_revision FROM backends WHERE id = ?1",
+            [backend_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        u64::try_from(revision).map_err(|_| {
+            DatabaseError::InvalidData("backend config revision is invalid".to_owned())
+        })
+    }
+
+    pub fn backend_engine_binding(
+        &self,
+        backend_id: &str,
+    ) -> Result<Option<StoredBackendEngineBinding>, DatabaseError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let result = connection.query_row(
+            "SELECT engine_kind, adapter_variant, deployment, config_revision
+             FROM backends WHERE id = ?1",
+            [backend_id],
+            |row| {
+                let engine_kind = row.get::<_, Option<String>>(0)?;
+                let adapter_variant = row.get::<_, Option<String>>(1)?;
+                let deployment = row.get::<_, String>(2)?;
+                let revision = row.get::<_, i64>(3)?;
+                let config_revision = u64::try_from(revision)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(3, revision))?;
+                match (engine_kind, adapter_variant) {
+                    (Some(engine_kind), Some(adapter_variant)) => {
+                        Ok(Some(StoredBackendEngineBinding {
+                            engine_kind,
+                            adapter_variant,
+                            deployment,
+                            config_revision,
+                        }))
+                    }
+                    (None, None) => Ok(None),
+                    _ => Err(invalid_column("backend engine binding")),
+                }
+            },
+        );
+        match result {
+            Ok(binding) => Ok(binding),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn backends(&self) -> Result<Vec<StoredBackendRecord>, DatabaseError> {
@@ -374,7 +549,7 @@ impl Database {
             .map_err(|_| DatabaseError::LockPoisoned)?;
         let mut statement = connection.prepare(
             "SELECT id, display_name, kind, api_root, auth_style, credential_id,
-                    enabled, created_at_ms, updated_at_ms
+                    enabled, created_at_ms, updated_at_ms, engine_kind, adapter_variant
              FROM backends ORDER BY display_name COLLATE NOCASE, id",
         )?;
         let rows = statement.query_map([], |row| {
@@ -382,6 +557,8 @@ impl Database {
                 id: row.get(0)?,
                 display_name: row.get(1)?,
                 kind: row.get(2)?,
+                engine_kind: row.get(9)?,
+                adapter_variant: row.get(10)?,
                 api_root: row.get(3)?,
                 auth_style: row.get(4)?,
                 credential_id: row.get(5)?,
@@ -455,22 +632,55 @@ impl Database {
     }
 
     pub fn active_backend_id(&self) -> Result<Option<String>, DatabaseError> {
+        Ok(self.active_gateway_route()?.map(|route| route.backend_id))
+    }
+
+    pub fn active_gateway_route(&self) -> Result<Option<StoredActiveGatewayRoute>, DatabaseError> {
         let connection = self
             .connection
             .lock()
             .map_err(|_| DatabaseError::LockPoisoned)?;
         let result = connection.query_row(
-            "SELECT value_json FROM settings WHERE key = 'gateway.active_backend_id'",
+            "SELECT value_json FROM settings WHERE key = 'gateway.active_route'",
             [],
             |row| row.get::<_, String>(0),
         );
         match result {
-            Ok(value) => serde_json::from_str::<Option<String>>(&value).map_err(|_| {
-                DatabaseError::InvalidData(
-                    "gateway.active_backend_id is not a string or null".to_owned(),
-                )
-            }),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Ok(value) => {
+                let route = serde_json::from_str::<Option<StoredActiveGatewayRoute>>(&value)
+                    .map_err(|_| {
+                        DatabaseError::InvalidData(
+                            "gateway.active_route is not a valid route or null".to_owned(),
+                        )
+                    })?;
+                validate_stored_active_route(route.as_ref())?;
+                Ok(route)
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                let legacy = connection.query_row(
+                    "SELECT value_json FROM settings WHERE key = 'gateway.active_backend_id'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                );
+                match legacy {
+                    Ok(value) => {
+                        let backend_id =
+                            serde_json::from_str::<Option<String>>(&value).map_err(|_| {
+                                DatabaseError::InvalidData(
+                                    "gateway.active_backend_id is not a string or null".to_owned(),
+                                )
+                            })?;
+                        let route = backend_id.map(|backend_id| StoredActiveGatewayRoute {
+                            backend_id,
+                            resolved_model: None,
+                        });
+                        validate_stored_active_route(route.as_ref())?;
+                        Ok(route)
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(error) => Err(error.into()),
+                }
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -480,22 +690,507 @@ impl Database {
         backend_id: Option<&str>,
         now_ms: i64,
     ) -> Result<(), DatabaseError> {
-        let value = serde_json::to_string(&backend_id).map_err(|_| {
+        let route = backend_id.map(|backend_id| StoredActiveGatewayRoute {
+            backend_id: backend_id.to_owned(),
+            resolved_model: None,
+        });
+        self.set_active_gateway_route(route.as_ref(), now_ms)
+    }
+
+    pub fn set_active_gateway_route(
+        &self,
+        route: Option<&StoredActiveGatewayRoute>,
+        now_ms: i64,
+    ) -> Result<(), DatabaseError> {
+        validate_stored_active_route(route)?;
+        let route_value = serde_json::to_string(&route).map_err(|_| {
+            DatabaseError::InvalidData("gateway active route could not be encoded".to_owned())
+        })?;
+        let legacy_backend_id = route.map(|route| route.backend_id.as_str());
+        let legacy_value = serde_json::to_string(&legacy_backend_id).map_err(|_| {
             DatabaseError::InvalidData("gateway active backend could not be encoded".to_owned())
         })?;
-        let connection = self
+        let mut connection = self
             .connection
             .lock()
             .map_err(|_| DatabaseError::LockPoisoned)?;
-        connection.execute(
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO settings (key, value_json, updated_at)
+             VALUES ('gateway.active_route', ?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at",
+            params![route_value, now_ms.to_string()],
+        )?;
+        transaction.execute(
             "INSERT INTO settings (key, value_json, updated_at)
              VALUES ('gateway.active_backend_id', ?1, ?2)
              ON CONFLICT(key) DO UPDATE SET
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at",
-            params![value, now_ms.to_string()],
+            params![legacy_value, now_ms.to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn insert_runtime_profile(
+        &self,
+        profile: &StoredRuntimeProfileRecord,
+    ) -> Result<(), DatabaseError> {
+        let context_window_tokens = profile.context_window_tokens.map(i64::from);
+        let backend_config_revision = profile
+            .backend_config_revision
+            .map(|revision| sqlite_u64(revision, "backend config revision"))
+            .transpose()?;
+        let spec_version = i64::from(profile.spec_version);
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO runtime_profiles (
+                id, name, description, spec_version, ownership, backend_id,
+                backend_api_root, model_id, model_display_name, model_digest,
+                model_digest_kind, engine, engine_version, capacity_tier,
+                context_window_tokens, capacity_revision, adapter_variant,
+                adapter_contract_revision, backend_config_revision, origin_fingerprint,
+                evidence_kind, evidence_algorithm, evidence_value,
+                protocol_capability_hash, support_platform, support_architecture,
+                support_accelerator, support_deployment, verified_at_ms,
+                last_activated_at_ms, created_at_ms, updated_at_ms
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
+                ?31, ?32
+             )",
+            params![
+                profile.id,
+                profile.name,
+                profile.description,
+                spec_version,
+                profile.ownership,
+                profile.backend_id,
+                profile.backend_api_root,
+                profile.model_id,
+                profile.model_display_name,
+                profile.model_digest,
+                profile.model_digest_kind,
+                profile.engine,
+                profile.engine_version,
+                profile.capacity_tier,
+                context_window_tokens,
+                profile.capacity_revision,
+                profile.adapter_variant,
+                profile.adapter_contract_revision,
+                backend_config_revision,
+                profile.origin_fingerprint,
+                profile.evidence_kind,
+                profile.evidence_algorithm,
+                profile.evidence_value,
+                profile.protocol_capability_hash,
+                profile.support_cell.map(|cell| cell.platform.storage_key()),
+                profile
+                    .support_cell
+                    .map(|cell| cell.architecture.storage_key()),
+                profile
+                    .support_cell
+                    .map(|cell| cell.accelerator.storage_key()),
+                profile
+                    .support_cell
+                    .map(|cell| cell.deployment.storage_key()),
+                profile.verified_at_ms,
+                profile.last_activated_at_ms,
+                profile.created_at_ms,
+                profile.updated_at_ms,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO audit_events (
+                id, event_type, target_type, target_id, summary_json, created_at_ms
+             ) VALUES (?1, 'runtime_profile_saved', 'runtime_profile', ?2, ?3, ?4)",
+            params![
+                Uuid::new_v4().to_string(),
+                profile.id,
+                json!({
+                    "name": profile.name,
+                    "modelId": profile.model_id,
+                    "engine": profile.engine,
+                    "ownership": profile.ownership,
+                    "backendId": profile.backend_id,
+                    "capacityTier": profile.capacity_tier,
+                    "supportCell": profile.support_cell,
+                })
+                .to_string(),
+                profile.created_at_ms,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn runtime_profiles(&self) -> Result<Vec<StoredRuntimeProfileRecord>, DatabaseError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, description, spec_version, ownership, backend_id,
+                    backend_api_root, model_id, model_display_name, model_digest,
+                    model_digest_kind, engine, engine_version, capacity_tier,
+                    context_window_tokens, capacity_revision, adapter_variant,
+                    adapter_contract_revision, backend_config_revision, origin_fingerprint,
+                    evidence_kind, evidence_algorithm, evidence_value,
+                    protocol_capability_hash, support_platform, support_architecture,
+                    support_accelerator, support_deployment, verified_at_ms,
+                    last_activated_at_ms, created_at_ms, updated_at_ms
+             FROM runtime_profiles
+             ORDER BY COALESCE(last_activated_at_ms, 0) DESC, updated_at_ms DESC, id",
+        )?;
+        let rows = statement.query_map([], runtime_profile_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn runtime_profile(
+        &self,
+        id: &str,
+    ) -> Result<Option<StoredRuntimeProfileRecord>, DatabaseError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let result = connection.query_row(
+            "SELECT id, name, description, spec_version, ownership, backend_id,
+                    backend_api_root, model_id, model_display_name, model_digest,
+                    model_digest_kind, engine, engine_version, capacity_tier,
+                    context_window_tokens, capacity_revision, adapter_variant,
+                    adapter_contract_revision, backend_config_revision, origin_fingerprint,
+                    evidence_kind, evidence_algorithm, evidence_value,
+                    protocol_capability_hash, support_platform, support_architecture,
+                    support_accelerator, support_deployment, verified_at_ms,
+                    last_activated_at_ms, created_at_ms, updated_at_ms
+             FROM runtime_profiles WHERE id = ?1",
+            [id],
+            runtime_profile_from_row,
+        );
+        match result {
+            Ok(profile) => Ok(Some(profile)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn update_runtime_profile_metadata(
+        &self,
+        id: &str,
+        name: &str,
+        description: &str,
+        now_ms: i64,
+    ) -> Result<bool, DatabaseError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let transaction = connection.transaction()?;
+        let updated = transaction.execute(
+            "UPDATE runtime_profiles
+             SET name = ?1, description = ?2, updated_at_ms = ?3
+             WHERE id = ?4",
+            params![name, description, now_ms, id],
+        )?;
+        if updated > 0 {
+            transaction.execute(
+                "INSERT INTO audit_events (
+                    id, event_type, target_type, target_id, summary_json, created_at_ms
+                 ) VALUES (?1, 'runtime_profile_updated', 'runtime_profile', ?2, ?3, ?4)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    id,
+                    json!({"name": name}).to_string(),
+                    now_ms,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(updated > 0)
+    }
+
+    pub fn mark_runtime_profile_activated(
+        &self,
+        id: &str,
+        verification: &StoredRuntimeProfileVerification,
+        now_ms: i64,
+    ) -> Result<bool, DatabaseError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let transaction = connection.transaction()?;
+        let updated = transaction.execute(
+            "UPDATE runtime_profiles
+             SET model_digest = ?1, engine_version = ?2, capacity_tier = ?3,
+                 context_window_tokens = ?4, capacity_revision = ?5,
+                 evidence_kind = ?6, evidence_algorithm = ?7, evidence_value = ?8,
+                 support_platform = COALESCE(?9, support_platform),
+                 support_architecture = COALESCE(?10, support_architecture),
+                 support_accelerator = COALESCE(?11, support_accelerator),
+                 support_deployment = COALESCE(?12, support_deployment),
+                 verified_at_ms = ?13, last_activated_at_ms = ?13, updated_at_ms = ?13
+             WHERE id = ?14",
+            params![
+                verification.model_digest,
+                verification.engine_version,
+                verification.capacity_tier,
+                verification.context_window_tokens.map(i64::from),
+                verification.capacity_revision,
+                verification.evidence_kind,
+                verification.evidence_algorithm,
+                verification.evidence_value,
+                verification
+                    .support_cell
+                    .map(|cell| cell.platform.storage_key()),
+                verification
+                    .support_cell
+                    .map(|cell| cell.architecture.storage_key()),
+                verification
+                    .support_cell
+                    .map(|cell| cell.accelerator.storage_key()),
+                verification
+                    .support_cell
+                    .map(|cell| cell.deployment.storage_key()),
+                now_ms,
+                id,
+            ],
+        )?;
+        if updated > 0 {
+            transaction.execute(
+                "INSERT INTO audit_events (
+                    id, event_type, target_type, target_id, summary_json, created_at_ms
+                 ) VALUES (?1, 'runtime_profile_activated', 'runtime_profile', ?2, ?3, ?4)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    id,
+                    json!({
+                        "engineVersion": verification.engine_version,
+                        "capacityTier": verification.capacity_tier,
+                        "contextWindowTokens": verification.context_window_tokens,
+                    })
+                    .to_string(),
+                    now_ms,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(updated > 0)
+    }
+
+    pub fn reverify_runtime_profile(
+        &self,
+        id: &str,
+        verification: &StoredRuntimeProfileVerification,
+        now_ms: i64,
+    ) -> Result<bool, DatabaseError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let transaction = connection.transaction()?;
+        let updated = transaction.execute(
+            "UPDATE runtime_profiles
+             SET model_digest = ?1, engine_version = ?2, capacity_tier = ?3,
+                 context_window_tokens = ?4, capacity_revision = ?5,
+                 evidence_kind = ?6, evidence_algorithm = ?7, evidence_value = ?8,
+                 support_platform = COALESCE(?9, support_platform),
+                 support_architecture = COALESCE(?10, support_architecture),
+                 support_accelerator = COALESCE(?11, support_accelerator),
+                 support_deployment = COALESCE(?12, support_deployment),
+                 verified_at_ms = ?13, updated_at_ms = ?13
+             WHERE id = ?14",
+            params![
+                verification.model_digest,
+                verification.engine_version,
+                verification.capacity_tier,
+                verification.context_window_tokens.map(i64::from),
+                verification.capacity_revision,
+                verification.evidence_kind,
+                verification.evidence_algorithm,
+                verification.evidence_value,
+                verification
+                    .support_cell
+                    .map(|cell| cell.platform.storage_key()),
+                verification
+                    .support_cell
+                    .map(|cell| cell.architecture.storage_key()),
+                verification
+                    .support_cell
+                    .map(|cell| cell.accelerator.storage_key()),
+                verification
+                    .support_cell
+                    .map(|cell| cell.deployment.storage_key()),
+                now_ms,
+                id,
+            ],
+        )?;
+        if updated > 0 {
+            transaction.execute(
+                "INSERT INTO audit_events (
+                    id, event_type, target_type, target_id, summary_json, created_at_ms
+                 ) VALUES (?1, 'runtime_profile_reverified', 'runtime_profile', ?2, ?3, ?4)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    id,
+                    json!({
+                        "engineVersion": verification.engine_version,
+                        "capacityTier": verification.capacity_tier,
+                        "contextWindowTokens": verification.context_window_tokens,
+                    })
+                    .to_string(),
+                    now_ms,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(updated > 0)
+    }
+
+    pub fn delete_runtime_profile(
+        &self,
+        id: &str,
+        name: &str,
+        now_ms: i64,
+    ) -> Result<bool, DatabaseError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let transaction = connection.transaction()?;
+        let deleted = transaction.execute("DELETE FROM runtime_profiles WHERE id = ?1", [id])?;
+        if deleted > 0 {
+            transaction.execute(
+                "INSERT INTO audit_events (
+                    id, event_type, target_type, target_id, summary_json, created_at_ms
+                 ) VALUES (?1, 'runtime_profile_deleted', 'runtime_profile', ?2, ?3, ?4)",
+                params![
+                    Uuid::new_v4().to_string(),
+                    id,
+                    json!({"name": name}).to_string(),
+                    now_ms,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(deleted > 0)
+    }
+
+    pub fn begin_runtime_activation(
+        &self,
+        journal: &StoredRuntimeActivationJournal,
+    ) -> Result<(), DatabaseError> {
+        if journal.phase != RuntimeActivationPhase::Journaled {
+            return Err(DatabaseError::InvalidData(
+                "runtime activation journal must begin in journaled phase".to_owned(),
+            ));
+        }
+        validate_stored_active_route(journal.previous_route.as_ref())?;
+        let previous_route_json = journal
+            .previous_route
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| {
+                DatabaseError::InvalidData(
+                    "runtime activation previous route cannot be serialized".to_owned(),
+                )
+            })?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        connection.execute(
+            "INSERT INTO runtime_activation_journal (
+                id, profile_id, phase, previous_route_json,
+                previous_managed_model_id, created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, 'journaled', ?3, ?4, ?5, ?5)",
+            params![
+                journal.id,
+                journal.profile_id,
+                previous_route_json,
+                journal.previous_managed_model_id,
+                journal.created_at_ms,
+            ],
         )?;
         Ok(())
+    }
+
+    pub fn runtime_activation_journals(
+        &self,
+    ) -> Result<Vec<StoredRuntimeActivationJournal>, DatabaseError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT id, profile_id, phase, previous_route_json,
+                    previous_managed_model_id, created_at_ms, updated_at_ms
+             FROM runtime_activation_journal
+             ORDER BY created_at_ms, id",
+        )?;
+        let rows = statement.query_map([], runtime_activation_journal_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn transition_runtime_activation(
+        &self,
+        id: &str,
+        expected: RuntimeActivationPhase,
+        next: RuntimeActivationPhase,
+        now_ms: i64,
+    ) -> Result<bool, DatabaseError> {
+        if !valid_runtime_activation_transition(expected, next) {
+            return Err(DatabaseError::InvalidData(
+                "runtime activation journal transition is invalid".to_owned(),
+            ));
+        }
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let updated = connection.execute(
+            "UPDATE runtime_activation_journal
+             SET phase = ?1, updated_at_ms = ?2
+             WHERE id = ?3 AND phase = ?4",
+            params![
+                runtime_activation_phase_key(next),
+                now_ms,
+                id,
+                runtime_activation_phase_key(expected),
+            ],
+        )?;
+        Ok(updated == 1)
+    }
+
+    pub fn finish_runtime_activation(
+        &self,
+        id: &str,
+        expected: RuntimeActivationPhase,
+    ) -> Result<bool, DatabaseError> {
+        if expected == RuntimeActivationPhase::RecoveryRequired {
+            return Err(DatabaseError::InvalidData(
+                "recovery-required activation cannot be silently completed".to_owned(),
+            ));
+        }
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DatabaseError::LockPoisoned)?;
+        let deleted = connection.execute(
+            "DELETE FROM runtime_activation_journal WHERE id = ?1 AND phase = ?2",
+            params![id, runtime_activation_phase_key(expected)],
+        )?;
+        Ok(deleted == 1)
     }
 
     pub fn onboarding_state(&self) -> Result<(bool, u8, bool), DatabaseError> {
@@ -2099,10 +2794,141 @@ impl Database {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
 
         migrations().to_latest(&mut connection)?;
+        upgrade_runtime_profiles_to_v3(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
     }
+}
+
+fn upgrade_runtime_profiles_to_v3(connection: &mut Connection) -> Result<(), DatabaseError> {
+    let transaction = connection.transaction()?;
+    let profiles = {
+        let mut statement = transaction.prepare(
+            "SELECT id, ownership, backend_id, backend_api_root, model_digest,
+                    model_digest_kind, engine
+             FROM runtime_profiles WHERE spec_version IN (1, 2)
+             ORDER BY id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, ownership, backend_id, backend_api_root, digest, digest_kind, engine) in profiles {
+        let managed = ownership == "managed";
+        let adapter_variant = match (managed, engine.as_str()) {
+            (true, "llama.cpp") => "hal100-managed-metal",
+            (false, "ollama") => "official-loopback-api",
+            (false, _) => "official-openai-server",
+            (true, _) => "hal100-managed",
+        };
+        let (backend_config_revision, origin_fingerprint) = if managed {
+            (None, None)
+        } else {
+            let backend_id = backend_id.as_deref().ok_or_else(|| {
+                DatabaseError::InvalidData(
+                    "external runtime profile is missing its backend identity".to_owned(),
+                )
+            })?;
+            let api_root = backend_api_root.as_deref().ok_or_else(|| {
+                DatabaseError::InvalidData(
+                    "external runtime profile is missing its origin".to_owned(),
+                )
+            })?;
+            let revision = match transaction.query_row(
+                "SELECT config_revision FROM backends WHERE id = ?1",
+                [backend_id],
+                |row| row.get::<_, i64>(0),
+            ) {
+                Ok(revision) => revision,
+                Err(rusqlite::Error::QueryReturnedNoRows) => 1,
+                Err(error) => return Err(error.into()),
+            };
+            let fingerprint = hex_sha256(api_root.as_bytes());
+            (Some(revision), Some(fingerprint))
+        };
+        let evidence_algorithm = match digest_kind.as_str() {
+            "sha256" => "sha256",
+            "ollama_digest" => "ollama-digest",
+            _ => {
+                return Err(DatabaseError::InvalidData(
+                    "runtime profile has an unknown legacy digest kind".to_owned(),
+                ));
+            }
+        };
+        let protocol_capability_hash = if engine == "ollama" {
+            "8dc12d2fe05570e519c66dc34734f42d086049b6f0987cba9f1b2f20ac7381eb"
+        } else {
+            "1b3e385cbb7f30878cba8eaccf7d5f5e6e1f18b2861a44bc79b18d963cbdd258"
+        };
+        transaction.execute(
+            "UPDATE runtime_profiles SET
+                spec_version = 3,
+                adapter_variant = ?1,
+                adapter_contract_revision = 'engine-contract-v1',
+                backend_config_revision = ?2,
+                origin_fingerprint = ?3,
+                evidence_kind = 'content_digest',
+                evidence_algorithm = ?4,
+                evidence_value = ?5,
+                protocol_capability_hash = ?6
+             WHERE id = ?7 AND spec_version IN (1, 2)",
+            params![
+                adapter_variant,
+                backend_config_revision,
+                origin_fingerprint,
+                evidence_algorithm,
+                digest,
+                protocol_capability_hash,
+                id,
+            ],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn hex_sha256(value: &[u8]) -> String {
+    Sha256::digest(value)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn validate_stored_active_route(
+    route: Option<&StoredActiveGatewayRoute>,
+) -> Result<(), DatabaseError> {
+    let Some(route) = route else {
+        return Ok(());
+    };
+    if route.backend_id.is_empty()
+        || route.backend_id.len() > 128
+        || !route
+            .backend_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(DatabaseError::InvalidData(
+            "gateway active route has an invalid backend identifier".to_owned(),
+        ));
+    }
+    if route.resolved_model.as_ref().is_some_and(|model| {
+        model.trim().is_empty() || model.len() > 256 || model.chars().any(char::is_control)
+    }) {
+        return Err(DatabaseError::InvalidData(
+            "gateway active route has an invalid resolved model".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn sqlite_u64(value: u64, field: &str) -> Result<i64, DatabaseError> {
@@ -2439,6 +3265,190 @@ fn local_model_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LocalModelS
     })
 }
 
+fn runtime_profile_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredRuntimeProfileRecord> {
+    let spec_version_value = row.get::<_, i64>(3)?;
+    let spec_version = u16::try_from(spec_version_value)
+        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(3, spec_version_value))?;
+    let context_value = row.get::<_, Option<i64>>(14)?;
+    let context_window_tokens = context_value
+        .map(|value| {
+            u32::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(14, value))
+        })
+        .transpose()?;
+    let backend_revision_value = row.get::<_, Option<i64>>(18)?;
+    let backend_config_revision = backend_revision_value
+        .map(|value| {
+            u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(18, value))
+        })
+        .transpose()?;
+    let support_cell = runtime_profile_support_cell_from_row(row)?;
+    Ok(StoredRuntimeProfileRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        spec_version,
+        ownership: row.get(4)?,
+        backend_id: row.get(5)?,
+        backend_api_root: row.get(6)?,
+        model_id: row.get(7)?,
+        model_display_name: row.get(8)?,
+        model_digest: row.get(9)?,
+        model_digest_kind: row.get(10)?,
+        engine: row.get(11)?,
+        engine_version: row.get(12)?,
+        capacity_tier: row.get(13)?,
+        context_window_tokens,
+        capacity_revision: row.get(15)?,
+        adapter_variant: row.get(16)?,
+        adapter_contract_revision: row.get(17)?,
+        backend_config_revision,
+        origin_fingerprint: row.get(19)?,
+        evidence_kind: row.get(20)?,
+        evidence_algorithm: row.get(21)?,
+        evidence_value: row.get(22)?,
+        protocol_capability_hash: row.get(23)?,
+        support_cell,
+        verified_at_ms: row.get(28)?,
+        last_activated_at_ms: row.get(29)?,
+        created_at_ms: row.get(30)?,
+        updated_at_ms: row.get(31)?,
+    })
+}
+
+fn runtime_profile_support_cell_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<Option<RuntimeProfileSupportCell>> {
+    let platform = row.get::<_, Option<String>>(24)?;
+    let architecture = row.get::<_, Option<String>>(25)?;
+    let accelerator = row.get::<_, Option<String>>(26)?;
+    let deployment = row.get::<_, Option<String>>(27)?;
+    let values = [&platform, &architecture, &accelerator, &deployment];
+    if values.iter().all(|value| value.is_none()) {
+        return Ok(None);
+    }
+    if values.iter().any(|value| value.is_none()) {
+        return Err(invalid_support_cell_from_sqlite());
+    }
+    let platform = platform
+        .as_deref()
+        .and_then(hal100_protocol::InferencePlatform::from_storage_key)
+        .ok_or_else(invalid_support_cell_from_sqlite)?;
+    let architecture = architecture
+        .as_deref()
+        .and_then(hal100_protocol::InferenceArchitecture::from_storage_key)
+        .ok_or_else(invalid_support_cell_from_sqlite)?;
+    let accelerator = accelerator
+        .as_deref()
+        .and_then(hal100_protocol::InferenceAccelerator::from_storage_key)
+        .ok_or_else(invalid_support_cell_from_sqlite)?;
+    let deployment = deployment
+        .as_deref()
+        .and_then(hal100_protocol::InferenceDeployment::from_storage_key)
+        .ok_or_else(invalid_support_cell_from_sqlite)?;
+    Ok(Some(RuntimeProfileSupportCell {
+        platform,
+        architecture,
+        accelerator,
+        deployment,
+    }))
+}
+
+fn invalid_support_cell_from_sqlite() -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        24,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "runtime profile support cell is invalid or partial",
+        )),
+    )
+}
+
+fn runtime_activation_journal_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredRuntimeActivationJournal> {
+    let previous_route = row
+        .get::<_, Option<String>>(3)?
+        .map(|value| {
+            serde_json::from_str::<StoredActiveGatewayRoute>(&value)
+                .map_err(|_| invalid_column("runtime activation previous route"))
+        })
+        .transpose()?;
+    Ok(StoredRuntimeActivationJournal {
+        id: row.get(0)?,
+        profile_id: row.get(1)?,
+        phase: parse_runtime_activation_phase(&row.get::<_, String>(2)?)?,
+        previous_route,
+        previous_managed_model_id: row.get(4)?,
+        created_at_ms: row.get(5)?,
+        updated_at_ms: row.get(6)?,
+    })
+}
+
+fn runtime_activation_phase_key(phase: RuntimeActivationPhase) -> &'static str {
+    match phase {
+        RuntimeActivationPhase::Journaled => "journaled",
+        RuntimeActivationPhase::Quiesced => "quiesced",
+        RuntimeActivationPhase::RouteSwitched => "route_switched",
+        RuntimeActivationPhase::Compensating => "compensating",
+        RuntimeActivationPhase::RecoveryRequired => "recovery_required",
+    }
+}
+
+fn parse_runtime_activation_phase(value: &str) -> rusqlite::Result<RuntimeActivationPhase> {
+    match value {
+        "journaled" => Ok(RuntimeActivationPhase::Journaled),
+        "quiesced" => Ok(RuntimeActivationPhase::Quiesced),
+        "route_switched" => Ok(RuntimeActivationPhase::RouteSwitched),
+        "compensating" => Ok(RuntimeActivationPhase::Compensating),
+        "recovery_required" => Ok(RuntimeActivationPhase::RecoveryRequired),
+        _ => Err(invalid_column("runtime activation phase")),
+    }
+}
+
+fn valid_runtime_activation_transition(
+    current: RuntimeActivationPhase,
+    next: RuntimeActivationPhase,
+) -> bool {
+    matches!(
+        (current, next),
+        (
+            RuntimeActivationPhase::Journaled,
+            RuntimeActivationPhase::Quiesced
+                | RuntimeActivationPhase::RouteSwitched
+                | RuntimeActivationPhase::Compensating
+                | RuntimeActivationPhase::RecoveryRequired
+        ) | (
+            RuntimeActivationPhase::Quiesced,
+            RuntimeActivationPhase::RouteSwitched
+                | RuntimeActivationPhase::Compensating
+                | RuntimeActivationPhase::RecoveryRequired
+        ) | (
+            RuntimeActivationPhase::RouteSwitched,
+            RuntimeActivationPhase::Compensating | RuntimeActivationPhase::RecoveryRequired
+        ) | (
+            RuntimeActivationPhase::Compensating,
+            RuntimeActivationPhase::RecoveryRequired
+        ) | (
+            RuntimeActivationPhase::RecoveryRequired,
+            RuntimeActivationPhase::Compensating
+        )
+    )
+}
+
+fn stored_backend_binding(kind: &str) -> (Option<&'static str>, Option<&'static str>) {
+    match kind {
+        "managed_llama_cpp" => (Some("llama.cpp"), Some("hal100-managed-metal")),
+        "external_llama_cpp" => (Some("llama.cpp"), Some("official-openai-server")),
+        "external_ollama" => (Some("ollama"), Some("official-loopback-api")),
+        "external_vllm" => (Some("vllm"), Some("official-openai-server")),
+        "external_openai" | "external_anthropic" => (None, None),
+        _ => (None, None),
+    }
+}
+
 fn migrations<'a>() -> Migrations<'a> {
     Migrations::new(vec![
         M::up(
@@ -2695,6 +3705,618 @@ fn migrations<'a>() -> Migrations<'a> {
             "CREATE INDEX usage_requests_started
                 ON usage_requests(started_at_ms DESC);",
         ),
+        M::up(
+            "CREATE TABLE runtime_profiles (
+                id TEXT PRIMARY KEY NOT NULL
+                    CHECK(length(id) BETWEEN 1 AND 128),
+                name TEXT NOT NULL
+                    CHECK(length(trim(name)) BETWEEN 1 AND 80),
+                description TEXT NOT NULL
+                    CHECK(length(description) <= 500),
+                spec_version INTEGER NOT NULL CHECK(spec_version = 1),
+                model_id TEXT NOT NULL
+                    CHECK(length(model_id) BETWEEN 1 AND 256),
+                model_display_name TEXT NOT NULL
+                    CHECK(length(model_display_name) BETWEEN 1 AND 256),
+                model_sha256 BLOB NOT NULL CHECK(length(model_sha256) = 32),
+                engine TEXT NOT NULL CHECK(engine = 'llama.cpp'),
+                engine_version TEXT NOT NULL
+                    CHECK(length(engine_version) BETWEEN 1 AND 64),
+                capacity_tier TEXT NOT NULL
+                    CHECK(length(capacity_tier) BETWEEN 1 AND 64),
+                context_window_tokens INTEGER NOT NULL
+                    CHECK(context_window_tokens BETWEEN 1024 AND 1048576),
+                capacity_revision TEXT NOT NULL
+                    CHECK(length(capacity_revision) BETWEEN 1 AND 64),
+                verified_at_ms INTEGER NOT NULL,
+                last_activated_at_ms INTEGER,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                UNIQUE(model_id, engine)
+            );
+
+            CREATE INDEX runtime_profiles_last_activated
+                ON runtime_profiles(last_activated_at_ms DESC, updated_at_ms DESC);",
+        ),
+        M::up(
+            "DROP INDEX runtime_profiles_last_activated;
+            ALTER TABLE runtime_profiles RENAME TO runtime_profiles_v10;
+
+            CREATE TABLE runtime_profiles (
+                id TEXT PRIMARY KEY NOT NULL
+                    CHECK(length(id) BETWEEN 1 AND 128),
+                name TEXT NOT NULL
+                    CHECK(length(trim(name)) BETWEEN 1 AND 80),
+                description TEXT NOT NULL
+                    CHECK(length(description) <= 500),
+                spec_version INTEGER NOT NULL CHECK(spec_version = 1),
+                model_id TEXT NOT NULL
+                    CHECK(length(model_id) BETWEEN 1 AND 256),
+                model_display_name TEXT NOT NULL
+                    CHECK(length(model_display_name) BETWEEN 1 AND 256),
+                model_sha256 BLOB NOT NULL CHECK(length(model_sha256) = 32),
+                engine TEXT NOT NULL CHECK(engine IN (
+                    'llama.cpp', 'ollama', 'mlx-lm', 'vllm', 'sglang',
+                    'tensorrt-llm', 'openvino', 'mlc-llm', 'lmdeploy'
+                )),
+                engine_version TEXT NOT NULL
+                    CHECK(length(engine_version) BETWEEN 1 AND 64),
+                capacity_tier TEXT NOT NULL
+                    CHECK(length(capacity_tier) BETWEEN 1 AND 64),
+                context_window_tokens INTEGER NOT NULL
+                    CHECK(context_window_tokens BETWEEN 1024 AND 1048576),
+                capacity_revision TEXT NOT NULL
+                    CHECK(length(capacity_revision) BETWEEN 1 AND 64),
+                verified_at_ms INTEGER NOT NULL,
+                last_activated_at_ms INTEGER,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                UNIQUE(model_id, engine)
+            );
+
+            INSERT INTO runtime_profiles (
+                id, name, description, spec_version, model_id, model_display_name,
+                model_sha256, engine, engine_version, capacity_tier,
+                context_window_tokens, capacity_revision, verified_at_ms,
+                last_activated_at_ms, created_at_ms, updated_at_ms
+            )
+            SELECT
+                id, name, description, spec_version, model_id, model_display_name,
+                model_sha256, engine, engine_version, capacity_tier,
+                context_window_tokens, capacity_revision, verified_at_ms,
+                last_activated_at_ms, created_at_ms, updated_at_ms
+            FROM runtime_profiles_v10;
+
+            DROP TABLE runtime_profiles_v10;
+            CREATE INDEX runtime_profiles_last_activated
+                ON runtime_profiles(last_activated_at_ms DESC, updated_at_ms DESC);",
+        ),
+        M::up(
+            "DROP INDEX runtime_profiles_last_activated;
+            ALTER TABLE runtime_profiles RENAME TO runtime_profiles_v11;
+
+            CREATE TABLE runtime_profiles (
+                id TEXT PRIMARY KEY NOT NULL
+                    CHECK(length(id) BETWEEN 1 AND 128),
+                name TEXT NOT NULL
+                    CHECK(length(trim(name)) BETWEEN 1 AND 80),
+                description TEXT NOT NULL
+                    CHECK(length(description) <= 500),
+                spec_version INTEGER NOT NULL CHECK(spec_version IN (1, 2)),
+                ownership TEXT NOT NULL CHECK(ownership IN ('managed', 'external')),
+                backend_id TEXT CHECK(backend_id IS NULL OR length(backend_id) BETWEEN 1 AND 128),
+                backend_api_root TEXT CHECK(
+                    backend_api_root IS NULL OR length(backend_api_root) BETWEEN 1 AND 2048
+                ),
+                model_id TEXT NOT NULL
+                    CHECK(length(model_id) BETWEEN 1 AND 256),
+                model_display_name TEXT NOT NULL
+                    CHECK(length(model_display_name) BETWEEN 1 AND 256),
+                model_digest TEXT NOT NULL CHECK(
+                    length(model_digest) = 64
+                    AND model_digest NOT GLOB '*[^0-9a-f]*'
+                ),
+                model_digest_kind TEXT NOT NULL CHECK(
+                    model_digest_kind IN ('sha256', 'ollama_digest')
+                ),
+                engine TEXT NOT NULL CHECK(engine IN (
+                    'llama.cpp', 'ollama', 'mlx-lm', 'vllm', 'sglang',
+                    'tensorrt-llm', 'openvino', 'mlc-llm', 'lmdeploy'
+                )),
+                engine_version TEXT NOT NULL
+                    CHECK(length(engine_version) BETWEEN 1 AND 64),
+                capacity_tier TEXT CHECK(
+                    capacity_tier IS NULL OR length(capacity_tier) BETWEEN 1 AND 64
+                ),
+                context_window_tokens INTEGER CHECK(
+                    context_window_tokens IS NULL
+                    OR context_window_tokens BETWEEN 1024 AND 1048576
+                ),
+                capacity_revision TEXT CHECK(
+                    capacity_revision IS NULL OR length(capacity_revision) BETWEEN 1 AND 64
+                ),
+                verified_at_ms INTEGER NOT NULL,
+                last_activated_at_ms INTEGER,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                CHECK(
+                    (ownership = 'managed'
+                     AND backend_id IS NULL
+                     AND backend_api_root IS NULL
+                     AND model_digest_kind = 'sha256'
+                     AND capacity_tier IS NOT NULL
+                     AND context_window_tokens IS NOT NULL
+                     AND capacity_revision IS NOT NULL)
+                    OR
+                    (ownership = 'external'
+                     AND backend_id IS NOT NULL
+                     AND backend_api_root IS NOT NULL
+                     AND model_digest_kind = 'ollama_digest'
+                     AND capacity_tier IS NULL
+                     AND context_window_tokens IS NULL
+                     AND capacity_revision IS NULL)
+                )
+            );
+
+            INSERT INTO runtime_profiles (
+                id, name, description, spec_version, ownership, backend_id,
+                backend_api_root, model_id, model_display_name, model_digest,
+                model_digest_kind, engine, engine_version, capacity_tier,
+                context_window_tokens, capacity_revision, verified_at_ms,
+                last_activated_at_ms, created_at_ms, updated_at_ms
+            )
+            SELECT
+                id, name, description, spec_version, 'managed', NULL, NULL,
+                model_id, model_display_name, lower(hex(model_sha256)), 'sha256',
+                engine, engine_version, capacity_tier, context_window_tokens,
+                capacity_revision, verified_at_ms, last_activated_at_ms,
+                created_at_ms, updated_at_ms
+            FROM runtime_profiles_v11;
+
+            DROP TABLE runtime_profiles_v11;
+            CREATE INDEX runtime_profiles_last_activated
+                ON runtime_profiles(last_activated_at_ms DESC, updated_at_ms DESC);
+            CREATE UNIQUE INDEX runtime_profiles_managed_identity
+                ON runtime_profiles(engine, model_id)
+                WHERE ownership = 'managed';
+            CREATE UNIQUE INDEX runtime_profiles_external_identity
+                ON runtime_profiles(backend_id, engine, model_id)
+                WHERE ownership = 'external';",
+        ),
+        M::up(
+            "ALTER TABLE backends ADD COLUMN engine_kind TEXT CHECK(
+                engine_kind IS NULL OR engine_kind IN (
+                    'llama.cpp', 'ollama', 'mlx-lm', 'vllm', 'sglang',
+                    'tensorrt-llm', 'openvino', 'mlc-llm', 'lmdeploy'
+                )
+            );
+            ALTER TABLE backends ADD COLUMN adapter_variant TEXT CHECK(
+                adapter_variant IS NULL OR length(adapter_variant) BETWEEN 1 AND 64
+            );
+            ALTER TABLE backends ADD COLUMN deployment TEXT NOT NULL DEFAULT 'local'
+                CHECK(deployment IN ('local', 'remote'));
+            ALTER TABLE backends ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1
+                CHECK(config_revision >= 1);
+
+            UPDATE backends SET
+                engine_kind = CASE kind
+                    WHEN 'managed_llama_cpp' THEN 'llama.cpp'
+                    WHEN 'external_llama_cpp' THEN 'llama.cpp'
+                    WHEN 'external_ollama' THEN 'ollama'
+                    WHEN 'external_vllm' THEN 'vllm'
+                    ELSE NULL
+                END,
+                adapter_variant = CASE kind
+                    WHEN 'managed_llama_cpp' THEN 'hal100-managed-metal'
+                    WHEN 'external_llama_cpp' THEN 'official-openai-server'
+                    WHEN 'external_ollama' THEN 'official-loopback-api'
+                    WHEN 'external_vllm' THEN 'official-openai-server'
+                    ELSE NULL
+                END,
+                deployment = CASE
+                    WHEN api_root GLOB 'http://127.0.0.1:*' THEN 'local'
+                    ELSE 'remote'
+                END,
+                config_revision = 1;
+
+            DROP INDEX runtime_profiles_last_activated;
+            DROP INDEX runtime_profiles_managed_identity;
+            DROP INDEX runtime_profiles_external_identity;
+            ALTER TABLE runtime_profiles RENAME TO runtime_profiles_v12;
+
+            CREATE TABLE runtime_profiles (
+                id TEXT PRIMARY KEY NOT NULL
+                    CHECK(length(id) BETWEEN 1 AND 128),
+                name TEXT NOT NULL
+                    CHECK(length(trim(name)) BETWEEN 1 AND 80),
+                description TEXT NOT NULL
+                    CHECK(length(description) <= 500),
+                spec_version INTEGER NOT NULL CHECK(spec_version IN (1, 2, 3)),
+                ownership TEXT NOT NULL CHECK(ownership IN ('managed', 'external')),
+                backend_id TEXT CHECK(backend_id IS NULL OR length(backend_id) BETWEEN 1 AND 128),
+                backend_api_root TEXT CHECK(
+                    backend_api_root IS NULL OR length(backend_api_root) BETWEEN 1 AND 2048
+                ),
+                model_id TEXT NOT NULL
+                    CHECK(length(model_id) BETWEEN 1 AND 256),
+                model_display_name TEXT NOT NULL
+                    CHECK(length(model_display_name) BETWEEN 1 AND 256),
+                model_digest TEXT NOT NULL CHECK(
+                    length(model_digest) = 64
+                    AND model_digest NOT GLOB '*[^0-9a-f]*'
+                ),
+                model_digest_kind TEXT NOT NULL CHECK(
+                    model_digest_kind IN ('sha256', 'ollama_digest', 'evidence_fingerprint')
+                ),
+                engine TEXT NOT NULL CHECK(engine IN (
+                    'llama.cpp', 'ollama', 'mlx-lm', 'vllm', 'sglang',
+                    'tensorrt-llm', 'openvino', 'mlc-llm', 'lmdeploy'
+                )),
+                engine_version TEXT NOT NULL
+                    CHECK(length(engine_version) BETWEEN 1 AND 64),
+                capacity_tier TEXT CHECK(
+                    capacity_tier IS NULL OR length(capacity_tier) BETWEEN 1 AND 64
+                ),
+                context_window_tokens INTEGER CHECK(
+                    context_window_tokens IS NULL
+                    OR context_window_tokens BETWEEN 1024 AND 1048576
+                ),
+                capacity_revision TEXT CHECK(
+                    capacity_revision IS NULL OR length(capacity_revision) BETWEEN 1 AND 64
+                ),
+                adapter_variant TEXT CHECK(
+                    adapter_variant IS NULL OR length(adapter_variant) BETWEEN 1 AND 64
+                ),
+                adapter_contract_revision TEXT CHECK(
+                    adapter_contract_revision IS NULL
+                    OR length(adapter_contract_revision) BETWEEN 1 AND 64
+                ),
+                backend_config_revision INTEGER CHECK(
+                    backend_config_revision IS NULL OR backend_config_revision >= 1
+                ),
+                origin_fingerprint TEXT CHECK(
+                    origin_fingerprint IS NULL OR (
+                        length(origin_fingerprint) = 64
+                        AND origin_fingerprint NOT GLOB '*[^0-9a-f]*'
+                    )
+                ),
+                evidence_kind TEXT CHECK(
+                    evidence_kind IS NULL OR evidence_kind IN (
+                        'content_digest', 'repository_revision',
+                        'deployment_fingerprint', 'catalog_identity'
+                    )
+                ),
+                evidence_algorithm TEXT CHECK(
+                    evidence_algorithm IS NULL OR length(evidence_algorithm) BETWEEN 1 AND 64
+                ),
+                evidence_value TEXT CHECK(
+                    evidence_value IS NULL OR length(evidence_value) BETWEEN 1 AND 512
+                ),
+                protocol_capability_hash TEXT CHECK(
+                    protocol_capability_hash IS NULL OR (
+                        length(protocol_capability_hash) = 64
+                        AND protocol_capability_hash NOT GLOB '*[^0-9a-f]*'
+                    )
+                ),
+                verified_at_ms INTEGER NOT NULL,
+                last_activated_at_ms INTEGER,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                CHECK(
+                    spec_version IN (1, 2)
+                    OR (
+                        adapter_variant IS NOT NULL
+                        AND adapter_contract_revision IS NOT NULL
+                        AND evidence_kind IS NOT NULL
+                        AND evidence_algorithm IS NOT NULL
+                        AND evidence_value IS NOT NULL
+                        AND protocol_capability_hash IS NOT NULL
+                        AND (
+                            (ownership = 'managed'
+                             AND backend_config_revision IS NULL
+                             AND origin_fingerprint IS NULL)
+                            OR
+                            (ownership = 'external'
+                             AND backend_id IS NOT NULL
+                             AND backend_api_root IS NOT NULL
+                             AND backend_config_revision IS NOT NULL
+                             AND origin_fingerprint IS NOT NULL)
+                        )
+                    )
+                )
+            );
+
+            INSERT INTO runtime_profiles (
+                id, name, description, spec_version, ownership, backend_id,
+                backend_api_root, model_id, model_display_name, model_digest,
+                model_digest_kind, engine, engine_version, capacity_tier,
+                context_window_tokens, capacity_revision, verified_at_ms,
+                last_activated_at_ms, created_at_ms, updated_at_ms
+            )
+            SELECT
+                id, name, description, spec_version, ownership, backend_id,
+                backend_api_root, model_id, model_display_name, model_digest,
+                model_digest_kind, engine, engine_version, capacity_tier,
+                context_window_tokens, capacity_revision, verified_at_ms,
+                last_activated_at_ms, created_at_ms, updated_at_ms
+            FROM runtime_profiles_v12;
+
+            DROP TABLE runtime_profiles_v12;
+            CREATE INDEX runtime_profiles_last_activated
+                ON runtime_profiles(last_activated_at_ms DESC, updated_at_ms DESC);
+            CREATE UNIQUE INDEX runtime_profiles_managed_identity
+                ON runtime_profiles(engine, model_id)
+                WHERE ownership = 'managed';
+            CREATE UNIQUE INDEX runtime_profiles_external_identity
+                ON runtime_profiles(backend_id, engine, model_id)
+                WHERE ownership = 'external';
+
+            CREATE TABLE runtime_activation_journal (
+                id TEXT PRIMARY KEY NOT NULL CHECK(length(id) BETWEEN 1 AND 128),
+                profile_id TEXT NOT NULL CHECK(length(profile_id) BETWEEN 1 AND 128),
+                phase TEXT NOT NULL CHECK(phase IN (
+                    'journaled', 'quiesced', 'route_switched', 'compensating',
+                    'recovery_required'
+                )),
+                previous_route_json TEXT CHECK(
+                    previous_route_json IS NULL OR length(previous_route_json) <= 4096
+                ),
+                previous_managed_model_id TEXT CHECK(
+                    previous_managed_model_id IS NULL
+                    OR length(previous_managed_model_id) BETWEEN 1 AND 256
+                ),
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX runtime_activation_single_inflight
+                ON runtime_activation_journal((1));",
+        ),
+        M::up(
+            "ALTER TABLE runtime_profiles ADD COLUMN support_platform TEXT CHECK(
+                support_platform IS NULL OR support_platform IN ('macos', 'windows', 'linux')
+            );
+            ALTER TABLE runtime_profiles ADD COLUMN support_architecture TEXT CHECK(
+                support_architecture IS NULL OR support_architecture IN ('aarch64', 'x86_64')
+            );
+            ALTER TABLE runtime_profiles ADD COLUMN support_accelerator TEXT CHECK(
+                support_accelerator IS NULL OR support_accelerator IN (
+                    'cpu', 'metal', 'cuda', 'rocm', 'vulkan', 'sycl', 'openvino'
+                )
+            );
+            ALTER TABLE runtime_profiles ADD COLUMN support_deployment TEXT CHECK(
+                support_deployment IS NULL OR support_deployment IN ('local', 'remote')
+            );
+
+            CREATE TRIGGER runtime_profiles_support_cell_insert
+            BEFORE INSERT ON runtime_profiles
+            WHEN (
+                (NEW.support_platform IS NULL
+                 OR NEW.support_architecture IS NULL
+                 OR NEW.support_accelerator IS NULL
+                 OR NEW.support_deployment IS NULL)
+                AND NOT (
+                    NEW.support_platform IS NULL
+                    AND NEW.support_architecture IS NULL
+                    AND NEW.support_accelerator IS NULL
+                    AND NEW.support_deployment IS NULL
+                )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'runtime profile support cell must be complete');
+            END;
+
+            CREATE TRIGGER runtime_profiles_support_cell_update
+            BEFORE UPDATE OF support_platform, support_architecture,
+                support_accelerator, support_deployment ON runtime_profiles
+            WHEN (
+                (NEW.support_platform IS NULL
+                 OR NEW.support_architecture IS NULL
+                 OR NEW.support_accelerator IS NULL
+                 OR NEW.support_deployment IS NULL)
+                AND NOT (
+                    NEW.support_platform IS NULL
+                    AND NEW.support_architecture IS NULL
+                    AND NEW.support_accelerator IS NULL
+                    AND NEW.support_deployment IS NULL
+                )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'runtime profile support cell must be complete');
+            END;",
+        ),
+        M::up(
+            "DROP TRIGGER runtime_profiles_support_cell_insert;
+            DROP TRIGGER runtime_profiles_support_cell_update;
+            DROP INDEX runtime_profiles_last_activated;
+            DROP INDEX runtime_profiles_managed_identity;
+            DROP INDEX runtime_profiles_external_identity;
+            ALTER TABLE runtime_profiles RENAME TO runtime_profiles_v14;
+
+            CREATE TABLE runtime_profiles (
+                id TEXT PRIMARY KEY NOT NULL CHECK(length(id) BETWEEN 1 AND 128),
+                name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80),
+                description TEXT NOT NULL CHECK(length(description) <= 500),
+                spec_version INTEGER NOT NULL CHECK(spec_version IN (1, 2, 3)),
+                ownership TEXT NOT NULL CHECK(ownership IN ('managed', 'external')),
+                backend_id TEXT CHECK(backend_id IS NULL OR length(backend_id) BETWEEN 1 AND 128),
+                backend_api_root TEXT CHECK(
+                    backend_api_root IS NULL OR length(backend_api_root) BETWEEN 1 AND 2048
+                ),
+                model_id TEXT NOT NULL CHECK(length(model_id) BETWEEN 1 AND 256),
+                model_display_name TEXT NOT NULL CHECK(length(model_display_name) BETWEEN 1 AND 256),
+                model_digest TEXT NOT NULL CHECK(
+                    length(model_digest) = 64 AND model_digest NOT GLOB '*[^0-9a-f]*'
+                ),
+                model_digest_kind TEXT NOT NULL CHECK(
+                    model_digest_kind IN ('sha256', 'ollama_digest', 'evidence_fingerprint')
+                ),
+                engine TEXT NOT NULL CHECK(engine IN (
+                    'llama.cpp', 'ollama', 'mlx-lm', 'vllm', 'sglang',
+                    'tensorrt-llm', 'openvino', 'mlc-llm', 'lmdeploy'
+                )),
+                engine_version TEXT NOT NULL CHECK(length(engine_version) BETWEEN 1 AND 64),
+                capacity_tier TEXT CHECK(
+                    capacity_tier IS NULL OR length(capacity_tier) BETWEEN 1 AND 64
+                ),
+                context_window_tokens INTEGER CHECK(
+                    context_window_tokens IS NULL
+                    OR context_window_tokens BETWEEN 1024 AND 1048576
+                ),
+                capacity_revision TEXT CHECK(
+                    capacity_revision IS NULL OR length(capacity_revision) BETWEEN 1 AND 64
+                ),
+                adapter_variant TEXT CHECK(
+                    adapter_variant IS NULL OR length(adapter_variant) BETWEEN 1 AND 64
+                ),
+                adapter_contract_revision TEXT CHECK(
+                    adapter_contract_revision IS NULL
+                    OR length(adapter_contract_revision) BETWEEN 1 AND 64
+                ),
+                backend_config_revision INTEGER CHECK(
+                    backend_config_revision IS NULL OR backend_config_revision >= 1
+                ),
+                origin_fingerprint TEXT CHECK(
+                    origin_fingerprint IS NULL OR (
+                        length(origin_fingerprint) = 64
+                        AND origin_fingerprint NOT GLOB '*[^0-9a-f]*'
+                    )
+                ),
+                evidence_kind TEXT CHECK(
+                    evidence_kind IS NULL OR evidence_kind IN (
+                        'content_digest', 'repository_revision',
+                        'deployment_fingerprint', 'catalog_identity'
+                    )
+                ),
+                evidence_algorithm TEXT CHECK(
+                    evidence_algorithm IS NULL OR length(evidence_algorithm) BETWEEN 1 AND 64
+                ),
+                evidence_value TEXT CHECK(
+                    evidence_value IS NULL OR length(evidence_value) BETWEEN 1 AND 512
+                ),
+                protocol_capability_hash TEXT CHECK(
+                    protocol_capability_hash IS NULL OR (
+                        length(protocol_capability_hash) = 64
+                        AND protocol_capability_hash NOT GLOB '*[^0-9a-f]*'
+                    )
+                ),
+                verified_at_ms INTEGER NOT NULL,
+                last_activated_at_ms INTEGER,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                support_platform TEXT CHECK(
+                    support_platform IS NULL OR support_platform IN ('macos', 'windows', 'linux')
+                ),
+                support_architecture TEXT CHECK(
+                    support_architecture IS NULL OR support_architecture IN ('aarch64', 'x86_64')
+                ),
+                support_accelerator TEXT CHECK(
+                    support_accelerator IS NULL OR support_accelerator IN (
+                        'cpu', 'metal', 'cuda', 'rocm', 'vulkan', 'sycl',
+                        'intel_gpu', 'intel_npu'
+                    )
+                ),
+                support_deployment TEXT CHECK(
+                    support_deployment IS NULL OR support_deployment IN ('local', 'remote')
+                ),
+                CHECK(
+                    spec_version IN (1, 2)
+                    OR (
+                        adapter_variant IS NOT NULL
+                        AND adapter_contract_revision IS NOT NULL
+                        AND evidence_kind IS NOT NULL
+                        AND evidence_algorithm IS NOT NULL
+                        AND evidence_value IS NOT NULL
+                        AND protocol_capability_hash IS NOT NULL
+                        AND (
+                            (ownership = 'managed'
+                             AND backend_config_revision IS NULL
+                             AND origin_fingerprint IS NULL)
+                            OR
+                            (ownership = 'external'
+                             AND backend_id IS NOT NULL
+                             AND backend_api_root IS NOT NULL
+                             AND backend_config_revision IS NOT NULL
+                             AND origin_fingerprint IS NOT NULL)
+                        )
+                    )
+                )
+            );
+
+            INSERT INTO runtime_profiles (
+                id, name, description, spec_version, ownership, backend_id,
+                backend_api_root, model_id, model_display_name, model_digest,
+                model_digest_kind, engine, engine_version, capacity_tier,
+                context_window_tokens, capacity_revision, adapter_variant,
+                adapter_contract_revision, backend_config_revision, origin_fingerprint,
+                evidence_kind, evidence_algorithm, evidence_value,
+                protocol_capability_hash, verified_at_ms, last_activated_at_ms,
+                created_at_ms, updated_at_ms, support_platform, support_architecture,
+                support_accelerator, support_deployment
+            )
+            SELECT
+                id, name, description, spec_version, ownership, backend_id,
+                backend_api_root, model_id, model_display_name, model_digest,
+                model_digest_kind, engine, engine_version, capacity_tier,
+                context_window_tokens, capacity_revision, adapter_variant,
+                adapter_contract_revision, backend_config_revision, origin_fingerprint,
+                evidence_kind, evidence_algorithm, evidence_value,
+                protocol_capability_hash, verified_at_ms, last_activated_at_ms,
+                created_at_ms, updated_at_ms,
+                CASE WHEN support_accelerator = 'openvino' THEN NULL ELSE support_platform END,
+                CASE WHEN support_accelerator = 'openvino' THEN NULL ELSE support_architecture END,
+                CASE WHEN support_accelerator = 'openvino' THEN NULL ELSE support_accelerator END,
+                CASE WHEN support_accelerator = 'openvino' THEN NULL ELSE support_deployment END
+            FROM runtime_profiles_v14;
+
+            DROP TABLE runtime_profiles_v14;
+            CREATE INDEX runtime_profiles_last_activated
+                ON runtime_profiles(last_activated_at_ms DESC, updated_at_ms DESC);
+            CREATE UNIQUE INDEX runtime_profiles_managed_identity
+                ON runtime_profiles(engine, model_id) WHERE ownership = 'managed';
+            CREATE UNIQUE INDEX runtime_profiles_external_identity
+                ON runtime_profiles(backend_id, engine, model_id) WHERE ownership = 'external';
+
+            CREATE TRIGGER runtime_profiles_support_cell_insert
+            BEFORE INSERT ON runtime_profiles
+            WHEN (
+                (NEW.support_platform IS NULL
+                 OR NEW.support_architecture IS NULL
+                 OR NEW.support_accelerator IS NULL
+                 OR NEW.support_deployment IS NULL)
+                AND NOT (
+                    NEW.support_platform IS NULL
+                    AND NEW.support_architecture IS NULL
+                    AND NEW.support_accelerator IS NULL
+                    AND NEW.support_deployment IS NULL
+                )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'runtime profile support cell must be complete');
+            END;
+
+            CREATE TRIGGER runtime_profiles_support_cell_update
+            BEFORE UPDATE OF support_platform, support_architecture,
+                support_accelerator, support_deployment ON runtime_profiles
+            WHEN (
+                (NEW.support_platform IS NULL
+                 OR NEW.support_architecture IS NULL
+                 OR NEW.support_accelerator IS NULL
+                 OR NEW.support_deployment IS NULL)
+                AND NOT (
+                    NEW.support_platform IS NULL
+                    AND NEW.support_architecture IS NULL
+                    AND NEW.support_accelerator IS NULL
+                    AND NEW.support_deployment IS NULL
+                )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'runtime profile support cell must be complete');
+            END;
+
+            UPDATE backends
+            SET engine_kind = NULL, adapter_variant = NULL, config_revision = config_revision + 1
+            WHERE engine_kind = 'openvino' AND adapter_variant = 'ovms-openai-server';",
+        ),
     ])
 }
 
@@ -2855,7 +4477,426 @@ mod tests {
     fn applies_initial_migration() {
         let database = Database::open_in_memory().expect("in-memory database");
 
-        assert_eq!(database.schema_version().expect("schema version"), 9);
+        assert_eq!(database.schema_version().expect("schema version"), 15);
+    }
+
+    #[test]
+    fn schema_v15_preserves_profiles_and_upgrades_typed_adapter_and_evidence_identity() {
+        let mut connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        migrations()
+            .to_version(&mut connection, 10)
+            .expect("schema v10");
+        connection
+            .execute(
+                "INSERT INTO runtime_profiles (
+                    id, name, description, spec_version, model_id, model_display_name,
+                    model_sha256, engine, engine_version, capacity_tier,
+                    context_window_tokens, capacity_revision, verified_at_ms,
+                    last_activated_at_ms, created_at_ms, updated_at_ms
+                ) VALUES (
+                    'legacy-profile', '旧方案', '', 1, 'model-a', 'Model A',
+                    ?1, 'llama.cpp', 'b10218', 'baseline16k', 16384,
+                    'managed-route-v3', 1, 1, 1, 1
+                )",
+                [[7_u8; 32].as_slice()],
+            )
+            .expect("insert schema v10 profile");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate to schema v15");
+        upgrade_runtime_profiles_to_v3(&mut connection).expect("upgrade profile spec v3");
+        let preserved: String = connection
+            .query_row(
+                "SELECT engine FROM runtime_profiles WHERE id = 'legacy-profile'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preserved profile");
+        assert_eq!(preserved, "llama.cpp");
+        let (ownership, digest_kind, digest): (String, String, String) = connection
+            .query_row(
+                "SELECT ownership, model_digest_kind, model_digest
+                 FROM runtime_profiles WHERE id = 'legacy-profile'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("migrated managed identity");
+        assert_eq!(ownership, "managed");
+        assert_eq!(digest_kind, "sha256");
+        assert_eq!(digest, "07".repeat(32));
+        let (spec_version, variant, contract, evidence_kind, evidence_algorithm, evidence_value): (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = connection
+            .query_row(
+                "SELECT spec_version, adapter_variant, adapter_contract_revision,
+                        evidence_kind, evidence_algorithm, evidence_value
+                 FROM runtime_profiles WHERE id = 'legacy-profile'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("spec v3 evidence identity");
+        assert_eq!(spec_version, 3);
+        assert_eq!(variant, "hal100-managed-metal");
+        assert_eq!(contract, "engine-contract-v1");
+        assert_eq!(evidence_kind, "content_digest");
+        assert_eq!(evidence_algorithm, "sha256");
+        assert_eq!(evidence_value, "07".repeat(32));
+
+        for kind in hal100_protocol::InferenceEngineKind::ALL {
+            connection
+                .execute(
+                    "UPDATE runtime_profiles SET engine = ?1 WHERE id = 'legacy-profile'",
+                    [kind.storage_key()],
+                )
+                .expect("known engine accepted");
+        }
+        assert!(
+            connection
+                .execute(
+                    "UPDATE runtime_profiles SET engine = 'arbitrary-shell-engine'
+                     WHERE id = 'legacy-profile'",
+                    [],
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn schema_v15_invalidates_ambiguous_openvino_cells_and_accepts_typed_intel_devices() {
+        let mut connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        migrations()
+            .to_version(&mut connection, 14)
+            .expect("schema v14");
+        connection
+            .execute(
+                "INSERT INTO runtime_profiles (
+                    id, name, description, spec_version, ownership, model_id,
+                    model_display_name, model_digest, model_digest_kind, engine,
+                    engine_version, adapter_variant, adapter_contract_revision,
+                    evidence_kind, evidence_algorithm, evidence_value,
+                    protocol_capability_hash, verified_at_ms, created_at_ms, updated_at_ms,
+                    support_platform, support_architecture, support_accelerator,
+                    support_deployment
+                ) VALUES (
+                    'legacy-ovms-profile', 'Legacy OVMS', '', 3, 'managed', 'model-a',
+                    'Model A', ?1, 'evidence_fingerprint', 'openvino', '2026.1',
+                    'ovms-openai-server', 'engine-contract-v1', 'catalog_identity',
+                    'catalog-identity-v1', ?1, ?1, 1, 1, 1,
+                    'windows', 'x86_64', 'openvino', 'local'
+                )",
+                ["a".repeat(64)],
+            )
+            .expect("insert legacy ambiguous OVMS profile");
+
+        migrations().to_latest(&mut connection).expect("schema v15");
+        let support_cell: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT support_platform, support_architecture,
+                            support_accelerator, support_deployment
+                     FROM runtime_profiles WHERE id = 'legacy-ovms-profile'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("migrated support cell");
+        assert_eq!(support_cell, (None, None, None, None));
+
+        for accelerator in ["intel_gpu", "intel_npu"] {
+            connection
+                .execute(
+                    "UPDATE runtime_profiles SET
+                        support_platform = 'windows', support_architecture = 'x86_64',
+                        support_accelerator = ?1, support_deployment = 'local'
+                     WHERE id = 'legacy-ovms-profile'",
+                    [accelerator],
+                )
+                .expect("typed Intel accelerator accepted");
+        }
+        assert!(
+            connection
+                .execute(
+                    "UPDATE runtime_profiles SET support_accelerator = 'openvino'
+                     WHERE id = 'legacy-ovms-profile'",
+                    [],
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_profiles_preserve_bounded_identity_and_activation_history() {
+        let database = Database::open_in_memory().expect("in-memory database");
+        let profile = StoredRuntimeProfileRecord {
+            id: "runtime-profile-test".to_owned(),
+            name: "代码助手".to_owned(),
+            description: "已验证组合".to_owned(),
+            spec_version: 3,
+            ownership: "managed".to_owned(),
+            backend_id: None,
+            backend_api_root: None,
+            model_id: "model-test".to_owned(),
+            model_display_name: "Qwen Test".to_owned(),
+            model_digest: "07".repeat(32),
+            model_digest_kind: "sha256".to_owned(),
+            engine: "llama.cpp".to_owned(),
+            engine_version: "b10218".to_owned(),
+            capacity_tier: Some("baseline16k".to_owned()),
+            context_window_tokens: Some(16_384),
+            capacity_revision: Some("agent-runtime-v2".to_owned()),
+            adapter_variant: "hal100-managed-metal".to_owned(),
+            adapter_contract_revision: hal100_protocol::ENGINE_ADAPTER_CONTRACT_REVISION.to_owned(),
+            backend_config_revision: None,
+            origin_fingerprint: None,
+            evidence_kind: "content_digest".to_owned(),
+            evidence_algorithm: "sha256".to_owned(),
+            evidence_value: "07".repeat(32),
+            protocol_capability_hash:
+                "1b3e385cbb7f30878cba8eaccf7d5f5e6e1f18b2861a44bc79b18d963cbdd258".to_owned(),
+            support_cell: Some(RuntimeProfileSupportCell {
+                platform: hal100_protocol::InferencePlatform::MacOs,
+                architecture: hal100_protocol::InferenceArchitecture::Aarch64,
+                accelerator: hal100_protocol::InferenceAccelerator::Metal,
+                deployment: hal100_protocol::InferenceDeployment::Local,
+            }),
+            verified_at_ms: 100,
+            last_activated_at_ms: Some(100),
+            created_at_ms: 100,
+            updated_at_ms: 100,
+        };
+
+        database
+            .insert_runtime_profile(&profile)
+            .expect("insert runtime profile");
+        assert_eq!(
+            database.runtime_profile(&profile.id).expect("load profile"),
+            Some(profile.clone())
+        );
+        assert!(
+            database
+                .update_runtime_profile_metadata(&profile.id, "编码环境", "更新说明", 200)
+                .expect("update profile")
+        );
+        assert!(
+            database
+                .mark_runtime_profile_activated(
+                    &profile.id,
+                    &StoredRuntimeProfileVerification {
+                        model_digest: "08".repeat(32),
+                        evidence_kind: "content_digest".to_owned(),
+                        evidence_algorithm: "sha256".to_owned(),
+                        evidence_value: "08".repeat(32),
+                        engine_version: "b10219".to_owned(),
+                        capacity_tier: Some("standard32k".to_owned()),
+                        context_window_tokens: Some(32_768),
+                        capacity_revision: Some("agent-runtime-v3".to_owned()),
+                        support_cell: profile.support_cell,
+                    },
+                    300,
+                )
+                .expect("mark profile activated")
+        );
+        let updated = database
+            .runtime_profile(&profile.id)
+            .expect("reload profile")
+            .expect("profile exists");
+        assert_eq!(updated.name, "编码环境");
+        assert_eq!(updated.model_digest, "08".repeat(32));
+        assert_eq!(updated.evidence_value, "08".repeat(32));
+        assert_eq!(updated.context_window_tokens, Some(32_768));
+        assert_eq!(updated.last_activated_at_ms, Some(300));
+        assert_eq!(updated.support_cell, profile.support_cell);
+        assert!(
+            database
+                .reverify_runtime_profile(
+                    &profile.id,
+                    &StoredRuntimeProfileVerification {
+                        model_digest: "09".repeat(32),
+                        evidence_kind: "content_digest".to_owned(),
+                        evidence_algorithm: "sha256".to_owned(),
+                        evidence_value: "09".repeat(32),
+                        engine_version: "b10220".to_owned(),
+                        capacity_tier: Some("standard32k".to_owned()),
+                        context_window_tokens: Some(32_768),
+                        capacity_revision: Some("agent-runtime-v3".to_owned()),
+                        support_cell: profile.support_cell,
+                    },
+                    350,
+                )
+                .expect("reverify profile")
+        );
+        let reverified = database
+            .runtime_profile(&profile.id)
+            .expect("reload reverified profile")
+            .expect("profile exists");
+        assert_eq!(reverified.model_digest, "09".repeat(32));
+        assert_eq!(reverified.evidence_value, "09".repeat(32));
+        assert_eq!(reverified.engine_version, "b10220");
+        assert_eq!(reverified.verified_at_ms, 350);
+        assert_eq!(reverified.updated_at_ms, 350);
+        assert_eq!(reverified.last_activated_at_ms, Some(300));
+        assert_eq!(reverified.support_cell, profile.support_cell);
+        assert!(
+            database
+                .delete_runtime_profile(&profile.id, &updated.name, 400)
+                .expect("delete profile")
+        );
+        assert!(
+            database
+                .runtime_profiles()
+                .expect("list profiles")
+                .is_empty()
+        );
+        assert_eq!(database.audit_event_count().expect("audit count"), 5);
+    }
+
+    #[test]
+    fn runtime_profile_support_cell_must_be_complete_and_use_allowlisted_keys() {
+        let database = Database::open_in_memory().expect("in-memory database");
+        let profile = StoredRuntimeProfileRecord {
+            id: "runtime-profile-support-cell".to_owned(),
+            name: "支持格测试".to_owned(),
+            description: String::new(),
+            spec_version: 3,
+            ownership: "managed".to_owned(),
+            backend_id: None,
+            backend_api_root: None,
+            model_id: "model-support-cell".to_owned(),
+            model_display_name: "Support Cell".to_owned(),
+            model_digest: "0a".repeat(32),
+            model_digest_kind: "sha256".to_owned(),
+            engine: "llama.cpp".to_owned(),
+            engine_version: "b10218".to_owned(),
+            capacity_tier: Some("baseline16k".to_owned()),
+            context_window_tokens: Some(16_384),
+            capacity_revision: Some("agent-runtime-v2".to_owned()),
+            adapter_variant: "hal100-managed-metal".to_owned(),
+            adapter_contract_revision: hal100_protocol::ENGINE_ADAPTER_CONTRACT_REVISION.to_owned(),
+            backend_config_revision: None,
+            origin_fingerprint: None,
+            evidence_kind: "content_digest".to_owned(),
+            evidence_algorithm: "sha256".to_owned(),
+            evidence_value: "0a".repeat(32),
+            protocol_capability_hash:
+                "1b3e385cbb7f30878cba8eaccf7d5f5e6e1f18b2861a44bc79b18d963cbdd258".to_owned(),
+            support_cell: Some(RuntimeProfileSupportCell {
+                platform: hal100_protocol::InferencePlatform::MacOs,
+                architecture: hal100_protocol::InferenceArchitecture::Aarch64,
+                accelerator: hal100_protocol::InferenceAccelerator::Metal,
+                deployment: hal100_protocol::InferenceDeployment::Local,
+            }),
+            verified_at_ms: 1,
+            last_activated_at_ms: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        database
+            .insert_runtime_profile(&profile)
+            .expect("insert complete support cell");
+        let connection = database
+            .connection
+            .lock()
+            .expect("database connection lock");
+        assert!(
+            connection
+                .execute(
+                    "UPDATE runtime_profiles SET support_platform = NULL WHERE id = ?1",
+                    [&profile.id],
+                )
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "UPDATE runtime_profiles SET support_accelerator = 'unknown' WHERE id = ?1",
+                    [&profile.id],
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_activation_journal_is_single_flight_cas_and_recovery_required_is_durable() {
+        let database = Database::open_in_memory().expect("in-memory database");
+        let journal = StoredRuntimeActivationJournal {
+            id: "activation-test".to_owned(),
+            profile_id: "runtime-profile-test".to_owned(),
+            phase: RuntimeActivationPhase::Journaled,
+            previous_route: Some(StoredActiveGatewayRoute {
+                backend_id: "backend-before".to_owned(),
+                resolved_model: Some("model-before".to_owned()),
+            }),
+            previous_managed_model_id: Some("managed-before".to_owned()),
+            created_at_ms: 10,
+            updated_at_ms: 10,
+        };
+        database
+            .begin_runtime_activation(&journal)
+            .expect("begin activation journal");
+        let second = StoredRuntimeActivationJournal {
+            id: "activation-second".to_owned(),
+            ..journal.clone()
+        };
+        assert!(database.begin_runtime_activation(&second).is_err());
+        assert!(
+            !database
+                .transition_runtime_activation(
+                    &journal.id,
+                    RuntimeActivationPhase::Quiesced,
+                    RuntimeActivationPhase::RouteSwitched,
+                    20,
+                )
+                .expect("stale CAS returns false")
+        );
+        assert!(
+            database
+                .transition_runtime_activation(
+                    &journal.id,
+                    RuntimeActivationPhase::Journaled,
+                    RuntimeActivationPhase::Quiesced,
+                    20,
+                )
+                .expect("journaled to quiesced")
+        );
+        assert!(
+            database
+                .transition_runtime_activation(
+                    &journal.id,
+                    RuntimeActivationPhase::Quiesced,
+                    RuntimeActivationPhase::RecoveryRequired,
+                    30,
+                )
+                .expect("mark recovery required")
+        );
+        let pending = database
+            .runtime_activation_journals()
+            .expect("pending activation journal");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].phase, RuntimeActivationPhase::RecoveryRequired);
+        assert_eq!(pending[0].previous_route, journal.previous_route);
+        assert!(
+            database
+                .finish_runtime_activation(&journal.id, RuntimeActivationPhase::RecoveryRequired,)
+                .is_err()
+        );
     }
 
     #[test]
@@ -3177,6 +5218,8 @@ mod tests {
             id: "secondary-backend".to_owned(),
             display_name: "局域网 vLLM".to_owned(),
             kind: "external_vllm".to_owned(),
+            engine_kind: Some("vllm".to_owned()),
+            adapter_variant: Some("official-openai-server".to_owned()),
             api_root: "http://192.168.1.20:8000/v1".to_owned(),
             auth_style: "bearer".to_owned(),
             credential_id: Some("hal100.backend.secondary-backend".to_owned()),
@@ -3205,6 +5248,28 @@ mod tests {
             database.active_backend_id().expect("active backend"),
             Some("secondary-backend".to_owned())
         );
+        assert_eq!(
+            database.active_gateway_route().expect("active route"),
+            Some(StoredActiveGatewayRoute {
+                backend_id: "secondary-backend".to_owned(),
+                resolved_model: None,
+            })
+        );
+        let resolved_route = StoredActiveGatewayRoute {
+            backend_id: "secondary-backend".to_owned(),
+            resolved_model: Some("Qwen/Qwen3.5-9B".to_owned()),
+        };
+        database
+            .set_active_gateway_route(Some(&resolved_route), 1_700_000_000_003)
+            .expect("store resolved active route");
+        assert_eq!(
+            database.active_gateway_route().expect("resolved route"),
+            Some(resolved_route)
+        );
+        assert_eq!(
+            database.active_backend_id().expect("legacy active view"),
+            Some("secondary-backend".to_owned())
+        );
         assert!(matches!(
             database.delete_backend("secondary-backend"),
             Err(DatabaseError::Sqlite(rusqlite::Error::SqliteFailure(_, _)))
@@ -3220,7 +5285,7 @@ mod tests {
                 .expect("delete backend")
         );
         database
-            .set_active_backend_id(None, 1_700_000_000_003)
+            .set_active_gateway_route(None, 1_700_000_000_004)
             .expect("clear active backend");
         assert_eq!(database.active_backend_id().expect("cleared active"), None);
 
@@ -3235,6 +5300,53 @@ mod tests {
             .expect("backend column names");
         assert!(!columns.iter().any(|column| column == "api_key"));
         assert!(!columns.iter().any(|column| column.contains("secret")));
+    }
+
+    #[test]
+    fn schema_v13_backend_config_revision_changes_only_with_target_configuration() {
+        let database = Database::open_in_memory().expect("in-memory database");
+        let mut backend = StoredBackendRecord {
+            id: "revision-backend".to_owned(),
+            display_name: "本机 Ollama".to_owned(),
+            kind: "external_ollama".to_owned(),
+            engine_kind: None,
+            adapter_variant: None,
+            api_root: "http://127.0.0.1:11434/v1/".to_owned(),
+            auth_style: "none".to_owned(),
+            credential_id: None,
+            enabled: true,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        database.upsert_backend(&backend).expect("insert backend");
+        assert_eq!(
+            database
+                .backend_config_revision(&backend.id)
+                .expect("initial revision"),
+            1
+        );
+
+        backend.display_name = "重命名 Ollama".to_owned();
+        backend.updated_at_ms = 2;
+        database.upsert_backend(&backend).expect("rename backend");
+        assert_eq!(
+            database
+                .backend_config_revision(&backend.id)
+                .expect("rename revision"),
+            1
+        );
+
+        backend.api_root = "http://127.0.0.1:21434/v1/".to_owned();
+        backend.updated_at_ms = 3;
+        database
+            .upsert_backend(&backend)
+            .expect("change target backend");
+        assert_eq!(
+            database
+                .backend_config_revision(&backend.id)
+                .expect("changed revision"),
+            2
+        );
     }
 
     #[test]

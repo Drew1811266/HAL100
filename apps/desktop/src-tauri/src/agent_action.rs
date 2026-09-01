@@ -30,6 +30,10 @@ pub(super) enum AgentActionExecutor {
     StartOrSwitchModel {
         model_id: String,
     },
+    ActivateRuntimeProfile {
+        profile_id: String,
+        activation_plan_id: String,
+    },
     StopModel {
         model_id: String,
     },
@@ -68,6 +72,7 @@ impl AgentActionExecutor {
     const fn action_kind(&self) -> AgentActionKind {
         match self {
             Self::StartOrSwitchModel { .. } => AgentActionKind::StartOrSwitchModel,
+            Self::ActivateRuntimeProfile { .. } => AgentActionKind::ActivateRuntimeProfile,
             Self::StopModel { .. } => AgentActionKind::StopModel,
             Self::DownloadModel { .. } => AgentActionKind::DownloadModel,
             Self::InstallLlamaCpp { .. } => AgentActionKind::InstallLlamaCpp,
@@ -85,6 +90,7 @@ impl AgentActionExecutor {
             Self::StartOrSwitchModel { model_id }
             | Self::StopModel { model_id }
             | Self::RemoveModel { model_id, .. } => target_id == model_id,
+            Self::ActivateRuntimeProfile { profile_id, .. } => target_id == profile_id,
             Self::InstallLlamaCpp { .. } | Self::RemoveLlamaCpp { .. } => target_id == "llama.cpp",
             Self::InstallExternalAgent { integration_id, .. }
             | Self::RemoveExternalAgent { integration_id, .. }
@@ -208,6 +214,7 @@ impl AgentActionPlanStore {
 pub(super) const fn action_kind_key(kind: AgentActionKind) -> &'static str {
     match kind {
         AgentActionKind::StartOrSwitchModel => "start_or_switch_model",
+        AgentActionKind::ActivateRuntimeProfile => "activate_runtime_profile",
         AgentActionKind::StopModel => "stop_model",
         AgentActionKind::DownloadModel => "download_model",
         AgentActionKind::InstallLlamaCpp => "install_llama_cpp",

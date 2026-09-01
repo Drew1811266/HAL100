@@ -35,6 +35,18 @@
       }
     },
     {
+      "id": "activate-runtime-profile",
+      "prompt": "运行我保存的代码助手方案，切换前先复验。",
+      "taskKind": "activate_runtime_profile",
+      "expectedActionKind": "activateRuntimeProfile",
+      "requiredTools": ["hal100.inspect_runtime_catalog", "hal100.plan_runtime_profile_activation"],
+      "verificationEvidenceSource": "runtimeProfileRecheck",
+      "executorAcceptance": {
+        "source": "crates/hal100-infra/src/engine_manager.rs",
+        "test": "starting_and_stopping_a_model_switches_the_gateway_backend"
+      }
+    },
+    {
       "id": "stop-model",
       "prompt": "把当前推理模型安全停掉，保留模型文件和记录。",
       "taskKind": "stop_model",

@@ -37,6 +37,7 @@ import {
   getBackendCatalog,
   getLlamaCppStatus,
   getModelLibrary,
+  type InferenceEngineKind,
   isTauriRuntime,
   planLlamaCppInstall,
   planLlamaCppRemove,
@@ -192,6 +193,84 @@ const backendAuthLabels: Record<BackendAuthMethod, string> = {
   anthropicApiKey: "Anthropic x-api-key",
 };
 
+const explicitEngineBindings: Array<{
+  key: string;
+  engine: InferenceEngineKind;
+  label: string;
+  adapterVariant: string;
+}> = [
+  {
+    key: "mlxLm",
+    engine: "mlxLm",
+    label: "MLX-LM 官方 HTTP Server",
+    adapterVariant: "official-http-server",
+  },
+  {
+    key: "vllm",
+    engine: "vllm",
+    label: "vLLM 官方 OpenAI Server",
+    adapterVariant: "official-openai-server",
+  },
+  {
+    key: "mlcLlm",
+    engine: "mlcLlm",
+    label: "MLC LLM 官方 OpenAI Server",
+    adapterVariant: "official-openai-server",
+  },
+  {
+    key: "openVino:cpu",
+    engine: "openVino",
+    label: "OpenVINO Model Server · CPU",
+    adapterVariant: "ovms-openai-cpu",
+  },
+  {
+    key: "openVino:intelGpu",
+    engine: "openVino",
+    label: "OpenVINO Model Server · Intel GPU",
+    adapterVariant: "ovms-openai-intel-gpu",
+  },
+  {
+    key: "openVino:intelNpu",
+    engine: "openVino",
+    label: "OpenVINO Model Server · Intel NPU",
+    adapterVariant: "ovms-openai-intel-npu",
+  },
+  {
+    key: "sglang",
+    engine: "sglang",
+    label: "SGLang 官方 OpenAI Server",
+    adapterVariant: "official-openai-server",
+  },
+  {
+    key: "lmDeploy",
+    engine: "lmDeploy",
+    label: "LMDeploy 官方 OpenAI Server",
+    adapterVariant: "official-openai-server",
+  },
+  {
+    key: "tensorRtLlm",
+    engine: "tensorRtLlm",
+    label: "TensorRT-LLM trtllm-serve",
+    adapterVariant: "trtllm-serve-openai-server",
+  },
+];
+
+function backendIdentityLabel(backend: {
+  kind: BackendKind;
+  engine: InferenceEngineKind | null;
+  adapterVariant: string | null;
+}) {
+  if (backend.kind === "externalOpenAi" && backend.engine) {
+    return (
+      explicitEngineBindings.find(
+        (binding) =>
+          binding.engine === backend.engine && binding.adapterVariant === backend.adapterVariant,
+      )?.label ?? backendKindLabels[backend.kind]
+    );
+  }
+  return backendKindLabels[backend.kind];
+}
+
 const backendProbeLabels: Record<BackendProbeStatus, string> = {
   healthy: "连接正常",
   authenticationFailed: "认证失败",
@@ -204,6 +283,8 @@ const emptyBackendDraft: BackendDraft = {
   id: null,
   displayName: "",
   kind: "externalOpenAi",
+  engine: null,
+  adapterVariant: null,
   apiRoot: "http://127.0.0.1:8000/v1/",
   authMethod: "none",
   apiKey: null,
@@ -655,7 +736,7 @@ export function BackendsPage({
                       <div className="backend-row-main">
                         <div>
                           <strong>{backend.displayName}</strong>
-                          <span>{backendKindLabels[backend.kind]}</span>
+                          <span>{backendIdentityLabel(backend)}</span>
                         </div>
                         <code>{backend.apiRoot}</code>
                         <small>
@@ -746,6 +827,8 @@ export function BackendsPage({
                               id: backend.id,
                               displayName: backend.displayName,
                               kind: backend.kind,
+                              engine: backend.engine,
+                              adapterVariant: backend.adapterVariant,
                               apiRoot: backend.apiRoot,
                               authMethod: backend.authMethod,
                               apiKey: null,
@@ -956,7 +1039,10 @@ export function BackendsPage({
           <section className="drawer-section service-discovery-section">
             <div>
               <h3>发现本机服务</h3>
-              <p>只检查 127.0.0.1 上 Ollama、vLLM 和 llama.cpp 的常用端口。</p>
+              <p>
+                只检查 127.0.0.1 上 Ollama、vLLM、MLX-LM、MLC LLM、OpenVINO Model
+                Server、SGLang、LMDeploy 和 llama.cpp 的常用端口。
+              </p>
             </div>
             <button
               className="secondary-button"
@@ -977,35 +1063,62 @@ export function BackendsPage({
                 </strong>
                 <span>探测仅在你点击后运行，不会常驻监测。</span>
               </div>
-              {discoverBackendsMutation.data.candidates.map((candidate) => (
-                <div className="discovery-candidate" key={`${candidate.kind}-${candidate.apiRoot}`}>
-                  <div>
-                    <strong>{candidate.displayName}</strong>
-                    <code>{candidate.apiRoot}</code>
-                    <small>
-                      {candidate.evidence}
-                      {candidate.version ? ` · ${candidate.version}` : ""}
-                    </small>
-                  </div>
-                  <button
-                    className="secondary-button compact-button"
-                    onClick={() => {
-                      setServiceSetupOpen(false);
-                      setEditingBackend({
-                        id: null,
-                        displayName: candidate.displayName,
-                        kind: candidate.kind,
-                        apiRoot: candidate.apiRoot,
-                        authMethod: "none",
-                        apiKey: null,
-                      });
-                    }}
-                    type="button"
+              {discoverBackendsMutation.data.candidates.map((candidate) => {
+                const external = discoverBackendsMutation.data.externalEngines.find(
+                  (engine) => engine.apiRoot === candidate.apiRoot,
+                );
+                return (
+                  <div
+                    className="discovery-candidate"
+                    key={`${candidate.kind}-${candidate.apiRoot}`}
                   >
-                    使用此候选
-                  </button>
-                </div>
-              ))}
+                    <div>
+                      <strong>{candidate.displayName}</strong>
+                      <code>{candidate.apiRoot}</code>
+                      <small>
+                        {candidate.evidence}
+                        {candidate.version ? ` · ${candidate.version}` : ""}
+                      </small>
+                      {external?.modelCatalogComplete && (
+                        <div className="discovery-models">
+                          <span>{external.models.length} 个可验证模型</span>
+                          {external.models.slice(0, 4).map((model) => (
+                            <code
+                              key={`${model.evidence.algorithm}:${model.evidence.value}`}
+                              title={`${model.evidence.algorithm}: ${model.evidence.value}`}
+                            >
+                              {model.name}
+                              {model.quantization ? ` · ${model.quantization}` : ""}
+                            </code>
+                          ))}
+                          {external.models.length > 4 && (
+                            <small>另有 {external.models.length - 4} 个</small>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      className="secondary-button compact-button"
+                      onClick={() => {
+                        setServiceSetupOpen(false);
+                        setEditingBackend({
+                          id: null,
+                          displayName: candidate.displayName,
+                          kind: candidate.kind,
+                          engine: candidate.engine,
+                          adapterVariant: candidate.adapterVariant,
+                          apiRoot: candidate.apiRoot,
+                          authMethod: "none",
+                          apiKey: null,
+                        });
+                      }}
+                      type="button"
+                    >
+                      使用此候选
+                    </button>
+                  </div>
+                );
+              })}
               {discoverBackendsMutation.data.candidates.length === 0 && (
                 <p className="routing-empty">没有发现本机服务，你仍可手动填写地址。</p>
               )}
@@ -1075,6 +1188,8 @@ export function BackendsPage({
                     setEditingBackend({
                       ...editingBackend,
                       kind: event.target.value as BackendKind,
+                      engine: null,
+                      adapterVariant: null,
                     })
                   }
                   value={editingBackend.kind}
@@ -1094,6 +1209,37 @@ export function BackendsPage({
                   ))}
                 </select>
               </label>
+              {editingBackend.kind === "externalOpenAi" && (
+                <label>
+                  <span>推理引擎身份</span>
+                  <select
+                    onChange={(event) => {
+                      const binding = explicitEngineBindings.find(
+                        (candidate) => candidate.key === event.target.value,
+                      );
+                      setEditingBackend({
+                        ...editingBackend,
+                        engine: binding?.engine ?? null,
+                        adapterVariant: binding?.adapterVariant ?? null,
+                      });
+                    }}
+                    value={
+                      explicitEngineBindings.find(
+                        (binding) =>
+                          binding.engine === editingBackend.engine &&
+                          binding.adapterVariant === editingBackend.adapterVariant,
+                      )?.key ?? ""
+                    }
+                  >
+                    <option value="">通用 OpenAI 兼容（不绑定引擎）</option>
+                    {explicitEngineBindings.map((binding) => (
+                      <option key={binding.key} value={binding.key}>
+                        {binding.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className="wide-field">
                 <span>API 根地址</span>
                 <input

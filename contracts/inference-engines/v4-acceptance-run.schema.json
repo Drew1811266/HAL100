@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HAL100 inference engine acceptance run artifact v4",
+  "description": "A bounded, redacted artifact from one explicit real-service acceptance run. It is review material, not an automatic support promotion. V4 binds stability measurements to a typed model-evidence fingerprint.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "adapterId",
+    "instanceId",
+    "originFingerprint",
+    "configRevision",
+    "protocolCapabilityHash",
+    "platform",
+    "architecture",
+    "accelerator",
+    "deployment",
+    "outcome",
+    "observedAtMs",
+    "hostSummary",
+    "hostAttestation",
+    "modelEvidence",
+    "evidence"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 4
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96
+    },
+    "adapterId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "variant", "contractRevision"],
+      "properties": {
+        "engine": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "contractRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        }
+      }
+    },
+    "instanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "originFingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "configRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854776000
+    },
+    "protocolCapabilityHash": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "platform": {
+      "enum": ["macOs", "windows", "linux"]
+    },
+    "architecture": {
+      "enum": ["aarch64", "x86_64"]
+    },
+    "accelerator": {
+      "enum": ["cpu", "metal", "cuda", "rocm", "vulkan", "sycl", "intelGpu", "intelNpu"]
+    },
+    "deployment": {
+      "enum": ["local", "remote"]
+    },
+    "outcome": {
+      "enum": ["passed", "failed"]
+    },
+    "observedAtMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "engineVersion": {
+      "type": ["string", "null"],
+      "maxLength": 512
+    },
+    "deploymentFingerprint": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "modelRevision": {
+      "type": ["string", "null"],
+      "maxLength": 512
+    },
+    "hostSummary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(macos|windows|linux)/(aarch64|x86_64)/(cpu|metal|cuda|rocm|vulkan|sycl|intel_gpu|intel_npu)$"
+    },
+    "stability": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "workloadRevision",
+        "attempts",
+        "concurrency",
+        "p95LatencyMs",
+        "maxLatencyMs",
+        "totalPromptTokens",
+        "totalCompletionTokens",
+        "wallTimeMs"
+      ],
+      "properties": {
+        "workloadRevision": {
+          "const": "openai-short-chat-v1"
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "p95LatencyMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120000
+        },
+        "maxLatencyMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120000
+        },
+        "totalPromptTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "totalCompletionTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "wallTimeMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600000
+        }
+      }
+    },
+    "resilience": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "cancellationVerified",
+        "failedSwitchRollbackVerified",
+        "restartCompensationVerified"
+      ],
+      "properties": {
+        "cancellationVerified": {
+          "type": "boolean"
+        },
+        "failedSwitchRollbackVerified": {
+          "type": "boolean"
+        },
+        "restartCompensationVerified": {
+          "type": "boolean"
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "source", "assertion"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "officialContract",
+              "protocolQualification",
+              "platformRuntime",
+              "engineIdentity",
+              "modelDeploymentIdentity",
+              "runtimeProfileLifecycle",
+              "stability"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "assertion": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "hostAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "platform",
+        "architecture",
+        "accelerator",
+        "probeRevision",
+        "deviceClassFingerprint"
+      ],
+      "properties": {
+        "kind": {
+          "const": "nativeHostProbeV1"
+        },
+        "platform": {
+          "enum": ["macOs", "windows", "linux"]
+        },
+        "architecture": {
+          "enum": ["aarch64", "x86_64"]
+        },
+        "accelerator": {
+          "enum": ["cpu", "metal", "cuda", "rocm", "vulkan", "sycl", "intelGpu", "intelNpu"]
+        },
+        "probeRevision": {
+          "const": "host-capabilities-v3"
+        },
+        "deviceClassFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      }
+    },
+    "modelEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "algorithm", "valueFingerprint"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "contentDigest",
+            "repositoryRevision",
+            "deploymentFingerprint",
+            "catalogIdentity"
+          ]
+        },
+        "algorithm": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "valueFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      }
+    }
+  }
+}

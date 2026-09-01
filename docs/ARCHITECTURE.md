@@ -131,7 +131,7 @@ hal100-core
 ├── integrations       外部Agent稳定身份、专用适配器、配置所有权和回滚
 ├── credentials        系统凭据抽象和本地 Key哈希
 ├── audit              操作审计、结构化日志和脱敏
-└── platform           平台接口及 macOS/Windows实现边界
+└── platform           平台接口及 macOS/Windows/Linux实现边界
 ```
 
 前端不得直接访问数据库、凭据库、任意文件系统或系统 Shell。前端只能通过小而明确的 Tauri命令调用 Rust应用服务。
@@ -208,9 +208,69 @@ Embedding、Reranking和音视频协议不属于初始闭环，后续依据实�
 
 本机发现不是常驻服务。用户点击后才创建3个固定回环请求，分别检查Ollama默认端口及vLLM、llama.cpp Server常用端口；结果是“候选”而非所有权或确定进程身份。局域网服务继续依靠用户明确输入URL，避免后台广播、端口扫描和隐私暴露。
 
-## 9. 数据架构
+## 9. 跨平台推理引擎边界
 
-SQLite是唯一持久化事实源，但不保存云端 API Key和明文客户端密钥。schema v9当前实际表包括：
+推理引擎不再由一个不断扩张的“后端类型”枚举同时表达实现、协议和所有权。协议层分别定义：
+
+- 引擎身份：llama.cpp、Ollama、MLX-LM、vLLM、SGLang、TensorRT-LLM、OpenVINO、MLC LLM和LMDeploy；
+- 所有权：HAL100托管或外部；部署位置另分本机或远程，不能仅凭引擎名称推断；
+- Gateway协议：OpenAI、Anthropic或Ollama；
+- 平台、CPU架构与加速器：macOS/Windows/Linux，aarch64/x86_64，以及CPU、Metal、CUDA、ROCm、Vulkan、SYCL、OpenVINO；
+- 模型格式：GGUF、Safetensors或MLX。
+
+这些枚举是受控身份白名单和架构边界，不表示每个组合当前已经实现。`hal100-infra`中的对象安全
+`InferenceEngineAdapter`统一暴露描述、容量、状态、安装/移除计划和启动/停止生命周期；它不接受
+WebView或Pi传入的任意二进制路径、命令或环境变量。迭代47只有`LlamaCppManager`实现该接口，
+描述符也如实限定为当前已验证的Apple Silicon、Metal和GGUF。未来平台构建必须分别固定资产、
+版本、哈希、硬件探测和参数策略，再注册新的适配器；不能仅因为协议兼容就获得托管执行权。
+
+迭代48把平台探测统一为`NativeSystemProbe`：它只在用户请求或应用启动策略选择时生成一次不可变
+`HostCapabilitySnapshot`，不建立计时器或后台采样。快照分别表达平台、CPU架构、内存、核心数、
+模型目录空间和已验证加速器；`InferenceEngineDescriptor::compatibility_with`只在平台、架构均匹配
+且至少一个加速器相交时返回兼容。结果通过窄桌面命令展示，并由运行方案保存/激活门禁复用。
+当前探测实现仍只对Apple Silicon声明CPU与Metal；Windows/Linux构建在各自原生探测器和真机证据
+落地前必须返回不支持，不能靠编译目标字符串猜测CUDA、ROCm、Vulkan或OpenVINO能力。
+
+现有`BackendKind`线协议保持兼容，但已提供向独立引擎身份、所有权和Gateway协议的确定性映射。
+后续外部后端迁移应以这些维度作为领域事实，逐步把`externalOpenAi`等通用协议入口与vLLM等具体
+引擎身份分离。部署位置必须从经过校验的URL等实例事实派生；外部服务仍默认只有连接权，不获得
+本机进程或文件所有权。
+
+迭代49为外部服务新增另一条对象安全边界`ExternalInferenceEngineAdapter`。它只返回描述符与
+`ExternalEngineSnapshot`，不实现托管适配器的安装、移除、启动和停止方法，也不能接收来自
+WebView或Pi的任意URL、命令、文件权限、环境变量或凭据。引擎专属正式资格可以读取用户在
+运行方案中明确选择的一个规范本地部署根，但只能读取适配器固定清单声明的有界身份文件；必须
+拒绝相对路径、根目录逃逸、符号链接逃逸、缺失或变化的文件，且没有目录外枚举与任何写权限。
+首个Ollama实现只检查代码固定的
+`127.0.0.1:11434`：官方`/api/version`用于引擎身份，`/api/tags`用于有摘要的模型目录；服务
+不可达时目录仍保留适配器能力描述但不伪造运行快照，目录响应无效时保留引擎身份并明确标记
+`model_catalog_complete=false`。
+
+外部运行方案身份分两步建立：用户先通过现有后端管理器明确保存并启用外部服务；能力目录再将
+其外部所有权、引擎类型和规范API根地址与实时快照做完全匹配。只有模型目录完整时才生成
+`backend_id + engine_version + model_id + typed evidence`候选。候选本身不持久化、不含模型路径、
+命令或凭据，也不是执行授权。用户显式保存时，`RuntimeProfileManager`重新读取同一后端、API根、
+版本、完整模型目录和类型化证据，再写入spec v3外部方案；预检、确认后执行、路由切换后和Agent成功
+证据阶段继续实时复检。桌面显式重验会在Rust原生确认后更新版本/证据锚点，但不切换或控制
+外部进程；Pi没有该能力。
+
+外部服务的“OpenAI兼容”仍按引擎实测而不是名称推断。MLC LLM官方服务当前把非流式工具调用的
+`function.arguments`序列化为对象；HAL100只在已保存后端明确绑定`mlcLlm`引擎身份时，于Gateway
+边界把该对象转为OpenAI要求的有界JSON字符串。通用OpenAI后端保持字节级严格透传，不能获得该
+兼容行为；MLC流式工具调用尚未验收，因此请求在转发前故障关闭。适配器资格允许对象形态只用于
+证明同一已实现转换的上游输入，运行方案纵向还必须通过真实Gateway再次看到标准字符串形态。
+
+正式引擎支持采用ADR-0040的四级状态与平台级支持单元。目标感知外部适配器只消费Rust从已保存
+后端构造的验证目标；模型证据区分内容摘要、仓库修订、部署指纹和仅目录身份，不能把所有服务
+强行伪装成Ollama digest。共同合同已经落地，但预留或仅连通引擎仍不表示可用；完整计划见
+[推理引擎正式支持计划](INFERENCE_ENGINE_SUPPORT_PLAN.md)。
+目标模块、适配器接口、验证锚点、rollback-only激活journal、平台探测和测试分层见
+[多推理引擎架构蓝图](INFERENCE_ENGINE_ARCHITECTURE_BLUEPRINT.md)。spec v3与schema v15已经
+实现，RPC仍为v13；蓝图中的应用façade、完整资格/推荐服务和RPC v14仍是目标设计。
+
+## 10. 数据架构
+
+SQLite是唯一持久化事实源，但不保存云端 API Key和明文客户端密钥。schema v15当前实际表包括：
 
 - `settings`
 - `models`
@@ -224,18 +284,28 @@ SQLite是唯一持久化事实源，但不保存云端 API Key和明文客户端
 - `integrations`
 - `integration_resources`
 - `audit_events`
+- `runtime_profiles`
+- `runtime_activation_journal`
 
-活动外部后端ID使用`settings.gateway.active_backend_id`保存。`backends.credential_id`只是系统
+完整活动路由使用`settings.gateway.active_route`原子保存`backend_id + resolved_model`；旧
+`settings.gateway.active_backend_id`仅作为开发期兼容字段同步写入。`backends.credential_id`只是系统
 凭据引用，不是密钥。启动恢复先读取非敏感元数据，再从Keychain解析凭据；凭据缺失时不
 加载对应运行态后端和别名。向导步骤、登录启动询问状态、下载源和保留天数都写入类型化
 `settings`键；保留天数只允许30、90、180、365或永久。通用客户端复用`client_apps`和
 `api_key_hashes`，只存客户端ID、显示名、Key前缀和SHA-256摘要。schema v9为统一Usage
 范围查询增加`usage_requests(started_at_ms DESC)`索引；日/小时数据按查询范围聚合，不维护
-第二套`usage_daily`持久化事实源。
+第二套`usage_daily`持久化事实源。schema v10新增`runtime_profiles`，只保存版本化方案元数据、
+模型身份/哈希、固定引擎版本和Rust容量策略快照；不保存路径、启动命令、环境变量或凭据。
+schema v11原样迁移旧方案，并把引擎约束从单一`llama.cpp`扩展为协议层固定身份白名单；未知身份
+仍由SQLite拒绝，当前没有已注册适配器的身份在Rust目录中判定为不可用，不能误用现有引擎激活。
+schema v12把运行方案升级为spec v2：托管记录要求SHA-256和容量合同，外部记录要求后端ID、
+规范API根与Ollama digest且容量为空；两类身份使用独立部分唯一索引。v11旧记录全部迁移为托管
+所有权。schema v13进一步加入适配器变体/合同、后端配置修订、origin指纹、四类证据和协议能力
+指纹，并以单飞激活journal支持崩溃补偿。schema v14加入运行方案的支持格四元组（平台、架构、加速器、部署）及完整性触发器；schema v15进一步移除含混的`openvino`加速器值，改用`intel_gpu`与`intel_npu`，并使旧OVMS支持格失效等待重新选择精确变体。激活授权绑定会对该四元组执行CAS漂移检查。活动路由、兼容后端字段和方案验证快照均在事务中更新。
 
 数据库使用显式版本迁移。Usage通过单写入队列进入 WAL事务；不得按流式 Token逐条写入。
 
-## 10. 模型与下载源
+## 11. 模型与下载源
 
 下载抽象必须让 Hugging Face和ModelScope使用同一任务状态机：
 
@@ -249,7 +319,7 @@ Pending → Downloading → Verifying → Installing → Ready
 
 Alpha只接受公开且具有确定SHA-256的GGUF。下载计划重新解析权威元数据并检查“文件大小 + 512 MiB”空间；分片和目标位于同卷，Range恢复会严格验证`Content-Range`，最终通过哈希、GGUF和原子重命名后才在事务中标记`ready`。应用重启把活动任务暂停，不会静默恢复网络传输。
 
-## 11. HAL100 Agent
+## 12. HAL100 Agent
 
 Agent由六层组成：
 
@@ -262,7 +332,7 @@ Agent由六层组成：
 
 模型输出始终视为不可信输入。Agent不能直接调用任意 Shell、删除任意路径或读取任意文件。
 
-### 11.1 Pi集成边界
+### 12.1 Pi集成边界
 
 - 使用 `@earendil-works/pi-agent-core` 和 `@earendil-works/pi-ai`，不嵌入完整 `pi-coding-agent`。
 - 不加载 Pi TUI、内置 `bash`/`read`/`write`/`edit`等 Coding Tools。
@@ -278,7 +348,7 @@ Agent由六层组成：
 
 迭代1的可移植启动基线会规范化运行时和入口路径，要求入口与工作目录位于 HAL100受控根目录，清空父进程环境，并为 Sidecar创建独立 HOME/TMPDIR。macOS未签名开发版可显式启用弃用的 `sandbox-exec`配置做拒绝路径回归，但不能作为发布安全边界，也不能在不可用时静默降级。具有独立权限的 XPC服务或 helper app只在未来明确重新纳入签名与分发范围后评估；单纯让命令行 helper继承主应用沙箱无法获得比主应用更窄的权限集合。详细结论见 [Agent Sidecar隔离验证](SIDECAR_ISOLATION.md)。
 
-### 11.2 工具调用生命周期
+### 12.2 工具调用生命周期
 
 ```text
 模型提出工具调用
@@ -295,6 +365,9 @@ Agent由六层组成：
 Pi的执行前后钩子只能作为额外防线，不能替代 Rust复验。Sidecar内不存在可绕过 Tool Broker的通用执行工具。
 
 迭代1先用确定性 Faux模型完成模拟边界验证。迭代7已将同一协议升级为真实产品链，迭代10升级为RPC v2，迭代11再升级为RPC v3；迭代12把桌面Agent拆为稳定外观与六个变化边界：`agent_coordinator`负责能力需求、完成校验和任务取消生命周期，`agent_kernel`负责固定Node/Sidecar与RPC传输，`agent_tools`负责工具授权和确定性计划编排，`agent_action`负责一次性待确认计划状态，`agent_provider`负责本地/云端Provider与内存会话，`agent_task_runtime`负责Rust任务阶段与脱敏检查点。迭代13将私有协议升级为RPC v4；迭代19升级为RPC v5，将外部Agent检测、配置和断开收敛为注册表驱动的通用能力；迭代20升级为RPC v6，把全面诊断扩展到四类客户端并增加脱敏运维事件读取；迭代21升级为RPC v7，增加部署就绪与有界短时观测；迭代22升级为RPC v8，新增外部Agent受管安装计划和独立部署配方执行器；迭代23升级为RPC v9，为受管Pi补齐完整npm依赖闭包指纹与可恢复卸载生命周期；迭代33升级为RPC v10，在旧执行合同前增加按需结构化意图提案；迭代41升级为RPC v11，增加Rust复核的任务级效率指标；迭代43升级为RPC v12，显式携带Rust已选设备容量。`AgentService`继续负责运行互斥、临时凭据/路由装配、原生确认后的确定性执行、审计和错误兼容。Sidecar通过临时客户端Key向Gateway请求内部保留模型别名`hal100-agent`。独立`AgentModelRuntime`复用已校验的Qwen3.5-2B Q4_K_M权重，但使用单独的llama-server、随机回环端口、临时后端Key、内部后端和模型路由，不修改用户活动后端。`agent-runtime-v2`由Rust启动时读取一次统一内存：低于16 GiB选16384基线，16 GiB及以上选已验收32768标准档；两档均为最多768输出Token、temperature 0、parallel 1和reasoning off。Pi固定保留4096 Token，可用输入分别为12288和28672 Token。Rust以同一档案驱动Agent llama.cpp、托管用户模型、受管外部Agent描述和RPC完成载荷复核；Sidecar只接受合同中的16K/32K，模型或用户输入不能提高容量。空闲2分钟后通过一次性generation timer停止，没有轮询。Apple M1/16 GiB的32K实测完成27,725 Token输入，物理占用峰值566.3 MiB且回收通过；64K未获最低设备证据，保持关闭。
+
+迭代46在上述设备容量合同上升级为RPC v13，并加入Rust拥有的运行方案目录与受控切换能力；
+协议继续精确携带Rust选择的16K/32K容量，未扩大Sidecar对路径、凭据或执行器的访问范围。
 
 迭代31在`hal100-core`建立Rust拥有的Agent任务层：18类`AgentTaskSpec`通过工作流注册表绑定目标类型、期望状态、数据范围、成功判定和步骤；`AgentTaskState`显式表达澄清、检查、规划、等待确认、执行、复验和终态。当时该领域基础尚未接入运行链；迭代36已完成这部分迁移。决策见[ADR-0021](adr/0021-rust-owned-agent-task-architecture.md)。
 
@@ -327,7 +400,14 @@ Pi的执行前后钩子只能作为额外防线，不能替代 Rust复验。Side
 引擎状态，执行后只接受`RuntimeRecheck`。若模型已停止则由Rust幂等预检直接完成；目标漂移、
 伪造/过期计划、运行态不匹配或复检不可用均故障关闭。
 
-产品Sidecar当前注册19个HAL100代理工具。外部Agent使用检测、配置、断开和受管安装四项通用能力，Pi另有只针对HAL100私有运行时的卸载能力；目标只能是注册表中的四个固定ID，并绑定用户提示目标。检测结果用`managedInstallation`区分HAL100私有运行时和用户安装，卸载意图还必须明确包含HAL100私有/受管语义，不能与断开配置或用户自行卸载混用。受管安装和卸载当前只有Pi Coding Agent配方，其他ID故障关闭。专用适配器仍分别拥有配置格式、版本、协议、受管资源和回滚策略。`inspect_environment_diagnostics`聚合Gateway、引擎、模型库和四客户端状态，`inspect_operational_history`读取数据库中最多24条已脱敏事件并再次删除目标ID；`observe_operational_health`复用诊断并在约200毫秒固定窗口内完成3次引擎、用户路由、后端数量和熔断计数采样。新增`plan_model_stop`只能在完成运行目录读取后复制当前活动`modelId`；Rust在计划与执行前双重复核，原生确认后调用托管停止器，并要求`Stopped`且活动模型为空的现实证据，不删除模型、索引或用量。模型只看到脱敏状态和外层计划，不看到后端ID、路径、配置内容、告警原文、日志正文、凭据或内部计划ID。Rust Tool Broker复验工具名、精确参数、目标、run ID、tool call ID、唯一性、规范顺序、前置闭包和RPC v12当前每任务最多4次调用；每项任务最多产生一个可写计划。共享工具策略固定读/计划效果、前置关系、原生确认、参数正反例和128 KiB结果预算。4项是协议版本的单任务预算而非软件规模上限。Sidecar筛选只提高小模型可靠性，不是权限边界；任何缺失、错配、过长、协议异常或进程超时都故障关闭。
+迭代46新增第20类`ActivateRuntimeProfile`任务、第20项工具和独立`RuntimeProfileActive`成功谓词。`inspect_runtime_catalog`只向Pi返回方案ID、名称、说明、模型/引擎身份、上下文档位、准备度和漂移枚举；不返回模型路径或内部计划ID。Pi复制精确`profileId`后只能生成外层计划，`RuntimeProfileManager`在执行前重新读取数据库、模型完整性、引擎版本与容量策略，失败时尝试恢复原活动模型，成功后以`RuntimeProfileRecheck`复核活动方案并更新验证快照。
+
+迭代50把同一工具扩展到外部方案，但没有增加工具数量或Pi权限。Pi目录只新增所有权、保存的
+后端ID和可选上下文；API根、digest和内部路由计划仍留在Rust。外部计划调用异步实时预检，
+已保存身份在预检前或确认后漂移都会故障关闭。执行完成后`RuntimeProfileRecheck`再次访问外部
+引擎并核对版本、模型digest和完整活动路由；仅路由匹配或执行器返回成功都不能满足谓词。
+
+产品Sidecar当前注册20个HAL100代理工具。外部Agent使用检测、配置、断开和受管安装四项通用能力，Pi另有只针对HAL100私有运行时的卸载能力；目标只能是注册表中的四个固定ID，并绑定用户提示目标。检测结果用`managedInstallation`区分HAL100私有运行时和用户安装，卸载意图还必须明确包含HAL100私有/受管语义，不能与断开配置或用户自行卸载混用。受管安装和卸载当前只有Pi Coding Agent配方，其他ID故障关闭。专用适配器仍分别拥有配置格式、版本、协议、受管资源和回滚策略。`inspect_environment_diagnostics`聚合Gateway、引擎、模型库和四客户端状态，`inspect_operational_history`读取数据库中最多24条已脱敏事件并再次删除目标ID；`observe_operational_health`复用诊断并在约200毫秒固定窗口内完成3次引擎、用户路由、后端数量和熔断计数采样。新增`plan_model_stop`只能在完成运行目录读取后复制当前活动`modelId`；Rust在计划与执行前双重复核，原生确认后调用托管停止器，并要求`Stopped`且活动模型为空的现实证据，不删除模型、索引或用量。模型只看到脱敏状态和外层计划；运行方案可包含已保存的非秘密后端ID，但不包含API根、digest、路径、配置内容、告警原文、日志正文、凭据或内部计划ID。`plan_runtime_profile_activation`只接受本次目录中的精确`profileId`，并由Rust复验方案漂移、执行切换、失败恢复及活动方案现实状态。Rust Tool Broker复验工具名、精确参数、目标、run ID、tool call ID、唯一性、规范顺序、前置闭包和RPC v13当前每任务最多4次调用；每项任务最多产生一个可写计划。共享工具策略固定读/计划效果、前置关系、原生确认、参数正反例和128 KiB结果预算。4项是协议版本的单任务预算而非软件规模上限。Sidecar筛选只提高小模型可靠性，不是权限边界；任何缺失、错配、过长、协议异常或进程超时都故障关闭。
 
 `ManagedExternalAgentDeploymentManager`拥有Pi私有运行时的安装与卸载生命周期，但不承担`~/.pi`配置事务。安装在HAL100 owner-only UUID暂存目录中执行，npm进程使用固定绝对身份、清空环境、只包含npm同目录Node的最小PATH和私有工作目录；顶层归档SHA-512通过后生成lockfile v3，Rust将全部非根包的版本、来源、完整性和依赖语义规范化为固定SHA-256。闭包验证发生在任何Pi代码执行之前。卸载只接受固定`runtime`规范路径，预览与确认后均复验闭包和入口，再原子隔离并移入系统废纸篓；失败时恢复原目录。用户Pi候选始终优先，且不属于这个生命周期的所有权范围。
 
@@ -345,11 +425,11 @@ Gateway会话Key仅存在于运行内存和RPC请求，使用RAII在任务结束
 
 本地模式才会启动独立Qwen运行时；云端模式不调用本地运行时启动路径，任何认证、路由、连接或模型错误均原样失败关闭，不存在本地回退。云端任务使用独立客户端归属`hal100-agent-cloud`写入Usage。若本地Qwen正在空闲倒计时，云端任务不会取消该代次；释放任务在单次云端任务持有运行锁时以100毫秒低频等待，锁释放后立即停止本地运行时，避免云端任务造成模型长期驻留。
 
-### 11.3 依赖隔离
+### 12.3 依赖隔离
 
 实现时固定 Pi精确版本并提交依赖锁。升级必须通过工具协议、Provider、流式、取消、安全、性能和 Apple Silicon回归测试。未来 Windows 10/11使用同一 HAL100 RPC契约，平台差异只存在于 Sidecar构建和 Rust平台实现。
 
-## 12. OpenCode集成
+## 13. OpenCode集成
 
 OpenCode适配器必须按版本处理配置格式差异。修改流程：
 
@@ -362,12 +442,12 @@ Detect → Parse → Validate → Preview → Confirm → Backup → Atomic Patc
 
 实现使用5分钟有效的一次性计划将预览与执行分离。预览只包含HAL100将写入的语义字段，不把现有配置正文或凭据发送给WebView。确认后Rust Core重新比较原文件SHA-256，再创建原始字节备份并通过同目录临时文件、`fsync`和原子替换提交。OpenCode专属Key位于HAL100应用数据目录的`0600`文件，OpenCode配置只保存`{file:...}`引用。
 
-SQLite schema v8引入且schema v9继续保留的`integrations`记录主配置路径、凭据路径和受管分片语义哈希；
+SQLite schema v8引入且schema v11继续保留的`integrations`记录主配置路径、凭据路径和受管分片语义哈希；
 `integration_resources`登记配置、凭据和辅助配置资源，`api_key_hashes`只保存Key摘要。资源、
 接入与凭据在同一事务中写入，成功后共享CredentialRegistry热更新，Gateway无需重启。
 OpenCode检测和配置只由界面或Agent受控工具按需触发，不存在常驻轮询任务。
 
-### 12.1 Pi Coding Agent集成
+### 13.1 Pi Coding Agent集成
 
 Pi适配器只管理`~/.pi/agent/models.json`中的`providers.hal100`。该文件按官方契约使用严格
 JSON；HAL100不读取或修改`settings.json`、`auth.json`、会话、扩展、Skills、Prompt模板或
@@ -389,7 +469,7 @@ HAL100应用数据目录的`0600`文件，`models.json`只保存经过Shell单�
 独立的一次性计划、摘要复验、备份、同目录原子替换、严格解析验证、事务提交和失败回滚。
 外部Pi的Gateway身份固定为`pi-coding-agent`，不会与内置Runtime的`hal100-agent`共享Usage。
 
-## 13. 平台抽象
+## 14. 平台抽象
 
 领域核心只依赖平台接口：
 
@@ -401,8 +481,8 @@ HAL100应用数据目录的`0600`文件，`models.json`只保存经过Shell单�
 - 模型与应用数据目录。
 - OpenCode配置路径。
 
-首版只实现 macOS/Apple Silicon。未来 Windows 10/11实现同一接口，不在核心业务代码中散落条件编译。
+首版只实现 macOS/Apple Silicon。未来 Windows 10/11与Linux实现同一接口，不在核心业务代码中散落条件编译。
 
-## 14. 首版不引入独立系统守护进程
+## 15. 首版不引入独立系统守护进程
 
 当前由无可见窗口的 Tauri Core长期驻留；主 WebView可能尚未创建或处于隐藏状态。`hal100-core` 必须保持为独立 Rust库，以便未来在可靠性需求成立时提取为用户级后台进程，而无需重写业务逻辑。

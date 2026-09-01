@@ -26,27 +26,33 @@ use std::{
 use hal100_core::AppCore;
 use hal100_infra::{
     AgentRuntimeCapacityProfile, BackendConfig, BackendManager, CredentialRegistry,
-    DEFAULT_GATEWAY_ADDRESS, Database, ExternalModelProfileRegistry, GatewayRoutingSnapshot,
-    GatewayState, GenericClientManager, GgufImportManager, HermesAgentIntegrationAdapter,
-    HermesAgentPaths, LlamaCppManager, LocalBackendDiscoveryService, LoggingGuard,
-    ModelDownloadManager, ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawPaths,
-    OpenCodeManager, OpenCodePaths, PiCodingAgentIntegrationAdapter, PiCodingAgentPaths,
-    RemoteModelCatalog, UsageWriter, init_structured_logging, serve_gateway,
-    stored_client_credential,
+    DEFAULT_GATEWAY_ADDRESS, Database, ExternalInferenceEngineRegistry,
+    ExternalModelProfileRegistry, GatewayRoutingSnapshot, GatewayState, GenericClientManager,
+    GgufImportManager, HermesAgentIntegrationAdapter, HermesAgentPaths, InferenceEngineAdapter,
+    LlamaCppManager, LocalBackendDiscoveryService, LoggingGuard, ModelDownloadManager,
+    ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawPaths, OpenCodeManager, OpenCodePaths,
+    PiCodingAgentIntegrationAdapter, PiCodingAgentPaths, RemoteModelCatalog, RuntimeProfileManager,
+    UsageWriter, init_structured_logging, serve_gateway, stored_client_credential,
 };
-use hal100_platform::{MacOsKeychainSecretStore, MacOsSystemProbe};
+use hal100_platform::{MacOsKeychainSecretStore, NativeSystemProbe};
 use hal100_protocol::{
     AgentEcosystemCatalog, AppOverview, AuditLog, BackendCatalog, BackendDraft, BackendProbeResult,
     BackendRouteDraft, DataCleanupPreview, DataCleanupResult, DesktopSettings, DownloadSource,
-    EngineInstallPlan, EngineRemovePlan, ExternalAgentConfigurationPlan,
-    ExternalAgentConfigurationResult, ExternalAgentDetection, ExternalAgentDisconnectPlan,
-    ExternalAgentDisconnectResult, ExternalAgentGatewayProtocol, GenericClientCatalog,
-    GenericClientCredential, GgufImportPlan, GgufImportResult, HardwareProfile, LlamaCppStatus,
-    LocalBackendDiscovery, ModelDownloadPlan, ModelDownloadSnapshot, ModelLibrary,
-    ModelRemovalKind, ModelRemovalPlan, ModelRemovalResult, ModelTestResult, OnboardingCompletion,
-    OpenCodeApplyResult, OpenCodeConfigPlan, OpenCodeDetection, OpenCodeProjectDiagnosis,
-    RemoteModelRepository, RemoteModelSearchResults, RetentionSettingsDraft, ServiceState,
-    UsageDashboard, UsageFilterOptions, UsageHourlySummary, UsageScopeQuery, UsageScopeSummary,
+    ENGINE_ADAPTER_CONTRACT_REVISION, EngineInstallPlan, EngineRemovePlan,
+    ExternalAgentConfigurationPlan, ExternalAgentConfigurationResult, ExternalAgentDetection,
+    ExternalAgentDisconnectPlan, ExternalAgentDisconnectResult, ExternalAgentGatewayProtocol,
+    ExternalEngineSnapshot, ExternalRuntimeProfileCandidate, ExternalRuntimeProfileDraft,
+    GenericClientCatalog, GenericClientCredential, GgufImportPlan, GgufImportResult,
+    HardwareProfile, InferenceCapabilityCatalog, InferenceEngineCapability,
+    InferenceEngineOwnership, InferenceEngineSupportStatus, LlamaCppStatus, LocalBackendDiscovery,
+    ModelDownloadPlan, ModelDownloadSnapshot, ModelLibrary, ModelRemovalKind, ModelRemovalPlan,
+    ModelRemovalResult, ModelTestResult, OnboardingCompletion, OpenCodeApplyResult,
+    OpenCodeConfigPlan, OpenCodeDetection, OpenCodeProjectDiagnosis, RemoteModelRepository,
+    RemoteModelSearchResults, RetentionSettingsDraft, RuntimeProfileActivationPlan,
+    RuntimeProfileActivationResult, RuntimeProfileCatalog, RuntimeProfileDraft,
+    RuntimeProfileFailure, RuntimeProfileFailureCode, RuntimeProfileFailureStage,
+    RuntimeProfileRecoveryAction, RuntimeProfileSupportCell, ServiceState, UsageDashboard,
+    UsageFilterOptions, UsageHourlySummary, UsageScopeQuery, UsageScopeSummary,
 };
 use tauri::{
     Manager, State,
@@ -67,8 +73,17 @@ const DEV_FRONTEND_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 #[cfg(dev)]
 const DEV_FRONTEND_FAILURE_SCRIPT: &str = include_str!("development_frontend_failure.js");
 
+const fn runtime_profile_interaction_failure() -> RuntimeProfileFailure {
+    RuntimeProfileFailure::new(
+        RuntimeProfileFailureCode::InteractionIncomplete,
+        RuntimeProfileFailureStage::Interaction,
+        true,
+        RuntimeProfileRecoveryAction::Retry,
+    )
+}
+
 struct CoreState {
-    core: Arc<AppCore<MacOsSystemProbe>>,
+    core: Arc<AppCore<NativeSystemProbe>>,
 }
 
 struct DatabaseState {
@@ -136,6 +151,10 @@ struct RemoteCatalogState {
 
 struct EngineState {
     manager: Arc<LlamaCppManager>,
+}
+
+struct RuntimeProfileState {
+    manager: Arc<RuntimeProfileManager>,
 }
 
 struct AgentState {
@@ -658,6 +677,10 @@ async fn apply_agent_action_plan(
             "确认 Agent 的模型启动或切换计划",
             "确认后 Rust Core 会重新校验模型文件，并等待已有请求安全排空；不会强制切换。",
         ),
+        hal100_protocol::AgentActionKind::ActivateRuntimeProfile => (
+            "确认 Agent 的运行方案切换计划",
+            "确认后 Rust Core 会复验方案中的模型完整性、引擎版本和容量策略，再安全切换；失败时会尝试恢复原运行模型。",
+        ),
         hal100_protocol::AgentActionKind::StopModel => (
             "确认 Agent 的当前模型停止计划",
             "确认后 Rust Core 会等待已有请求安全排空，再停止当前托管推理进程；模型文件、索引和用量记录都会保留。",
@@ -1072,11 +1095,156 @@ async fn get_hardware_profile(
 ) -> Result<HardwareProfile, String> {
     let model_storage_path = state.model_storage_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        MacOsSystemProbe.hardware_profile(&model_storage_path)
+        NativeSystemProbe.hardware_profile(&model_storage_path)
     })
     .await
     .map_err(|error| format!("硬件检测任务异常结束：{error}"))?
     .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_inference_capability_catalog(
+    models: State<'_, ModelManagementState>,
+    engine: State<'_, EngineState>,
+    profiles: State<'_, RuntimeProfileState>,
+    backends: State<'_, BackendManagementState>,
+) -> Result<InferenceCapabilityCatalog, String> {
+    let model_storage_path = models.model_storage_path.clone();
+    let engine = engine.manager.clone();
+    let host = tauri::async_runtime::spawn_blocking(move || {
+        NativeSystemProbe.capability_snapshot(&model_storage_path)
+    })
+    .await
+    .map_err(|error| format!("推理能力检测任务异常结束：{error}"))?
+    .map_err(|error| error.to_string())?;
+    let manifest = engine.manifest();
+    let compatibility = manifest.compatibility_with(&host);
+    let descriptor = manifest.descriptor;
+    let recommendation = hal100_infra::recommendation_for(&compatibility, descriptor.ownership, 0);
+    let support_evidence = compatibility.support_evidence.clone().unwrap_or_else(|| {
+        hal100_infra::support_evidence_for(descriptor.kind, compatibility.support_status)
+    });
+    let mut engines = vec![InferenceEngineCapability {
+        descriptor,
+        compatibility,
+        external_runtimes: Vec::new(),
+        support_evidence: Some(support_evidence),
+        recommendation: Some(recommendation),
+    }];
+    engines.extend(
+        profiles
+            .manager
+            .external_engine_capabilities(&host)
+            .await
+            .map_err(|error| error.to_string())?,
+    );
+    let backend_catalog = backends
+        .manager
+        .catalog()
+        .map_err(|error| error.to_string())?;
+    let manifest_registry = profiles.manager.manifest_registry();
+    let external_runtimes = engines
+        .iter()
+        .filter(|capability| {
+            capability.compatibility.compatible
+                || capability
+                    .compatibility
+                    .issues
+                    .contains(&hal100_protocol::EngineHostCompatibilityIssue::SupportCellAmbiguous)
+        })
+        .flat_map(|capability| capability.external_runtimes.iter().cloned())
+        .collect::<Vec<_>>();
+    let runtime_profile_candidates = external_runtime_profile_candidates(
+        &backend_catalog,
+        &external_runtimes,
+        &manifest_registry,
+        &host,
+    );
+    Ok(InferenceCapabilityCatalog {
+        host,
+        engines,
+        runtime_profile_candidates,
+    })
+}
+
+fn external_runtime_profile_candidates(
+    backend_catalog: &BackendCatalog,
+    external_runtimes: &[ExternalEngineSnapshot],
+    manifest_registry: &hal100_infra::InferenceEngineManifestRegistry,
+    host: &hal100_protocol::HostCapabilitySnapshot,
+) -> Vec<ExternalRuntimeProfileCandidate> {
+    let mut runtime_profile_candidates = Vec::new();
+    for runtime in external_runtimes
+        .iter()
+        .filter(|runtime| runtime.model_catalog_complete)
+    {
+        for backend in backend_catalog.backends.iter().filter(|backend| {
+            backend.enabled
+                && backend.kind.ownership() == InferenceEngineOwnership::External
+                && backend.engine == Some(runtime.engine)
+                && backend.api_root == runtime.api_root
+        }) {
+            let Some(adapter_variant) = backend.adapter_variant.as_deref() else {
+                continue;
+            };
+            let adapter_id = hal100_protocol::EngineAdapterId {
+                engine: runtime.engine,
+                variant: adapter_variant.to_owned(),
+                contract_revision: ENGINE_ADAPTER_CONTRACT_REVISION.to_owned(),
+            };
+            let support_cells = manifest_registry
+                .manifest(&adapter_id)
+                .map(|manifest| {
+                    manifest
+                        .support_units
+                        .into_iter()
+                        .filter(|unit| {
+                            unit.platform == host.platform
+                                && unit.architecture == host.architecture
+                                && host.accelerators.contains(&unit.accelerator)
+                                && matches!(
+                                    unit.status,
+                                    InferenceEngineSupportStatus::Managed
+                                        | InferenceEngineSupportStatus::VerifiedExternal
+                                )
+                        })
+                        .map(|unit| RuntimeProfileSupportCell {
+                            platform: unit.platform,
+                            architecture: unit.architecture,
+                            accelerator: unit.accelerator,
+                            deployment: unit.deployment,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if support_cells.is_empty() {
+                continue;
+            }
+            runtime_profile_candidates.extend(runtime.models.iter().map(|model| {
+                ExternalRuntimeProfileCandidate {
+                    backend_id: backend.id.clone(),
+                    backend_display_name: backend.display_name.clone(),
+                    backend_api_root: backend.api_root.clone(),
+                    engine: runtime.engine,
+                    engine_version: runtime.version.clone(),
+                    model_id: model.name.clone(),
+                    model_digest: model.digest.clone(),
+                    evidence: model.evidence.clone(),
+                    model_format: model.format.clone(),
+                    parameter_size: model.parameter_size.clone(),
+                    quantization: model.quantization.clone(),
+                    support_cells: support_cells.clone(),
+                }
+            }));
+        }
+    }
+    runtime_profile_candidates.sort_by(|left, right| {
+        left.backend_id
+            .cmp(&right.backend_id)
+            .then_with(|| left.model_id.cmp(&right.model_id))
+            .then_with(|| left.model_digest.cmp(&right.model_digest))
+    });
+    runtime_profile_candidates
 }
 
 #[tauri::command]
@@ -1239,7 +1407,7 @@ async fn get_remote_model_repository(
 
 async fn available_model_storage_bytes(path: PathBuf) -> Result<u64, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        MacOsSystemProbe.model_storage_available_bytes(&path)
+        NativeSystemProbe.model_storage_available_bytes(&path)
     })
     .await
     .map_err(|error| format!("磁盘空间检测任务异常结束：{error}"))?
@@ -1435,6 +1603,160 @@ async fn force_stop_llama_cpp(
         .force_stop()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_runtime_profile_catalog(
+    state: State<'_, RuntimeProfileState>,
+) -> Result<RuntimeProfileCatalog, RuntimeProfileFailure> {
+    state
+        .manager
+        .catalog_verified()
+        .await
+        .map_err(|error| error.failure())
+}
+
+#[tauri::command]
+async fn save_current_runtime_profile(
+    draft: RuntimeProfileDraft,
+    state: State<'_, RuntimeProfileState>,
+) -> Result<RuntimeProfileCatalog, RuntimeProfileFailure> {
+    state
+        .manager
+        .save_current(draft)
+        .map_err(|error| error.failure())?;
+    state
+        .manager
+        .catalog_verified()
+        .await
+        .map_err(|error| error.failure())
+}
+
+#[tauri::command]
+async fn save_external_runtime_profile(
+    draft: ExternalRuntimeProfileDraft,
+    state: State<'_, RuntimeProfileState>,
+) -> Result<RuntimeProfileCatalog, RuntimeProfileFailure> {
+    state
+        .manager
+        .save_external(draft)
+        .await
+        .map_err(|error| error.failure())?;
+    state
+        .manager
+        .catalog_verified()
+        .await
+        .map_err(|error| error.failure())
+}
+
+#[tauri::command]
+async fn reverify_external_runtime_profile(
+    app: tauri::AppHandle,
+    profile_id: String,
+    state: State<'_, RuntimeProfileState>,
+) -> Result<RuntimeProfileCatalog, RuntimeProfileFailure> {
+    require_native_confirmation(
+        app,
+        "重新验证外部运行方案",
+        "HAL100 将实时核对同一外部后端、API 根、引擎版本与模型摘要，并更新此方案的验证快照。不会启动、安装、拉取或切换模型。",
+        false,
+    )
+    .await
+    .map_err(|_| runtime_profile_interaction_failure())?;
+    state
+        .manager
+        .reverify_external(&profile_id)
+        .await
+        .map_err(|error| error.failure())
+}
+
+#[tauri::command]
+async fn update_runtime_profile(
+    profile_id: String,
+    draft: RuntimeProfileDraft,
+    state: State<'_, RuntimeProfileState>,
+) -> Result<RuntimeProfileCatalog, RuntimeProfileFailure> {
+    state
+        .manager
+        .update(&profile_id, draft)
+        .map_err(|error| error.failure())?;
+    state
+        .manager
+        .catalog_verified()
+        .await
+        .map_err(|error| error.failure())
+}
+
+#[tauri::command]
+async fn delete_runtime_profile(
+    profile_id: String,
+    state: State<'_, RuntimeProfileState>,
+) -> Result<RuntimeProfileCatalog, RuntimeProfileFailure> {
+    state
+        .manager
+        .delete(&profile_id)
+        .map_err(|error| error.failure())?;
+    state
+        .manager
+        .catalog_verified()
+        .await
+        .map_err(|error| error.failure())
+}
+
+#[tauri::command]
+async fn plan_runtime_profile_activation(
+    profile_id: String,
+    state: State<'_, RuntimeProfileState>,
+) -> Result<RuntimeProfileActivationPlan, RuntimeProfileFailure> {
+    state
+        .manager
+        .plan_activation_verified(&profile_id)
+        .await
+        .map_err(|error| error.failure())
+}
+
+#[tauri::command]
+fn discard_runtime_profile_activation_plan(
+    plan_id: String,
+    state: State<'_, RuntimeProfileState>,
+) -> Result<bool, RuntimeProfileFailure> {
+    state
+        .manager
+        .discard_activation_plan(&plan_id)
+        .map_err(|error| error.failure())
+}
+
+#[tauri::command]
+async fn apply_runtime_profile_activation(
+    app: tauri::AppHandle,
+    plan_id: String,
+    state: State<'_, RuntimeProfileState>,
+) -> Result<RuntimeProfileActivationResult, RuntimeProfileFailure> {
+    if state
+        .manager
+        .activation_requires_confirmation(&plan_id)
+        .map_err(|error| error.failure())?
+    {
+        require_native_confirmation(
+            app,
+            "确认运行个人方案",
+            "HAL100 将安全切换到方案绑定的模型与推理引擎。Rust 会再次复验现实状态；若切换失败，会尝试恢复原路由与托管模型。",
+            false,
+        )
+        .await
+        .map_err(|_| runtime_profile_interaction_failure())?;
+    }
+    let mut result = state
+        .manager
+        .apply_activation(&plan_id)
+        .await
+        .map_err(|error| error.failure())?;
+    result.catalog = state
+        .manager
+        .catalog_verified()
+        .await
+        .map_err(|error| error.failure())?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2139,7 +2461,7 @@ fn schedule_benchmark_window_cycles(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let core = Arc::new(AppCore::new(MacOsSystemProbe));
+    let core = Arc::new(AppCore::new(NativeSystemProbe));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -2192,6 +2514,7 @@ pub fn run() {
             delete_external_backend,
             discover_local_backends,
             get_hardware_profile,
+            get_inference_capability_catalog,
             get_model_library,
             set_default_download_source,
             search_remote_models,
@@ -2212,6 +2535,15 @@ pub fn run() {
             force_start_llama_cpp_model,
             stop_llama_cpp,
             force_stop_llama_cpp,
+            get_runtime_profile_catalog,
+            save_current_runtime_profile,
+            save_external_runtime_profile,
+            reverify_external_runtime_profile,
+            update_runtime_profile,
+            delete_runtime_profile,
+            plan_runtime_profile_activation,
+            discard_runtime_profile_activation_plan,
+            apply_runtime_profile_activation,
             test_active_model,
             get_usage_dashboard,
             get_usage_hourly,
@@ -2286,8 +2618,9 @@ pub fn run() {
             }
             let model_storage_path = data_dir.join("models");
             std::fs::create_dir_all(&model_storage_path)?;
+            let host_capabilities = NativeSystemProbe.capability_snapshot(&model_storage_path)?;
             let agent_capacity = AgentRuntimeCapacityProfile::for_total_unified_memory_bytes(
-                MacOsSystemProbe.total_unified_memory_bytes()?,
+                host_capabilities.total_memory_bytes,
             );
             tracing::info!(
                 capacity_tier = agent_capacity.tier,
@@ -2423,7 +2756,12 @@ pub fn run() {
             });
             let import_manager = Arc::new(GgufImportManager::new(database.clone()));
             let remote_catalog = Arc::new(RemoteModelCatalog::new()?);
-            let backend_discovery = Arc::new(LocalBackendDiscoveryService::new()?);
+            let external_engines = Arc::new(
+                ExternalInferenceEngineRegistry::standard_with_reviewed_acceptance_promotions()?,
+            );
+            let backend_discovery = Arc::new(LocalBackendDiscoveryService::with_registry(
+                external_engines.clone(),
+            )?);
             let download_manager = Arc::new(ModelDownloadManager::new(
                 database.clone(),
                 remote_catalog.clone(),
@@ -2439,6 +2777,19 @@ pub fn run() {
                 data_dir.join("engines").join("llama.cpp"),
                 agent_capacity,
             )?);
+            let runtime_profile_manager = Arc::new(RuntimeProfileManager::with_external_context(
+                database.clone(),
+                llama_cpp_manager.clone(),
+                host_capabilities,
+                backend_manager.clone(),
+                gateway_control.clone(),
+                external_engines,
+            ));
+            if !tauri::async_runtime::block_on(
+                runtime_profile_manager.recover_incomplete_activation(),
+            )? {
+                return Err("runtime profile activation recovery is still required".into());
+            }
             let agent_runtime = Arc::new(hal100_infra::AgentModelRuntime::with_capacity(
                 database.clone(),
                 llama_cpp_manager.clone(),
@@ -2462,6 +2813,7 @@ pub fn run() {
                 gateway_base_url,
                 model_storage_path.clone(),
                 &data_dir,
+                runtime_profile_manager.clone(),
             )?);
             app.manage(ModelManagementState {
                 database: database.clone(),
@@ -2478,6 +2830,9 @@ pub fn run() {
             });
             app.manage(EngineState {
                 manager: llama_cpp_manager,
+            });
+            app.manage(RuntimeProfileState {
+                manager: runtime_profile_manager,
             });
             app.manage(AgentState {
                 service: agent_service,
@@ -2544,8 +2899,15 @@ mod tests {
     #[cfg(dev)]
     use super::{DEV_FRONTEND_FAILURE_SCRIPT, development_frontend_response_is_hal100};
     use super::{
-        DEV_HIDE_WINDOW_ARGUMENT, bind_gateway_listener, dev_hide_window_requested,
-        should_hide_window_on_close, should_prevent_exit,
+        DEV_HIDE_WINDOW_ARGUMENT, ExternalInferenceEngineRegistry, bind_gateway_listener,
+        dev_hide_window_requested, external_runtime_profile_candidates,
+        runtime_profile_interaction_failure, should_hide_window_on_close, should_prevent_exit,
+    };
+    use hal100_protocol::{
+        BackendAuthMethod, BackendCatalog, BackendKind, BackendSummary, ExternalEngineModelSummary,
+        ExternalEngineSnapshot, HostCapabilitySnapshot, InferenceAccelerator,
+        InferenceArchitecture, InferenceEngineKind, InferencePlatform, RuntimeProfileFailureCode,
+        RuntimeProfileFailureStage, RuntimeProfileRecoveryAction,
     };
     use std::{io::ErrorKind, net::TcpStream};
 
@@ -2557,6 +2919,19 @@ mod tests {
     #[test]
     fn explicit_programmatic_exit_is_allowed() {
         assert!(!should_prevent_exit(Some(0)));
+    }
+
+    #[test]
+    fn runtime_profile_native_interaction_failure_is_safe_and_retryable() {
+        let failure = runtime_profile_interaction_failure();
+
+        assert_eq!(
+            failure.code,
+            RuntimeProfileFailureCode::InteractionIncomplete
+        );
+        assert_eq!(failure.stage, RuntimeProfileFailureStage::Interaction);
+        assert!(failure.retryable);
+        assert_eq!(failure.recovery_action, RuntimeProfileRecoveryAction::Retry);
     }
 
     #[test]
@@ -2639,5 +3014,112 @@ mod tests {
             .accept()
             .expect("existing service still accepts clients");
         assert_eq!(peer.ip(), client.local_addr().expect("client address").ip());
+    }
+
+    #[test]
+    fn external_profile_candidates_require_saved_enabled_exact_runtime_identity() {
+        let backend = |id: &str, kind: BackendKind, api_root: &str, enabled: bool| BackendSummary {
+            id: id.to_owned(),
+            display_name: id.to_owned(),
+            kind,
+            engine: kind.engine_kind(),
+            adapter_variant: kind.default_adapter_variant().map(str::to_owned),
+            api_root: api_root.to_owned(),
+            auth_method: BackendAuthMethod::None,
+            credential_configured: false,
+            enabled,
+            runtime_available: enabled,
+            is_active: false,
+            consecutive_failures: 0,
+            circuit_open: false,
+        };
+        let catalog = BackendCatalog {
+            active_backend_id: None,
+            backends: vec![
+                backend(
+                    "saved-ollama",
+                    BackendKind::ExternalOllama,
+                    "http://127.0.0.1:11434/v1/",
+                    true,
+                ),
+                backend(
+                    "disabled-ollama",
+                    BackendKind::ExternalOllama,
+                    "http://127.0.0.1:11434/v1/",
+                    false,
+                ),
+                backend(
+                    "wrong-engine",
+                    BackendKind::ExternalVllm,
+                    "http://127.0.0.1:11434/v1/",
+                    true,
+                ),
+                backend(
+                    "wrong-root",
+                    BackendKind::ExternalOllama,
+                    "http://127.0.0.1:11435/v1/",
+                    true,
+                ),
+            ],
+            model_routes: Vec::new(),
+        };
+        let runtime = ExternalEngineSnapshot {
+            engine: InferenceEngineKind::Ollama,
+            display_name: "本机 Ollama".to_owned(),
+            api_root: "http://127.0.0.1:11434/v1/".to_owned(),
+            version: "0.12.6".to_owned(),
+            engine_version_exact: true,
+            models: vec![ExternalEngineModelSummary {
+                name: "qwen3:8b".to_owned(),
+                digest: "a".repeat(64),
+                size_bytes: 4_000_000_000,
+                format: "gguf".to_owned(),
+                family: Some("qwen3".to_owned()),
+                parameter_size: Some("8.2B".to_owned()),
+                quantization: Some("Q4_K_M".to_owned()),
+                evidence: hal100_protocol::RuntimeProfileEvidence {
+                    kind: hal100_protocol::RuntimeProfileEvidenceKind::ContentDigest,
+                    algorithm: "ollama-digest".to_owned(),
+                    value: "a".repeat(64),
+                },
+            }],
+            model_catalog_complete: true,
+        };
+
+        let registry = ExternalInferenceEngineRegistry::standard()
+            .expect("standard external registry")
+            .manifest_registry();
+        let host = HostCapabilitySnapshot {
+            platform: InferencePlatform::MacOs,
+            architecture: InferenceArchitecture::Aarch64,
+            cpu_brand: "test".to_owned(),
+            device_model: "test".to_owned(),
+            total_memory_bytes: 1,
+            physical_cpu_cores: 1,
+            logical_cpu_cores: 1,
+            accelerators: vec![InferenceAccelerator::Cpu],
+            model_storage_path: "/tmp".to_owned(),
+            model_storage_available_bytes: 1,
+            probe_revision: "test".to_owned(),
+        };
+        let candidates = external_runtime_profile_candidates(
+            &catalog,
+            std::slice::from_ref(&runtime),
+            &registry,
+            &host,
+        );
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].backend_id, "saved-ollama");
+        assert_eq!(candidates[0].model_id, "qwen3:8b");
+        assert_eq!(candidates[0].model_digest, "a".repeat(64));
+
+        let incomplete = ExternalEngineSnapshot {
+            model_catalog_complete: false,
+            ..runtime
+        };
+        assert!(
+            external_runtime_profile_candidates(&catalog, &[incomplete], &registry, &host)
+                .is_empty()
+        );
     }
 }

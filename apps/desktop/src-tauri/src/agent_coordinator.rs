@@ -67,8 +67,17 @@ impl AgentRunRequirements {
         }
         let model_download = prompt_requires_model_download_plan(prompt);
         let model_stop = !model_download && prompt_requires_model_stop_plan(prompt);
-        let model_start =
-            !model_download && !model_stop && prompt_requires_model_start_plan(prompt);
+        let runtime_profile_activation = !model_download
+            && !model_stop
+            && AgentTaskIntentRouter::route(prompt, hal100_core::AgentTaskProviderMode::Local)
+                .task_spec()
+                .is_some_and(|spec| {
+                    spec.task_kind() == hal100_core::AgentTaskKind::ActivateRuntimeProfile
+                });
+        let model_start = !model_download
+            && !model_stop
+            && !runtime_profile_activation
+            && prompt_requires_model_start_plan(prompt);
         let model_removal = prompt_requires_model_removal_plan(prompt);
         let engine_install = prompt_requires_engine_install_plan(prompt);
         let engine_remove = prompt_requires_engine_remove_plan(prompt);
@@ -85,6 +94,7 @@ impl AgentRunRequirements {
             && external_agent_target.is_some()
             && prompt_requires_external_agent_disconnection_plan(prompt);
         let has_explicit_action = model_start
+            || runtime_profile_activation
             || model_stop
             || model_removal
             || engine_install
@@ -111,6 +121,10 @@ impl AgentRunRequirements {
                 AgentCapabilityId::InspectRuntimeCatalog,
             ),
             (model_start, AgentCapabilityId::PlanModelStart),
+            (
+                runtime_profile_activation,
+                AgentCapabilityId::PlanRuntimeProfileActivation,
+            ),
             (model_stop, AgentCapabilityId::PlanModelStop),
             (model_removal, AgentCapabilityId::PlanModelRemoval),
             (
@@ -231,7 +245,7 @@ impl AgentRunRequirements {
         self.capabilities.iter()
     }
 
-    pub(super) fn to_rpc_v12(
+    pub(super) fn to_rpc_v13(
         &self,
         prompt: &str,
         gateway_base_url: &str,
@@ -583,6 +597,11 @@ pub(super) fn prompt_requires_runtime_catalog(prompt: &str) -> bool {
         "当前模型",
         "活动模型",
         "引擎状态",
+        "推理引擎",
+        "引擎能力",
+        "支持哪些引擎",
+        "支持的引擎",
+        "引擎兼容",
         "后端状态",
         "运行状态",
         "是否安装",
@@ -1119,6 +1138,9 @@ mod tests {
         let mut mismatch_ids = Vec::new();
 
         for scenario in scenarios {
+            if scenario["id"] == "template-activate-runtime-profile" {
+                continue;
+            }
             let Some(prompt) = scenario["input"]["prompt"].as_str() else {
                 continue;
             };

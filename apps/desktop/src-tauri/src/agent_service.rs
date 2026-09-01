@@ -40,7 +40,7 @@ use hal100_infra::{
     ModelRemovalError, ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawIntegrationError,
     OpenCodeIntegrationError, OpenCodeManager, PiCodingAgentIntegrationAdapter,
     PiCodingAgentIntegrationError, RemoteModelCatalog, RemoteModelCatalogError,
-    stored_client_credential,
+    RuntimeProfileManager, RuntimeProfileManagerError, stored_client_credential,
 };
 use hal100_platform::{HardwareProbeError, SidecarLaunchError};
 use hal100_protocol::{
@@ -210,6 +210,8 @@ pub enum AgentServiceError {
     #[error(transparent)]
     ManagedDeployment(#[from] ManagedExternalAgentDeploymentError),
     #[error(transparent)]
+    RuntimeProfile(#[from] RuntimeProfileManagerError),
+    #[error(transparent)]
     Credential(#[from] ClientCredentialError),
     #[error(transparent)]
     Database(#[from] DatabaseError),
@@ -270,6 +272,7 @@ impl AgentServiceError {
             Self::RemoteCatalog(error) => error.code(),
             Self::Diagnostics(_) => "environment_diagnostics_failed",
             Self::ManagedDeployment(_) => "managed_external_agent_deployment_failed",
+            Self::RuntimeProfile(_) => "runtime_profile_operation_failed",
             Self::Credential(_) => "credential_failed",
             Self::Database(_) => "database_failed",
             Self::GatewayRoute(_) => "gateway_route_failed",
@@ -369,6 +372,7 @@ impl From<AgentToolExecutionError> for AgentServiceError {
             AgentToolExecutionError::RemoteCatalog(error) => Self::RemoteCatalog(error),
             AgentToolExecutionError::ModelDownload(error) => Self::ModelDownload(error),
             AgentToolExecutionError::ManagedDeployment(error) => Self::ManagedDeployment(error),
+            AgentToolExecutionError::RuntimeProfile(error) => Self::RuntimeProfile(error),
         }
     }
 }
@@ -411,6 +415,7 @@ pub struct AgentService {
     runs: AgentRunRegistry,
     action_plans: AgentActionPlanStore,
     tools: AgentToolExecutor,
+    runtime_profiles: Arc<RuntimeProfileManager>,
     provider: AgentProviderService,
     intent_shadow: AgentIntentShadowObserver,
     task_routing_mode: AgentTaskRoutingMode,
@@ -445,6 +450,7 @@ impl AgentService {
         gateway_base_url: String,
         model_storage_path: PathBuf,
         data_dir: &Path,
+        runtime_profiles: Arc<RuntimeProfileManager>,
     ) -> Result<Self, AgentServiceError> {
         Self::with_idle_timeout(
             runtime,
@@ -463,6 +469,7 @@ impl AgentService {
             gateway_base_url,
             model_storage_path,
             data_dir,
+            runtime_profiles,
             AGENT_IDLE_TIMEOUT,
         )
     }
@@ -485,6 +492,7 @@ impl AgentService {
         gateway_base_url: String,
         model_storage_path: PathBuf,
         data_dir: &Path,
+        runtime_profiles: Arc<RuntimeProfileManager>,
         idle_timeout: Duration,
     ) -> Result<Self, AgentServiceError> {
         let kernel = AgentKernelRunner::discover(data_dir)?;
@@ -516,6 +524,7 @@ impl AgentService {
             managed_deployment.clone(),
             gateway.clone(),
             action_plans.clone(),
+            runtime_profiles.clone(),
         );
         Ok(Self {
             runtime,
@@ -540,6 +549,7 @@ impl AgentService {
             runs: AgentRunRegistry::default(),
             action_plans,
             tools,
+            runtime_profiles,
             provider,
             intent_shadow: AgentIntentShadowObserver::default(),
             task_routing_mode: configured_task_routing_mode(),
@@ -1402,6 +1412,13 @@ impl AgentService {
         match executor {
             AgentActionExecutor::StartOrSwitchModel { .. }
             | AgentActionExecutor::StopModel { .. } => {}
+            AgentActionExecutor::ActivateRuntimeProfile {
+                activation_plan_id, ..
+            } => {
+                let _ = self
+                    .runtime_profiles
+                    .discard_activation_plan(activation_plan_id);
+            }
             AgentActionExecutor::DownloadModel { download_plan_id } => {
                 let _ = self.tools.discard_model_download_plan(download_plan_id);
             }
@@ -1613,6 +1630,29 @@ impl AgentService {
                     )
                 })
                 .map_err(AgentServiceError::from),
+            AgentActionExecutor::ActivateRuntimeProfile {
+                activation_plan_id, ..
+            } => self
+                .runtime_profiles
+                .apply_activation(&activation_plan_id)
+                .await
+                .map(|result| {
+                    (
+                        format!(
+                            "运行方案已复验并安全启用：{} / {}",
+                            result
+                                .active_backend_id
+                                .as_deref()
+                                .unwrap_or("HAL100 托管运行时"),
+                            result.active_model_id
+                        ),
+                        result
+                            .managed_runtime
+                            .as_ref()
+                            .map(|runtime| runtime.runtime_state),
+                    )
+                })
+                .map_err(AgentServiceError::from),
             AgentActionExecutor::StopModel { model_id } => {
                 let current = self.engine.status().map_err(AgentServiceError::from)?;
                 if current.runtime_state != EngineRuntimeState::Running
@@ -1792,11 +1832,27 @@ impl AgentService {
                 None
             }
         };
-        let evidence = self.verify_action_evidence(
-            &verification_executor,
-            repair_verification.as_ref(),
-            diagnostic_report.as_ref(),
-        );
+        let evidence = match &verification_executor {
+            AgentActionExecutor::ActivateRuntimeProfile { profile_id, .. } => {
+                match self
+                    .runtime_profiles
+                    .verify_active_profile(profile_id)
+                    .await
+                {
+                    Ok(active) => {
+                        observed_evidence(active, AgentTaskEvidenceSource::RuntimeProfileRecheck)
+                    }
+                    Err(_) => AgentTaskEvidence::unavailable(Some(
+                        AgentTaskEvidenceSource::RuntimeProfileRecheck,
+                    )),
+                }
+            }
+            _ => self.verify_action_evidence(
+                &verification_executor,
+                repair_verification.as_ref(),
+                diagnostic_report.as_ref(),
+            ),
+        };
         self.task_runtime
             .complete_verification(evidence, now_ms())?;
         match evidence.verification_state {
@@ -1894,6 +1950,18 @@ impl AgentService {
                 Err(_) => {
                     AgentTaskEvidence::unavailable(Some(AgentTaskEvidenceSource::RuntimeRecheck))
                 }
+            },
+            (
+                AgentTaskSuccessPredicate::RuntimeProfileActive,
+                AgentActionExecutor::ActivateRuntimeProfile { profile_id, .. },
+            ) => match self.runtime_profiles.catalog() {
+                Ok(catalog) => observed_evidence(
+                    catalog.active_profile_id.as_deref() == Some(profile_id.as_str()),
+                    AgentTaskEvidenceSource::RuntimeProfileRecheck,
+                ),
+                Err(_) => AgentTaskEvidence::unavailable(Some(
+                    AgentTaskEvidenceSource::RuntimeProfileRecheck,
+                )),
             },
             (
                 AgentTaskSuccessPredicate::ModelAbsent,
@@ -2481,7 +2549,7 @@ fn exchange_with_sidecar(
         }
     }
 
-    let payload = requirements.to_rpc_v12(
+    let payload = requirements.to_rpc_v13(
         &input.prompt,
         &input.gateway_base_url,
         &input.api_key,
@@ -2979,7 +3047,7 @@ mod tests {
 
             let requirements = AgentRunRequirements::for_task_spec(spec)
                 .unwrap_or_else(|error| panic!("invalid requirements: {id}: {error}"));
-            let payload = requirements.to_rpc_v12(
+            let payload = requirements.to_rpc_v13(
                 prompt,
                 "http://127.0.0.1:10100/v1",
                 "fixture-key",
@@ -3103,9 +3171,9 @@ mod tests {
             .filter(|workflow| workflow.constraints.requires_native_confirmation)
             .map(|workflow| workflow.task_kind)
             .collect::<HashSet<_>>();
-        assert_eq!(paths.len(), 19);
+        assert_eq!(paths.len(), 20);
         assert_eq!(task_kinds, controlled_tasks);
-        assert_eq!(action_kinds.len(), 10);
+        assert_eq!(action_kinds.len(), 11);
         assert_eq!(configured_targets.len(), 4);
         assert_eq!(disconnected_targets.len(), 4);
 
@@ -3389,7 +3457,7 @@ mod tests {
                 } => (
                     decision,
                     requirements
-                        .to_rpc_v12(
+                        .to_rpc_v13(
                             prompt,
                             "http://127.0.0.1:10100/v1",
                             "test-key",
@@ -3554,6 +3622,8 @@ mod tests {
                 id: "cloud-provider".to_owned(),
                 display_name: "测试云端后端".to_owned(),
                 kind: kind.to_owned(),
+                engine_kind: None,
+                adapter_variant: None,
                 api_root: "http://127.0.0.1:48991/v1/".to_owned(),
                 auth_style: "bearer".to_owned(),
                 credential_id: credential_id.map(str::to_owned),
@@ -3607,6 +3677,8 @@ mod tests {
         let model_storage_path = data_dir.join("models");
         let (remote_catalog, model_download) =
             model_download_fixture(database.clone(), model_storage_path.clone());
+        let runtime_profiles =
+            Arc::new(RuntimeProfileManager::new(database.clone(), engine.clone()));
         let service = AgentService::with_idle_timeout(
             runtime,
             engine,
@@ -3631,10 +3703,22 @@ mod tests {
             "http://127.0.0.1:10100/v1".to_owned(),
             model_storage_path,
             &data_dir,
+            runtime_profiles,
             Duration::from_millis(25),
         )
         .expect("Agent cloud test service");
         (service, data_dir)
+    }
+
+    #[test]
+    fn composition_root_injects_one_runtime_profile_manager_into_agent_and_tools() {
+        let (service, _) = cloud_service_fixture("external_openai", None, false);
+
+        assert!(
+            service
+                .tools
+                .uses_runtime_profile_manager(&service.runtime_profiles)
+        );
     }
 
     #[test]
@@ -4664,6 +4748,7 @@ mod tests {
             service.gateway_base_url.clone(),
             data_dir.join("models"),
             &data_dir,
+            service.runtime_profiles.clone(),
             Duration::from_millis(25),
         )
         .expect("recreate Agent service over the same persistent state");
@@ -4855,6 +4940,8 @@ mod tests {
                 id: "cloud-e2e".to_owned(),
                 display_name: "无网模拟 OpenAI".to_owned(),
                 kind: "external_openai".to_owned(),
+                engine_kind: None,
+                adapter_variant: None,
                 api_root: format!("http://{upstream_address}/v1/"),
                 auth_style: "bearer".to_owned(),
                 credential_id: Some("keychain-cloud-e2e".to_owned()),
@@ -4915,6 +5002,8 @@ mod tests {
         let model_storage_path = data_dir.join("models");
         let (remote_catalog, model_download) =
             model_download_fixture(database.clone(), model_storage_path.clone());
+        let runtime_profiles =
+            Arc::new(RuntimeProfileManager::new(database.clone(), engine.clone()));
         let service = Arc::new(
             AgentService::with_idle_timeout(
                 runtime,
@@ -4940,6 +5029,7 @@ mod tests {
                 format!("http://{gateway_address}/v1"),
                 model_storage_path,
                 &data_dir,
+                runtime_profiles,
                 Duration::from_millis(25),
             )
             .expect("cloud Agent e2e service"),
@@ -5071,6 +5161,7 @@ mod tests {
     #[test]
     fn classifies_runtime_inspection_and_model_start_plans_without_matching_install_requests() {
         assert!(prompt_requires_runtime_catalog("列出可用模型和引擎状态"));
+        assert!(prompt_requires_runtime_catalog("现在支持哪些推理引擎"));
         assert!(prompt_requires_model_start_plan("切换到 Qwen3.5 模型"));
         assert!(prompt_requires_model_start_plan("启动这个 GGUF 模型"));
         assert!(prompt_requires_model_stop_plan("把当前推理模型安全停掉"));
@@ -5210,12 +5301,12 @@ mod tests {
     }
 
     #[test]
-    fn capability_requirements_adapt_to_rpc_v12_capability_set() {
+    fn capability_requirements_adapt_to_rpc_v13_capability_set() {
         let payload = AgentRunRequirements::requiring([
             AgentCapabilityId::PlanModelRemoval,
             AgentCapabilityId::InspectSystemSummary,
         ])
-        .to_rpc_v12(
+        .to_rpc_v13(
             "移除模型并报告硬件",
             "http://127.0.0.1:39000/v1",
             "temporary-key",
@@ -5528,6 +5619,8 @@ mod tests {
         let model_storage_path = data_dir.join("models");
         let (remote_catalog, model_download) =
             model_download_fixture(database.clone(), model_storage_path.clone());
+        let runtime_profiles =
+            Arc::new(RuntimeProfileManager::new(database.clone(), engine.clone()));
         let service = Arc::new(
             AgentService::with_idle_timeout(
                 runtime,
@@ -5553,6 +5646,7 @@ mod tests {
                 format!("http://{gateway_address}/v1"),
                 model_storage_path,
                 &data_dir,
+                runtime_profiles,
                 idle_timeout,
             )
             .expect("Agent service"),
@@ -5650,8 +5744,11 @@ mod tests {
             capacity,
         );
         let model_storage_path = data_dir.join("models");
+        fs::create_dir_all(&model_storage_path).expect("create isolated live graph model storage");
         let (remote_catalog, model_download) =
             model_download_fixture(database.clone(), model_storage_path.clone());
+        let runtime_profiles =
+            Arc::new(RuntimeProfileManager::new(database.clone(), engine.clone()));
         let service = Arc::new(
             AgentService::with_idle_timeout(
                 runtime,
@@ -5677,6 +5774,7 @@ mod tests {
                 format!("http://{gateway_address}/v1"),
                 model_storage_path,
                 &data_dir,
+                runtime_profiles,
                 idle_timeout,
             )
             .expect("isolated live graph Agent service"),
@@ -5762,7 +5860,7 @@ mod tests {
         .map_err(|_| AgentServiceError::Join)?
     }
 
-    /// Explicit repeated local-Qwen acceptance for the RPC v12 intent-only path.
+    /// Explicit repeated local-Qwen acceptance for the RPC v13 intent-only path.
     /// Run with:
     /// `cargo test -p hal100-desktop real_qwen_pi_intent_quality_meets_iteration_34_thresholds -- --ignored --nocapture`
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

@@ -29,6 +29,7 @@
         "analyze_operational_history",
         "observe_deployment_health",
         "start_model",
+        "activate_runtime_profile",
         "stop_model",
         "remove_model",
         "search_model_catalog",

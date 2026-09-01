@@ -3,15 +3,16 @@ use std::{collections::HashMap, str, sync::Arc, time::Duration};
 use hal100_core::{SecretStore, SecretStoreError};
 use hal100_protocol::{
     BackendAuthMethod, BackendCatalog, BackendDraft, BackendKind, BackendProbeResult,
-    BackendRouteDraft, BackendRouteSummary, BackendSummary,
+    BackendRouteDraft, BackendRouteSummary, BackendSummary, InferenceEngineKind,
 };
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use crate::{
-    BackendAuthStyle, BackendConfig, Database, DatabaseError, GatewayBuildError, GatewayProbeError,
-    GatewayRouteError, GatewayRouteSwitchError, GatewayState, StoredBackendRecord,
+    ActiveGatewayRoute, BackendAuthStyle, BackendConfig, Database, DatabaseError,
+    EngineRequestAuth, GatewayBuildError, GatewayProbeError, GatewayRouteError,
+    GatewayRouteSwitchError, GatewayState, StoredActiveGatewayRoute, StoredBackendRecord,
     StoredModelRouteRecord,
 };
 
@@ -66,6 +67,8 @@ pub enum BackendManagerError {
     ReservedAgentRoute,
     #[error("数据库包含无法识别的后端类型或认证方式")]
     InvalidStoredBackend,
+    #[error("后端协议类型与推理引擎适配器绑定不一致")]
+    InvalidEngineBinding,
     #[error("后端切换后的持久化失败，且运行态回滚也未完成")]
     PersistenceRollbackFailed,
 }
@@ -105,12 +108,19 @@ impl BackendManager {
             }
         }
 
-        let requested_active = self.database.active_backend_id()?;
+        let requested_active = self.database.active_gateway_route()?;
         let active_backend_restored = requested_active
             .as_ref()
-            .and_then(|backend_id| loaded.get(backend_id))
-            .map(|backend| {
-                self.gateway.replace_backend(Some(backend.clone()));
+            .and_then(|route| {
+                loaded
+                    .get(&route.backend_id)
+                    .map(|backend| (route, backend))
+            })
+            .and_then(|(stored, backend)| {
+                active_route_for_backend(backend.clone(), stored.resolved_model.as_deref()).ok()
+            })
+            .map(|route| {
+                self.gateway.replace_active_route(Some(route));
             })
             .is_some();
 
@@ -161,6 +171,8 @@ impl BackendManager {
                     id: record.id.clone(),
                     display_name: record.display_name,
                     kind: parse_kind(&record.kind)?,
+                    engine: parse_optional_engine_kind(record.engine_kind.as_deref())?,
+                    adapter_variant: record.adapter_variant.clone(),
                     api_root: record.api_root,
                     auth_method: parse_auth_method(&record.auth_style)?,
                     credential_configured: record.credential_id.is_some(),
@@ -197,6 +209,46 @@ impl BackendManager {
         })
     }
 
+    /// Resolves one saved backend's request authentication without exposing the secret outside
+    /// Rust. The returned value has redacted `Debug` output and no Serde implementation.
+    pub fn engine_request_auth(
+        &self,
+        backend_id: &str,
+    ) -> Result<EngineRequestAuth, BackendManagerError> {
+        let record = self
+            .database
+            .backends()?
+            .into_iter()
+            .find(|record| record.id == backend_id && record.enabled)
+            .ok_or(BackendManagerError::BackendNotFound)?;
+        let auth_method = parse_auth_method(&record.auth_style)?;
+        let Some(credential_id) = record.credential_id.as_deref() else {
+            return match auth_method {
+                BackendAuthMethod::None => Ok(EngineRequestAuth::None),
+                BackendAuthMethod::Bearer | BackendAuthMethod::AnthropicApiKey => {
+                    Err(BackendManagerError::MissingApiKey)
+                }
+            };
+        };
+        let secret = self
+            .secrets
+            .read(credential_id)?
+            .ok_or(BackendManagerError::MissingApiKey)?;
+        if secret.len() > MAX_API_KEY_BYTES {
+            return Err(BackendManagerError::ApiKeyTooLarge);
+        }
+        let secret = str::from_utf8(&secret).map_err(|_| BackendManagerError::InvalidApiKey)?;
+        match auth_method {
+            BackendAuthMethod::None => Err(BackendManagerError::UnexpectedApiKey),
+            BackendAuthMethod::Bearer => {
+                EngineRequestAuth::bearer(secret).map_err(|_| BackendManagerError::InvalidApiKey)
+            }
+            BackendAuthMethod::AnthropicApiKey => {
+                EngineRequestAuth::api_key(secret).map_err(|_| BackendManagerError::InvalidApiKey)
+            }
+        }
+    }
+
     pub async fn save_backend(
         &self,
         draft: BackendDraft,
@@ -206,6 +258,7 @@ impl BackendManager {
         if draft.kind == BackendKind::ManagedLlamaCpp {
             return Err(BackendManagerError::ManagedBackendNotEditable);
         }
+        let (engine_kind, adapter_variant) = resolve_engine_binding(&draft)?;
         let existing = match &draft.id {
             Some(id) => Some(
                 self.database
@@ -265,12 +318,15 @@ impl BackendManager {
             &draft.api_root,
             draft.auth_method,
             api_key.clone(),
+            parse_optional_engine_kind(engine_kind.as_deref())?,
         )?;
         let now = now_ms();
         let record = StoredBackendRecord {
             id: backend_id.clone(),
             display_name: draft.display_name.trim().to_owned(),
             kind: kind_key(draft.kind).to_owned(),
+            engine_kind,
+            adapter_variant,
             api_root: config.api_root().as_str().to_owned(),
             auth_style: auth_method_key(draft.auth_method).to_owned(),
             credential_id: credential_id.clone(),
@@ -294,14 +350,19 @@ impl BackendManager {
             );
             return Err(error.into());
         }
-        let runtime_result = if self
-            .gateway
-            .backend_config()
+        let active_route = self.gateway.active_route();
+        let runtime_result = if active_route
             .as_ref()
-            .is_some_and(|backend| backend.id() == backend_id)
+            .is_some_and(|route| route.backend().id() == backend_id)
         {
+            let next_route = active_route_for_backend(
+                config.clone(),
+                active_route
+                    .as_ref()
+                    .and_then(ActiveGatewayRoute::resolved_model),
+            )?;
             self.gateway
-                .replace_backend_when_idle(Some(config.clone()), ROUTE_DRAIN_TIMEOUT)
+                .replace_active_route_when_idle(Some(next_route), ROUTE_DRAIN_TIMEOUT)
                 .await
                 .map(|_| ())
                 .map_err(BackendManagerError::from)
@@ -327,52 +388,30 @@ impl BackendManager {
         &self,
         backend_id: &str,
     ) -> Result<BackendCatalog, BackendManagerError> {
-        let _guard = self.mutations.lock().await;
-        let record = self
-            .database
-            .backends()?
-            .into_iter()
-            .find(|backend| backend.id == backend_id && backend.enabled)
-            .ok_or(BackendManagerError::BackendNotFound)?;
-        let current = self.gateway.backend_config();
-        if current.as_ref().is_some_and(|backend| {
-            backend.id() == "managed-llama-cpp" && backend.id() != backend_id
-        }) {
-            return Err(BackendManagerError::ManagedBackendActive);
-        }
-        if current
-            .as_ref()
-            .is_some_and(|backend| backend.id() == backend_id)
-        {
-            self.database
-                .set_active_backend_id(Some(backend_id), now_ms())?;
-            return self.catalog();
-        }
-        let next = self.config_for_record(&record)?;
-        let previous = self
-            .gateway
-            .replace_backend_when_idle(Some(next), ROUTE_DRAIN_TIMEOUT)
-            .await?;
-        if let Err(error) = self
-            .database
-            .set_active_backend_id(Some(backend_id), now_ms())
-        {
-            if self
-                .gateway
-                .replace_backend_when_idle(previous, ROUTE_DRAIN_TIMEOUT)
-                .await
-                .is_err()
-            {
-                return Err(BackendManagerError::PersistenceRollbackFailed);
-            }
-            return Err(error.into());
-        }
-        self.catalog()
+        self.activate_backend_route(backend_id, None, false).await
+    }
+
+    pub async fn activate_resolved_backend(
+        &self,
+        backend_id: &str,
+        resolved_model: &str,
+    ) -> Result<BackendCatalog, BackendManagerError> {
+        self.activate_backend_route(backend_id, Some(resolved_model), false)
+            .await
     }
 
     pub async fn force_activate_backend(
         &self,
         backend_id: &str,
+    ) -> Result<BackendCatalog, BackendManagerError> {
+        self.activate_backend_route(backend_id, None, true).await
+    }
+
+    async fn activate_backend_route(
+        &self,
+        backend_id: &str,
+        resolved_model: Option<&str>,
+        force: bool,
     ) -> Result<BackendCatalog, BackendManagerError> {
         let _guard = self.mutations.lock().await;
         let record = self
@@ -381,31 +420,91 @@ impl BackendManager {
             .into_iter()
             .find(|backend| backend.id == backend_id && backend.enabled)
             .ok_or(BackendManagerError::BackendNotFound)?;
-        let current = self.gateway.backend_config();
-        if current.as_ref().is_some_and(|backend| {
-            backend.id() == "managed-llama-cpp" && backend.id() != backend_id
+        let current = self.gateway.active_route();
+        if current.as_ref().is_some_and(|route| {
+            route.backend().id() == "managed-llama-cpp" && route.backend().id() != backend_id
         }) {
             return Err(BackendManagerError::ManagedBackendActive);
         }
-        if current
-            .as_ref()
-            .is_some_and(|backend| backend.id() == backend_id)
-        {
-            self.database
-                .set_active_backend_id(Some(backend_id), now_ms())?;
-            return self.catalog();
-        }
         let next = self.config_for_record(&record)?;
-        let persisted_active = self.database.active_backend_id()?;
-        self.database
-            .set_active_backend_id(Some(backend_id), now_ms())?;
-        if let Err(error) = self.gateway.force_replace_backend(Some(next)).await {
-            let _ = self
+        let next_route = active_route_for_backend(next, resolved_model)?;
+        let stored_next = StoredActiveGatewayRoute {
+            backend_id: backend_id.to_owned(),
+            resolved_model: resolved_model.map(str::to_owned),
+        };
+        if force {
+            let persisted_active = self.database.active_gateway_route()?;
+            self.database
+                .set_active_gateway_route(Some(&stored_next), now_ms())?;
+            if let Err(error) = self
+                .gateway
+                .force_replace_active_route(Some(next_route))
+                .await
+            {
+                let _ = self
+                    .database
+                    .set_active_gateway_route(persisted_active.as_ref(), now_ms());
+                return Err(error.into());
+            }
+        } else {
+            let previous = self
+                .gateway
+                .replace_active_route_when_idle(Some(next_route), ROUTE_DRAIN_TIMEOUT)
+                .await?;
+            if let Err(error) = self
                 .database
-                .set_active_backend_id(persisted_active.as_deref(), now_ms());
-            return Err(error.into());
+                .set_active_gateway_route(Some(&stored_next), now_ms())
+            {
+                if self
+                    .gateway
+                    .replace_active_route_when_idle(previous, ROUTE_DRAIN_TIMEOUT)
+                    .await
+                    .is_err()
+                {
+                    return Err(BackendManagerError::PersistenceRollbackFailed);
+                }
+                return Err(error.into());
+            }
         }
         self.catalog()
+    }
+
+    pub(crate) async fn restore_active_route(
+        &self,
+        stored: Option<&StoredActiveGatewayRoute>,
+    ) -> Result<(), BackendManagerError> {
+        let _guard = self.mutations.lock().await;
+        let next = match stored {
+            Some(stored) => {
+                let record = self
+                    .database
+                    .backends()?
+                    .into_iter()
+                    .find(|backend| backend.id == stored.backend_id && backend.enabled)
+                    .ok_or(BackendManagerError::BackendNotFound)?;
+                Some(active_route_for_backend(
+                    self.config_for_record(&record)?,
+                    stored.resolved_model.as_deref(),
+                )?)
+            }
+            None => None,
+        };
+        let previous = self
+            .gateway
+            .replace_active_route_when_idle(next, ROUTE_DRAIN_TIMEOUT)
+            .await?;
+        if let Err(error) = self.database.set_active_gateway_route(stored, now_ms()) {
+            if self
+                .gateway
+                .replace_active_route_when_idle(previous, ROUTE_DRAIN_TIMEOUT)
+                .await
+                .is_err()
+            {
+                return Err(BackendManagerError::PersistenceRollbackFailed);
+            }
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     pub async fn probe_backend(
@@ -492,7 +591,7 @@ impl BackendManager {
             Some(credential_id) => self.secrets.read(credential_id)?,
             None => None,
         };
-        let persisted_active = self.database.active_backend_id()?;
+        let persisted_active = self.database.active_gateway_route()?;
         self.gateway.remove_routed_backend(backend_id)?;
         if let Some(credential_id) = &existing.credential_id
             && let Err(error) = self.secrets.delete(credential_id)
@@ -500,18 +599,23 @@ impl BackendManager {
             let _ = self.gateway.upsert_routed_backend(config);
             return Err(error.into());
         }
-        if persisted_active.as_deref() == Some(backend_id)
-            && let Err(error) = self.database.set_active_backend_id(None, now_ms())
+        if persisted_active
+            .as_ref()
+            .is_some_and(|route| route.backend_id == backend_id)
+            && let Err(error) = self.database.set_active_gateway_route(None, now_ms())
         {
             self.restore_secret(existing.credential_id.as_deref(), old_secret.as_deref());
             let _ = self.gateway.upsert_routed_backend(config);
             return Err(error.into());
         }
         if let Err(error) = self.database.delete_backend(backend_id) {
-            if persisted_active.as_deref() == Some(backend_id) {
+            if persisted_active
+                .as_ref()
+                .is_some_and(|route| route.backend_id == backend_id)
+            {
                 let _ = self
                     .database
-                    .set_active_backend_id(Some(backend_id), now_ms());
+                    .set_active_gateway_route(persisted_active.as_ref(), now_ms());
             }
             self.restore_secret(existing.credential_id.as_deref(), old_secret.as_deref());
             let _ = self.gateway.upsert_routed_backend(config);
@@ -545,7 +649,13 @@ impl BackendManager {
                 Some(String::from_utf8(secret).map_err(|_| BackendManagerError::InvalidApiKey)?)
             }
         };
-        build_config(&record.id, &record.api_root, auth_method, api_key)
+        build_config(
+            &record.id,
+            &record.api_root,
+            auth_method,
+            api_key,
+            parse_optional_engine_kind(record.engine_kind.as_deref())?,
+        )
     }
 
     fn apply_secret_change(
@@ -643,17 +753,83 @@ fn validate_display_name(display_name: &str) -> Result<(), BackendManagerError> 
     Ok(())
 }
 
+fn resolve_engine_binding(
+    draft: &BackendDraft,
+) -> Result<(Option<String>, Option<String>), BackendManagerError> {
+    if let Some(expected_engine) = draft.kind.engine_kind() {
+        if draft.engine.is_some_and(|engine| engine != expected_engine)
+            || draft
+                .adapter_variant
+                .as_deref()
+                .is_some_and(|variant| Some(variant) != draft.kind.default_adapter_variant())
+        {
+            return Err(BackendManagerError::InvalidEngineBinding);
+        }
+        return Ok((
+            Some(expected_engine.storage_key().to_owned()),
+            draft.kind.default_adapter_variant().map(str::to_owned),
+        ));
+    }
+
+    if draft.kind == BackendKind::ExternalAnthropic {
+        return if draft.engine.is_none() && draft.adapter_variant.is_none() {
+            Ok((None, None))
+        } else {
+            Err(BackendManagerError::InvalidEngineBinding)
+        };
+    }
+
+    match (draft.engine, draft.adapter_variant.as_deref()) {
+        (None, None) => Ok((None, None)),
+        (Some(engine), Some(variant)) if valid_adapter_variant(variant) => Ok((
+            Some(engine.storage_key().to_owned()),
+            Some(variant.to_owned()),
+        )),
+        _ => Err(BackendManagerError::InvalidEngineBinding),
+    }
+}
+
+fn parse_optional_engine_kind(
+    value: Option<&str>,
+) -> Result<Option<InferenceEngineKind>, BackendManagerError> {
+    value
+        .map(|value| {
+            InferenceEngineKind::from_storage_key(value)
+                .ok_or(BackendManagerError::InvalidStoredBackend)
+        })
+        .transpose()
+}
+
+fn valid_adapter_variant(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'/'))
+}
+
 fn build_config(
     backend_id: &str,
     api_root: &str,
     auth_method: BackendAuthMethod,
     api_key: Option<String>,
+    engine: Option<InferenceEngineKind>,
 ) -> Result<BackendConfig, BackendManagerError> {
-    let mut config = BackendConfig::new(backend_id, api_root, api_key)?;
+    let mut config = BackendConfig::new(backend_id, api_root, api_key)?.with_engine_kind(engine);
     if auth_method == BackendAuthMethod::AnthropicApiKey {
         config = config.with_auth_style(BackendAuthStyle::AnthropicApiKey);
     }
     Ok(config)
+}
+
+fn active_route_for_backend(
+    backend: BackendConfig,
+    resolved_model: Option<&str>,
+) -> Result<ActiveGatewayRoute, GatewayRouteError> {
+    match resolved_model {
+        Some(resolved_model) => ActiveGatewayRoute::resolved(backend, resolved_model),
+        None => Ok(ActiveGatewayRoute::passthrough(backend)),
+    }
 }
 
 fn kind_key(kind: BackendKind) -> &'static str {
@@ -762,6 +938,8 @@ mod tests {
                 id: None,
                 display_name: "本地 vLLM".to_owned(),
                 kind: BackendKind::ExternalVllm,
+                engine: None,
+                adapter_variant: None,
                 api_root: "http://127.0.0.1:8000/v1".to_owned(),
                 auth_method: BackendAuthMethod::Bearer,
                 api_key: Some("keychain-only-secret".to_owned()),
@@ -773,6 +951,12 @@ mod tests {
             !format!("{:?}", database.backends().expect("records"))
                 .contains("keychain-only-secret")
         );
+        let request_auth = manager
+            .engine_request_auth(&backend_id)
+            .expect("resolve engine request auth");
+        let rendered_auth = format!("{request_auth:?}");
+        assert!(rendered_auth.contains("Bearer"));
+        assert!(!rendered_auth.contains("keychain-only-secret"));
 
         manager
             .save_route(BackendRouteDraft {
@@ -783,9 +967,9 @@ mod tests {
             .await
             .expect("save route");
         manager
-            .activate_backend(&backend_id)
+            .activate_resolved_backend(&backend_id, "Qwen/Qwen3.5-2B")
             .await
-            .expect("activate");
+            .expect("activate resolved model");
 
         let restored_gateway = GatewayState::new(
             None,
@@ -803,8 +987,69 @@ mod tests {
             snapshot.active_backend_id.as_deref(),
             Some(backend_id.as_str())
         );
+        assert_eq!(
+            snapshot.active_resolved_model.as_deref(),
+            Some("Qwen/Qwen3.5-2B")
+        );
         assert_eq!(snapshot.model_routes[0].alias, "qwen-local");
         assert_eq!(snapshot.model_routes[0].resolved_model, "Qwen/Qwen3.5-2B");
+    }
+
+    #[tokio::test]
+    async fn generic_openai_backend_persists_an_explicit_engine_adapter_binding() {
+        let database = Arc::new(Database::open_in_memory().expect("database"));
+        let gateway = GatewayState::new(
+            None,
+            CredentialRegistry::new(Vec::new()),
+            UsageWriter::start(database.clone()),
+        )
+        .expect("gateway");
+        let manager = BackendManager::new(
+            database.clone(),
+            gateway,
+            Arc::new(MemorySecretStore::default()),
+        );
+        let catalog = manager
+            .save_backend(BackendDraft {
+                id: None,
+                display_name: "本机 MLX-LM".to_owned(),
+                kind: BackendKind::ExternalOpenAi,
+                engine: Some(InferenceEngineKind::MlxLm),
+                adapter_variant: Some("official-http-server".to_owned()),
+                api_root: "http://127.0.0.1:8080/v1/".to_owned(),
+                auth_method: BackendAuthMethod::None,
+                api_key: None,
+            })
+            .await
+            .expect("save exact MLX-LM backend");
+        assert_eq!(catalog.backends[0].engine, Some(InferenceEngineKind::MlxLm));
+        assert_eq!(
+            catalog.backends[0].adapter_variant.as_deref(),
+            Some("official-http-server")
+        );
+        let binding = database
+            .backend_engine_binding(&catalog.backends[0].id)
+            .expect("binding query")
+            .expect("exact binding");
+        assert_eq!(binding.engine_kind, "mlx-lm");
+        assert_eq!(binding.adapter_variant, "official-http-server");
+
+        let mismatch = manager
+            .save_backend(BackendDraft {
+                id: None,
+                display_name: "伪装 vLLM".to_owned(),
+                kind: BackendKind::ExternalVllm,
+                engine: Some(InferenceEngineKind::MlxLm),
+                adapter_variant: Some("official-http-server".to_owned()),
+                api_root: "http://127.0.0.1:8000/v1/".to_owned(),
+                auth_method: BackendAuthMethod::None,
+                api_key: None,
+            })
+            .await;
+        assert!(matches!(
+            mismatch,
+            Err(BackendManagerError::InvalidEngineBinding)
+        ));
     }
 
     #[tokio::test]
@@ -827,6 +1072,8 @@ mod tests {
                 id: None,
                 display_name: "第一个本地后端".to_owned(),
                 kind: BackendKind::ExternalVllm,
+                engine: None,
+                adapter_variant: None,
                 api_root: "http://127.0.0.1:8000/v1".to_owned(),
                 auth_method: BackendAuthMethod::None,
                 api_key: None,
@@ -842,6 +1089,8 @@ mod tests {
                 id: None,
                 display_name: "第二个本地后端".to_owned(),
                 kind: BackendKind::ExternalLlamaCpp,
+                engine: None,
+                adapter_variant: None,
                 api_root: "http://127.0.0.1:8080/v1".to_owned(),
                 auth_method: BackendAuthMethod::None,
                 api_key: None,
@@ -886,6 +1135,8 @@ mod tests {
                 id: "locked-backend".to_owned(),
                 display_name: "凭据缺失后端".to_owned(),
                 kind: "external_openai".to_owned(),
+                engine_kind: None,
+                adapter_variant: None,
                 api_root: "http://127.0.0.1:8000/v1/".to_owned(),
                 auth_style: "bearer".to_owned(),
                 credential_id: Some("hal100.backend.locked-backend".to_owned()),
@@ -936,6 +1187,8 @@ mod tests {
                 id: "attempted-user-backend".to_owned(),
                 display_name: "保留路由测试后端".to_owned(),
                 kind: "external_vllm".to_owned(),
+                engine_kind: None,
+                adapter_variant: None,
                 api_root: "http://127.0.0.1:8000/v1/".to_owned(),
                 auth_style: "none".to_owned(),
                 credential_id: None,

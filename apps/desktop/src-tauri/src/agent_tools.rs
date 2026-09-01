@@ -13,31 +13,35 @@ use hal100_core::{
     ExternalAgentIntegrationId, ExternalAgentIntegrationRegistry,
 };
 use hal100_infra::{
-    Database, DatabaseError, EngineManagerError, EnvironmentDiagnosticError,
-    EnvironmentDiagnostics, GatewayState, HermesAgentIntegrationAdapter,
-    HermesAgentIntegrationError, LlamaCppManager, ManagedExternalAgentDeploymentError,
-    ManagedExternalAgentDeploymentManager, ModelDownloadError, ModelDownloadManager,
-    ModelRemovalError, ModelRemovalManager, OpenClawIntegrationAdapter, OpenClawIntegrationError,
-    OpenCodeIntegrationError, OpenCodeManager, PiCodingAgentIntegrationAdapter,
-    PiCodingAgentIntegrationError, RemoteModelCatalog, RemoteModelCatalogError,
+    Database, DatabaseError, ENGINE_VERSION_NOT_EXPOSED, EngineManagerError,
+    EnvironmentDiagnosticError, EnvironmentDiagnostics, GatewayState,
+    HermesAgentIntegrationAdapter, HermesAgentIntegrationError, LlamaCppManager,
+    ManagedExternalAgentDeploymentError, ManagedExternalAgentDeploymentManager, ModelDownloadError,
+    ModelDownloadManager, ModelRemovalError, ModelRemovalManager, OpenClawIntegrationAdapter,
+    OpenClawIntegrationError, OpenCodeIntegrationError, OpenCodeManager,
+    PiCodingAgentIntegrationAdapter, PiCodingAgentIntegrationError, RemoteModelCatalog,
+    RemoteModelCatalogError, RuntimeProfileManager, RuntimeProfileManagerError,
 };
-use hal100_platform::{HardwareProbeError, MacOsSystemProbe};
+use hal100_platform::{HardwareProbeError, NativeSystemProbe};
 use hal100_protocol::{
     AGENT_RPC_MAX_TOOL_RESULT_BYTES, AgentActionKind, AgentActionPlan,
     AgentExternalIntegrationStatus, AgentOperationalEvent, AgentOperationalHealthObservation,
     AgentOperationalHealthSample, AgentOperationalHealthStatus, AgentOperationalHistory,
-    AgentRuntimeCatalog, AgentRuntimeModel, AgentSystemSummary, AgentToolEvent,
-    DiagnosticRepairKind, DiagnosticSeverity, ENVIRONMENT_DIAGNOSTICS_TOOL,
-    EXTERNAL_AGENT_STATUS_TOOL, EngineInstallState, EnvironmentDiagnosticReport,
-    ExternalAgentGatewayProtocol, ExternalAgentIntegrationState, LlamaCppStatus, LocalModelState,
+    AgentRuntimeCatalog, AgentRuntimeEngineCapability, AgentRuntimeModel, AgentRuntimeProfile,
+    AgentRuntimeSupportCell, AgentSystemSummary, AgentToolEvent, DiagnosticRepairKind,
+    DiagnosticSeverity, ENVIRONMENT_DIAGNOSTICS_TOOL, EXTERNAL_AGENT_STATUS_TOOL,
+    EngineInstallState, EnvironmentDiagnosticReport, ExternalAgentGatewayProtocol,
+    ExternalAgentIntegrationState, InferenceEngineOwnership, LlamaCppStatus, LocalModelState,
     MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL, ModelDownloadSnapshot,
     ModelRemovalKind, OPERATIONAL_HEALTH_OBSERVATION_TOOL, OPERATIONAL_HISTORY_TOOL,
     OpenCodeIntegrationState, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_INSTALL_TOOL,
     PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
     PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
     PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, PLAN_MODEL_STOP_TOOL, RUNTIME_CATALOG_TOOL, RemoteModelRepository,
-    RemoteModelSearchResults, SYSTEM_SUMMARY_TOOL, ToolCallRequestPayload, ToolCallResultPayload,
+    PLAN_MODEL_START_TOOL, PLAN_MODEL_STOP_TOOL, PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
+    RUNTIME_CATALOG_TOOL, RemoteModelRepository, RemoteModelSearchResults,
+    RuntimeProfileActivationPlan, RuntimeProfileCatalog, SYSTEM_SUMMARY_TOOL,
+    ToolCallRequestPayload, ToolCallResultPayload,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -91,6 +95,8 @@ pub(super) enum AgentToolExecutionError {
     ModelDownload(#[from] ModelDownloadError),
     #[error(transparent)]
     ManagedDeployment(#[from] ManagedExternalAgentDeploymentError),
+    #[error(transparent)]
+    RuntimeProfile(#[from] RuntimeProfileManagerError),
 }
 
 impl AgentToolExecutionError {
@@ -151,6 +157,7 @@ impl AgentToolExecutionError {
                 ManagedExternalAgentDeploymentError::Database(_) => "database_failed",
                 ManagedExternalAgentDeploymentError::Io(_) => "managed_deployment_io_failed",
             },
+            Self::RuntimeProfile(error) => error.failure().code.as_code(),
         }
     }
 }
@@ -177,6 +184,7 @@ pub(super) struct AgentToolExecutor {
     managed_deployment: Arc<ManagedExternalAgentDeploymentManager>,
     gateway: GatewayState,
     action_plans: AgentActionPlanStore,
+    runtime_profiles: Arc<RuntimeProfileManager>,
 }
 
 impl AgentToolExecutor {
@@ -196,6 +204,7 @@ impl AgentToolExecutor {
         managed_deployment: Arc<ManagedExternalAgentDeploymentManager>,
         gateway: GatewayState,
         action_plans: AgentActionPlanStore,
+        runtime_profiles: Arc<RuntimeProfileManager>,
     ) -> Self {
         Self {
             model_storage_path,
@@ -212,6 +221,7 @@ impl AgentToolExecutor {
             managed_deployment,
             gateway,
             action_plans,
+            runtime_profiles,
         }
     }
 
@@ -244,7 +254,8 @@ impl AgentToolExecutor {
         &self,
         download_plan_id: &str,
     ) -> Result<ModelDownloadSnapshot, AgentToolExecutionError> {
-        let available = MacOsSystemProbe.model_storage_available_bytes(&self.model_storage_path)?;
+        let available =
+            NativeSystemProbe.model_storage_available_bytes(&self.model_storage_path)?;
         Ok(self
             .model_download
             .start_download(download_plan_id, available)?)
@@ -255,6 +266,14 @@ impl AgentToolExecutor {
         download_plan_id: &str,
     ) -> Result<bool, AgentToolExecutionError> {
         Ok(self.model_download.discard_plan(download_plan_id)?)
+    }
+
+    #[cfg(test)]
+    pub(super) fn uses_runtime_profile_manager(
+        &self,
+        runtime_profiles: &Arc<RuntimeProfileManager>,
+    ) -> bool {
+        Arc::ptr_eq(&self.runtime_profiles, runtime_profiles)
     }
 }
 
@@ -307,6 +326,9 @@ impl AgentToolRun {
             }
             Ok(AuthorizedAgentTool::PlanModelStop { model_id }) => {
                 self.plan_model_stop(request, &model_id)?
+            }
+            Ok(AuthorizedAgentTool::PlanRuntimeProfileActivation { profile_id }) => {
+                self.plan_runtime_profile_activation(request, &profile_id)?
             }
             Ok(AuthorizedAgentTool::PlanModelRemoval { model_id }) => {
                 self.plan_model_removal(request, &model_id)?
@@ -385,11 +407,28 @@ impl AgentToolRun {
         &mut self,
         request: &ToolCallRequestPayload,
     ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
-        let profile = MacOsSystemProbe.hardware_profile(&self.executor.model_storage_path)?;
+        let capabilities =
+            NativeSystemProbe.capability_snapshot(&self.executor.model_storage_path)?;
+        let platform = match capabilities.platform {
+            hal100_protocol::InferencePlatform::MacOs => "macOS",
+            hal100_protocol::InferencePlatform::Windows => "Windows",
+            hal100_protocol::InferencePlatform::Linux => "Linux",
+        };
+        let architecture = match capabilities.architecture {
+            hal100_protocol::InferenceArchitecture::Aarch64 => {
+                if capabilities.platform == hal100_protocol::InferencePlatform::MacOs {
+                    "Apple Silicon"
+                } else {
+                    "aarch64"
+                }
+            }
+            hal100_protocol::InferenceArchitecture::X86_64 => "x86_64",
+        };
+        let profile = NativeSystemProbe::hardware_profile_from_capabilities(capabilities);
         let summary = AgentSystemSummary {
-            source: "rust_macos_probe".to_owned(),
-            platform: "macOS".to_owned(),
-            architecture: "Apple Silicon".to_owned(),
+            source: "rust_native_capability_probe".to_owned(),
+            platform: platform.to_owned(),
+            architecture: architecture.to_owned(),
             chip: profile.chip,
             model_identifier: profile.model_identifier,
             total_unified_memory_bytes: profile.total_unified_memory_bytes,
@@ -404,8 +443,8 @@ impl AgentToolRun {
         self.record_completed(
             request,
             SYSTEM_SUMMARY_TOOL,
-            "检测这台 Mac",
-            "Rust 已按需读取芯片、统一内存、CPU 与模型目录可用空间。".to_owned(),
+            "检测当前设备",
+            "Rust 已按需读取平台、架构、内存、CPU 与模型目录可用空间。".to_owned(),
         );
         success(request, summary)
     }
@@ -414,15 +453,18 @@ impl AgentToolRun {
         &mut self,
         request: &ToolCallRequestPayload,
     ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
-        let catalog = build_runtime_catalog(&self.executor)?;
+        let runtime_profiles = self.executor.runtime_profiles.clone();
+        let profile_catalog = self.await_remote(runtime_profiles.catalog_verified())??;
+        let catalog = build_runtime_catalog(&self.executor, profile_catalog)?;
         self.observe(AgentTaskToolObservation::RuntimeCatalog(&catalog));
         self.record_completed(
             request,
             RUNTIME_CATALOG_TOOL,
             "读取 HAL100 运行环境",
             format!(
-                "Rust 已读取引擎、活动路由和 {} 个本地模型的脱敏状态。",
-                catalog.models.len()
+                "Rust 已读取引擎、活动路由、{} 个本地模型和 {} 个已保存方案的脱敏状态。",
+                catalog.models.len(),
+                catalog.runtime_profiles.len()
             ),
         );
         success(request, catalog)
@@ -699,6 +741,50 @@ impl AgentToolRun {
                 label: "生成当前模型停止计划",
                 summary: format!(
                     "已为当前活动模型“{target_name}”生成一次性停止计划；尚未执行，必须通过 Rust 原生确认。"
+                ),
+            },
+        )
+    }
+
+    fn plan_runtime_profile_activation(
+        &mut self,
+        request: &ToolCallRequestPayload,
+        profile_id: &str,
+    ) -> Result<ToolCallResultPayload, AgentToolExecutionError> {
+        if !self.completed(RUNTIME_CATALOG_TOOL) {
+            return Ok(tool_error(
+                request,
+                "runtime_catalog_required",
+                "inspect_runtime_catalog must complete before planning a runtime profile activation",
+            ));
+        }
+        if self.has_action_plan() {
+            return Ok(action_already_planned(request));
+        }
+        let runtime_profiles = self.executor.runtime_profiles.clone();
+        let activation = match self
+            .await_remote(runtime_profiles.plan_activation_verified(profile_id))?
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                let error = AgentToolExecutionError::from(error);
+                return Ok(tool_error(
+                    request,
+                    error.code(),
+                    "Rust refused to activate a missing, changed, or unavailable runtime profile",
+                ));
+            }
+        };
+        let pending = build_runtime_profile_activation_agent_plan(&self.run_id, activation)?;
+        let target_name = pending.plan.target_name.clone();
+        self.register_pending_action(
+            pending,
+            request,
+            PendingActionPresentation {
+                tool_name: PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
+                label: "生成运行方案切换计划",
+                summary: format!(
+                    "已为运行方案“{target_name}”生成一次性计划；尚未切换，必须通过 Rust 原生确认。"
                 ),
             },
         )
@@ -1262,7 +1348,7 @@ impl AgentToolRun {
                 "remotePath must exactly match a verifiable GGUF from this Agent run",
             ));
         }
-        let available = match MacOsSystemProbe
+        let available = match NativeSystemProbe
             .model_storage_available_bytes(&self.executor.model_storage_path)
         {
             Ok(available) => available,
@@ -1462,8 +1548,10 @@ fn sample_state(
 
 fn build_runtime_catalog(
     executor: &AgentToolExecutor,
+    profile_catalog: RuntimeProfileCatalog,
 ) -> Result<AgentRuntimeCatalog, AgentToolExecutionError> {
     executor.database.refresh_local_model_states()?;
+    let host = NativeSystemProbe.capability_snapshot(&executor.model_storage_path)?;
     let engine = executor.engine.status()?;
     let routing = executor.gateway.routing_snapshot();
     let mut models = executor
@@ -1487,6 +1575,12 @@ fn build_runtime_catalog(
         .count()
         .try_into()
         .unwrap_or(u32::MAX);
+    let runtime_profiles = build_agent_runtime_profiles(profile_catalog);
+    let engine_capabilities = build_agent_engine_capabilities(
+        executor.runtime_profiles.manifest_registry(),
+        &host,
+        &runtime_profiles,
+    );
     Ok(AgentRuntimeCatalog {
         engine_install_state: engine.install_state,
         engine_runtime_state: engine.runtime_state,
@@ -1495,6 +1589,187 @@ fn build_runtime_catalog(
         active_backend_id: routing.active_backend_id,
         configured_backend_count,
         models,
+        runtime_profiles,
+        engine_capabilities,
+    })
+}
+
+fn build_agent_engine_capabilities(
+    registry: hal100_infra::InferenceEngineManifestRegistry,
+    host: &hal100_protocol::HostCapabilitySnapshot,
+    runtime_profiles: &[AgentRuntimeProfile],
+) -> Vec<AgentRuntimeEngineCapability> {
+    const MAX_SUPPORT_CELLS_PER_ADAPTER: usize = 64;
+    let mut capabilities = registry
+        .manifests()
+        .into_iter()
+        .map(|manifest| {
+            let descriptor = manifest.descriptor.clone();
+            let compatibility = manifest.compatibility_with(host);
+            let saved_profile_count = runtime_profiles
+                .iter()
+                .filter(|profile| {
+                    profile.engine == descriptor.kind.storage_key()
+                        && profile.adapter_variant == manifest.adapter_id.variant
+                        && profile.adapter_contract_revision
+                            == manifest.adapter_id.contract_revision
+                })
+                .count()
+                .try_into()
+                .unwrap_or(u32::MAX);
+            let support_evidence = compatibility.support_evidence.clone().or_else(|| {
+                Some(hal100_infra::support_evidence_for(
+                    descriptor.kind,
+                    compatibility.support_status,
+                ))
+            });
+            let recommendation = Some(hal100_infra::recommendation_for(
+                &compatibility,
+                descriptor.ownership,
+                usize::try_from(saved_profile_count).unwrap_or(usize::MAX),
+            ));
+            let mut support_cells = manifest
+                .support_units
+                .into_iter()
+                .take(MAX_SUPPORT_CELLS_PER_ADAPTER)
+                .map(|unit| AgentRuntimeSupportCell {
+                    platform: unit.platform,
+                    architecture: unit.architecture,
+                    accelerator: unit.accelerator,
+                    deployment: unit.deployment,
+                    status: unit.status,
+                })
+                .collect::<Vec<_>>();
+            support_cells.sort_by_key(|cell| {
+                (
+                    cell.platform.storage_key(),
+                    cell.architecture.storage_key(),
+                    cell.accelerator.storage_key(),
+                    cell.deployment.storage_key(),
+                )
+            });
+            AgentRuntimeEngineCapability {
+                engine: descriptor.kind,
+                engine_key: descriptor.kind.storage_key().to_owned(),
+                adapter_variant: manifest.adapter_id.variant,
+                adapter_contract_revision: manifest.adapter_id.contract_revision,
+                display_name: descriptor.display_name,
+                ownership: descriptor.ownership,
+                deployment: descriptor.deployment,
+                protocols: descriptor.protocols,
+                model_formats: descriptor.model_formats,
+                platforms: descriptor.platforms,
+                architectures: descriptor.architectures,
+                accelerators: descriptor.accelerators,
+                managed_lifecycle: descriptor.managed_lifecycle,
+                compatible: compatibility.compatible,
+                support_status: compatibility.support_status,
+                matched_accelerators: compatibility.matched_accelerators,
+                issues: compatibility.issues,
+                support_evidence,
+                support_cells,
+                saved_profile_count,
+                recommendation,
+            }
+        })
+        .collect::<Vec<_>>();
+    capabilities.sort_by(|left, right| {
+        left.engine
+            .storage_key()
+            .cmp(right.engine.storage_key())
+            .then_with(|| left.adapter_variant.cmp(&right.adapter_variant))
+    });
+    capabilities
+}
+
+fn build_agent_runtime_profiles(
+    profile_catalog: RuntimeProfileCatalog,
+) -> Vec<AgentRuntimeProfile> {
+    let active_profile_id = profile_catalog.active_profile_id;
+    profile_catalog
+        .profiles
+        .into_iter()
+        .take(32)
+        .map(|profile| AgentRuntimeProfile {
+            active: active_profile_id.as_deref() == Some(profile.id.as_str()),
+            id: profile.id,
+            name: profile.name,
+            description: profile.description,
+            ownership: profile.ownership,
+            backend_id: profile.backend_id,
+            model_id: profile.model_id,
+            model_display_name: profile.model_display_name,
+            engine: profile.engine,
+            adapter_variant: profile.adapter_binding.variant,
+            adapter_contract_revision: profile.adapter_binding.contract_revision,
+            engine_version: profile.engine_version,
+            context_window_tokens: profile.context_window_tokens,
+            reviewed_performance: profile.reviewed_performance,
+            readiness: profile.readiness,
+            issues: profile.issues,
+        })
+        .collect()
+}
+
+fn build_runtime_profile_activation_agent_plan(
+    run_id: &str,
+    activation: RuntimeProfileActivationPlan,
+) -> Result<PendingAgentAction, AgentToolExecutionError> {
+    let context_detail = activation.context_window_tokens.map_or_else(
+        || "上下文窗口：由外部引擎决定".to_owned(),
+        |tokens| format!("上下文窗口：{tokens} tokens"),
+    );
+    let (route_detail, verification_detail, rollback_detail) = match activation.ownership {
+        InferenceEngineOwnership::Managed => (
+            "运行身份：HAL100 托管模型".to_owned(),
+            "执行前重新校验模型完整性、引擎版本与容量策略".to_owned(),
+            "切换失败时由 Rust 尝试恢复原运行模型与完整活动路由".to_owned(),
+        ),
+        InferenceEngineOwnership::External => {
+            let backend_id = activation
+                .backend_id
+                .as_deref()
+                .ok_or(AgentToolExecutionError::InvalidProtocol)?;
+            (
+                format!("运行身份：用户外部后端 {backend_id}"),
+                "执行前由 Rust 实时复检后端身份、API 根、引擎版本与模型摘要".to_owned(),
+                "切换失败时由 Rust 恢复原活动路由与先前托管运行状态".to_owned(),
+            )
+        }
+    };
+    let engine_version = if activation.engine_version == ENGINE_VERSION_NOT_EXPOSED {
+        "未暴露（由部署身份绑定）"
+    } else {
+        activation.engine_version.as_str()
+    };
+    Ok(PendingAgentAction {
+        executor: AgentActionExecutor::ActivateRuntimeProfile {
+            profile_id: activation.profile_id.clone(),
+            activation_plan_id: activation.plan_id.clone(),
+        },
+        repair_verification: None,
+        plan: AgentActionPlan {
+            plan_id: next_plan_id(),
+            run_id: run_id.to_owned(),
+            action_kind: AgentActionKind::ActivateRuntimeProfile,
+            target_id: activation.profile_id,
+            target_name: activation.profile_name,
+            current_state: activation.current_model_name.map_or_else(
+                || Some("当前没有活动模型".to_owned()),
+                |name| Some(format!("当前模型：{name}")),
+            ),
+            details: vec![
+                format!("目标模型：{}", activation.model_display_name),
+                route_detail,
+                format!("推理引擎：{} {}", activation.engine, engine_version),
+                context_detail,
+                verification_detail,
+                rollback_detail,
+            ],
+            expires_at_ms: activation.expires_at_ms,
+            action_summary: activation.action_summary,
+            requires_native_confirmation: true,
+        },
     })
 }
 

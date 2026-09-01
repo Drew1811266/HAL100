@@ -1,6 +1,6 @@
 # HAL100 Agent RPC
 
-该目录是 Rust Core 与 Agent Kernel Sidecar 的稳定私有协议说明。当前v12使用四字节大端长度前缀加UTF-8 JSON；单帧最大1 MiB。v12保留v11的按需Pi结构化意图和任务级效率指标，当前扩展到19项工具，并在意图/执行请求中增加Rust已选容量档案；协议版本精确匹配，不兼容v11。
+该目录是 Rust Core 与 Agent Kernel Sidecar 的稳定私有协议说明。当前v13使用四字节大端长度前缀加UTF-8 JSON；单帧最大1 MiB。v13保留v12的按需Pi结构化意图、任务级效率指标和Rust设备容量，当前扩展到20项工具并新增受控运行方案切换；协议版本精确匹配，不兼容v12。
 
 ## stdout / stderr
 
@@ -8,11 +8,11 @@
 - stdout：Sidecar 返回的协议帧，禁止写日志和普通文本。
 - stderr：脱敏诊断日志，禁止输出提示词、回答、凭据和完整用户路径。
 
-## v12 envelope
+## v13 envelope
 
 ```json
 {
-  "protocolVersion": 12,
+  "protocolVersion": 13,
   "id": "request-id",
   "kind": "system.ping",
   "payload": {}
@@ -40,16 +40,17 @@ Pi   → system.shutdown.ack
 
 `tool.call.request`包含 `runId`、`toolCallId`、`toolName`和 `arguments`。`tool.call.result`复用请求 envelope的 `id`，同时必须携带相同的 `toolCallId`。Sidecar对未知结果、错误关联和超时全部故障关闭；Rust不信任 Sidecar中的 Typebox校验，仍按自己的 DTO、白名单和参数规则重新校验。
 
-`agent.intent.start`只携带提示词和当前任务的Gateway路由信息，不携带工具列表。Pi在独立、零工具调用中只能生成`contracts/agent-intent/v1-schema.json`允许的任务、澄清、拒绝或未解析提案。Sidecar解析后只发送规范化对象；Markdown、额外字段、未知枚举、超过2 KiB的结果和Provider原始错误均不会进入Rust。Rust再次验证schema、19类任务、目标类型、四个外部Agent ID和Provider，再与确定性结果裁决。迭代35起，可信任务由Rust工作流映射叶能力并通过能力注册表闭合前置关系，生成后续`agent.run.start.requiredTools`；Pi仍不能提交或扩大工具。澄清/拒绝由Rust固定回答，含工具但未解析的请求故障关闭，只有零工具解释保留兼容路径。
+`agent.intent.start`只携带提示词和当前任务的Gateway路由信息，不携带工具列表。Pi在独立、零工具调用中只能生成`contracts/agent-intent/v1-schema.json`允许的任务、澄清、拒绝或未解析提案。Sidecar解析后只发送规范化对象；Markdown、额外字段、未知枚举、超过2 KiB的结果和Provider原始错误均不会进入Rust。Rust再次验证schema、20类任务、目标类型、四个外部Agent ID和Provider，再与确定性结果裁决。迭代35起，可信任务由Rust工作流映射叶能力并通过能力注册表闭合前置关系，生成后续`agent.run.start.requiredTools`；Pi仍不能提交或扩大工具。澄清/拒绝由Rust固定回答，含工具但未解析的请求故障关闭，只有零工具解释保留兼容路径。
 
-当前产品Sidecar注册19个工具。`v12-tools.json`共同固定协议级任务预算、精确顺序、读/计划效果、前置关系、原生确认要求和参数正反例；Rust能力注册表、Rust Tool Policy与TypeScript TypeBox测试分别读取并验证同一清单：
+当前产品Sidecar注册20个工具。`v13-tools.json`共同固定协议级任务预算、精确顺序、读/计划效果、前置关系、原生确认要求和参数正反例；Rust能力注册表、Rust Tool Policy与TypeScript TypeBox测试分别读取并验证同一清单：
 
 | 工具 | 参数 | Rust结果与限制 |
 | --- | --- | --- |
 | `hal100.inspect_system_summary` | 精确`{"detail":"summary"}` | Apple Silicon硬件与磁盘摘要；不返回路径 |
-| `hal100.inspect_runtime_catalog` | 精确`{"detail":"summary"}` | 引擎、活动路由和本地模型脱敏目录；不返回路径或凭据 |
+| `hal100.inspect_runtime_catalog` | 精确`{"detail":"summary"}` | 引擎、活动路由、本地模型与已保存托管/外部方案的脱敏目录；方案只含所有权、保存后端ID和可选容量，不返回API根、模型摘要、路径或凭据 |
 | `hal100.plan_model_start` | 仅`{"modelId":"<1—128字符>"}` | 只有同一任务先完成目录读取后，才生成一次性计划；不执行模型操作 |
 | `hal100.plan_model_stop` | 仅`{"modelId":"<1—128字符>"}` | 只接受本次目录中的当前活动模型；生成一次性停止计划，不删除模型或索引，仍需原生确认 |
+| `hal100.plan_runtime_profile_activation` | 仅`{"profileId":"<1—128字符>"}` | 先读取含脱敏方案摘要的运行目录；托管方案由Rust复验模型、引擎与容量，外部方案实时复检后端/API根/版本/摘要；只生成一次性计划，执行失败时恢复原模型与完整活动路由 |
 | `hal100.plan_model_removal` | 仅`{"modelId":"<1—128字符>"}` | 先读取目录；Rust按所有权生成废纸篓或仅移除索引计划；内置Agent模型拒绝 |
 | `hal100.inspect_environment_diagnostics` | 精确`{"target":"full"}` | Rust按需生成有界脱敏快照，覆盖Gateway、引擎、模型库和四个外部Agent；不读取原始日志、不执行完整模型哈希、不返回路径 |
 | `hal100.plan_diagnostic_repair` | 仅`{"reportId":"<1—128字符>","findingId":"<1—128字符>"}` | 只接受同一任务刚生成报告中带`repairKind`的一项；生成计划，不执行修复 |
@@ -66,9 +67,9 @@ Pi   → system.shutdown.ack
 | `hal100.plan_external_agent_installation` | 仅`{"integrationId":"<固定枚举>"}` | 先完成同一Agent状态检查；当前只为未安装的Pi Coding Agent核对固定官方包、版本、Registry、SRI与完整依赖闭包并生成HAL100私有安装计划；不执行安装 |
 | `hal100.plan_managed_external_agent_removal` | 仅`{"integrationId":"<固定枚举>"}` | 先完成同一Agent状态检查且`managedInstallation=true`；只为HAL100私有Pi运行时生成移入系统废纸篓的计划，不触碰用户安装、配置或会话 |
 
-Rust同时验证run ID、tool call ID、重复调用、调用顺序和RPC v12当前每任务最多4次工具调用。`agent.run.start.requiredTools`必须是注册表规范顺序、无重复、包含全部前置能力且最多含一个写计划能力；`agent.run.completed`必须报告固定的19个注册工具、实际完成工具名与数量。每个成功工具结果的序列化载荷最多128 KiB，明显低于1 MiB帧上限；Rust发送前和Sidecar接收后分别校验。必需工具缺失、计划类型错误、结果/回答过长或任何关联不一致均拒绝整个任务。4项是RPC v12的版本化单任务复杂度预算，不是源文件、模块数量或产品能力上限；后续合法工作流需要更多步骤时必须显式评审并更新共享策略。
+Rust同时验证run ID、tool call ID、重复调用、调用顺序和RPC v13当前每任务最多4次工具调用。`agent.run.start.requiredTools`必须是注册表规范顺序、无重复、包含全部前置能力且最多含一个写计划能力；`agent.run.completed`必须报告固定的20个注册工具、实际完成工具名与数量。每个成功工具结果的序列化载荷最多128 KiB，明显低于1 MiB帧上限；Rust发送前和Sidecar接收后分别校验。必需工具缺失、计划类型错误、结果/回答过长或任何关联不一致均拒绝整个任务。4项是RPC v13的版本化单任务复杂度预算，不是源文件、模块数量或产品能力上限；后续合法工作流需要更多步骤时必须显式评审并更新共享策略。
 
-v12的`agent.run.completed.efficiency`只包含数值：上下文/输出预算、意图与执行模型回合、固定纠偏次数、Provider报告的输入/输出与峰值、装配估算峰值、裁剪轮次，以及发送/重复工具结果的字节和Token估算。Rust按当前Provider复核固定容量、回合上限、Usage关系和重复量不大于发送量；任何越界都拒绝整项任务。指标不包含提示词、回答、工具参数或原始工具结果。工具结果Token使用`ceil(可见字符数/4)`，只做同场景上下文比较，不替代Gateway精确Usage。
+v13的`agent.run.completed.efficiency`只包含数值：上下文/输出预算、意图与执行模型回合、固定纠偏次数、Provider报告的输入/输出与峰值、装配估算峰值、裁剪轮次，以及发送/重复工具结果的字节和Token估算。Rust按当前Provider复核固定容量、回合上限、Usage关系和重复量不大于发送量；任何越界都拒绝整项任务。指标不包含提示词、回答、工具参数或原始工具结果。工具结果Token使用`ceil(可见字符数/4)`，只做同场景上下文比较，不替代Gateway精确Usage。
 
 诊断报告只在当前Rust调用栈和前端显式查询结果中存在，不作为长期授权。当前可自动生成计划的修复只有三类确定性动作：安装缺失的固定llama.cpp构建、为已安装且未配置或需要刷新的四类外部Agent生成专用配置事务、清理文件仍缺失的非内置模型索引。引擎校验失败、模型变化/校验失败、配置冲突、版本不兼容和后端熔断只报告，不自动修复。Rust在计划生成前重新检查现实状态；用户原生确认执行后再运行一次诊断，复检失败不会回滚或伪装已经成功的确定性操作。
 

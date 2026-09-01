@@ -51,8 +51,8 @@ describe("HAL100 application shell", () => {
     expect(screen.getByRole("region", { name: "当前状态" })).toBeInTheDocument();
 
     const mainNavigation = screen.getByRole("navigation", { name: "主导航" });
-    expect(within(mainNavigation).getAllByRole("link")).toHaveLength(5);
-    for (const name of ["首页", "模型与运行", "软件接入", "Agent", "活动"]) {
+    expect(within(mainNavigation).getAllByRole("link")).toHaveLength(6);
+    for (const name of ["首页", "模型与运行", "软件接入", "Agent", "活动", "运行方案"]) {
       expect(within(mainNavigation).getByRole("link", { name })).toBeInTheDocument();
     }
     expect(
@@ -75,6 +75,33 @@ describe("HAL100 application shell", () => {
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     expect(window.localStorage.getItem("hal100-theme")).toBe("dark");
     expect(screen.getByRole("button", { name: "切换为浅色" })).toBeInTheDocument();
+  });
+
+  it("exposes runtime profiles as a dedicated primary navigation destination", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/profiles"]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "运行方案", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存当前方案" })).toBeDisabled();
+    expect(screen.getByText("还没有保存运行方案")).toBeInTheDocument();
+    expect(await screen.findByText("已识别外部运行身份")).toBeInTheDocument();
+    expect(screen.getByText("1 个可验证候选")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存为方案" }));
+    expect(screen.getByRole("dialog", { name: "保存为运行方案" })).toBeInTheDocument();
+    expect(screen.getByText(/只保存后端身份、引擎版本和类型化模型证据/)).toBeInTheDocument();
+    const mainNavigation = screen.getByRole("navigation", { name: "主导航" });
+    expect(within(mainNavigation).getByRole("link", { name: "运行方案" })).toHaveClass("active");
+    expect(within(mainNavigation).getByRole("link", { name: "模型与运行" })).not.toHaveClass(
+      "active",
+    );
+    expect(screen.queryByRole("navigation", { name: "模型与运行" })).not.toBeInTheDocument();
   });
 
   it("requires an explicit confirmation after showing the OpenCode semantic diff", async () => {
@@ -182,7 +209,7 @@ describe("HAL100 application shell", () => {
     expect(screen.queryByRole("heading", { name: "初始化配置中心" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "下载与启动" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "HAL100" })).toBeInTheDocument();
-    expect(await screen.findByText("v1.0.4")).toBeInTheDocument();
+    expect(await screen.findByText("v1.0.5")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "打开 Agent 诊断" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "已关闭" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存保留策略" })).toBeDisabled();

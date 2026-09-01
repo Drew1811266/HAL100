@@ -6,7 +6,7 @@ use crate::{
 use crate::{AgentCapabilityEffect, AgentCapabilityRegistry};
 use hal100_protocol::{AgentActionKind, AgentTaskEvidenceSource};
 
-pub const AGENT_TASK_KIND_COUNT: usize = 19;
+pub const AGENT_TASK_KIND_COUNT: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentTaskKind {
@@ -17,6 +17,7 @@ pub enum AgentTaskKind {
     AnalyzeOperationalHistory,
     ObserveDeploymentHealth,
     StartModel,
+    ActivateRuntimeProfile,
     StopModel,
     RemoveModel,
     SearchModelCatalog,
@@ -41,6 +42,7 @@ impl AgentTaskKind {
             Self::AnalyzeOperationalHistory => "analyze_operational_history",
             Self::ObserveDeploymentHealth => "observe_deployment_health",
             Self::StartModel => "start_model",
+            Self::ActivateRuntimeProfile => "activate_runtime_profile",
             Self::StopModel => "stop_model",
             Self::RemoveModel => "remove_model",
             Self::SearchModelCatalog => "search_model_catalog",
@@ -74,6 +76,7 @@ impl AgentTaskKind {
             Self::AnalyzeOperationalHistory => AgentCapabilityId::InspectOperationalHistory,
             Self::ObserveDeploymentHealth => AgentCapabilityId::ObserveOperationalHealth,
             Self::StartModel => AgentCapabilityId::PlanModelStart,
+            Self::ActivateRuntimeProfile => AgentCapabilityId::PlanRuntimeProfileActivation,
             Self::StopModel => AgentCapabilityId::PlanModelStop,
             Self::RemoveModel => AgentCapabilityId::PlanModelRemoval,
             Self::SearchModelCatalog => AgentCapabilityId::SearchModelCatalog,
@@ -100,6 +103,7 @@ impl AgentTaskKind {
                 AgentActionKind::RemoveModel,
             ],
             Self::StartModel => &[AgentActionKind::StartOrSwitchModel],
+            Self::ActivateRuntimeProfile => &[AgentActionKind::ActivateRuntimeProfile],
             Self::StopModel => &[AgentActionKind::StopModel],
             Self::RemoveModel => &[AgentActionKind::RemoveModel],
             Self::DownloadModel => &[AgentActionKind::DownloadModel],
@@ -125,6 +129,7 @@ impl AgentTaskKind {
 pub enum AgentTaskTargetKind {
     System,
     Runtime,
+    RuntimeProfile,
     Environment,
     Model,
     ModelCatalog,
@@ -137,6 +142,7 @@ impl AgentTaskTargetKind {
         match self {
             Self::System => "system",
             Self::Runtime => "runtime",
+            Self::RuntimeProfile => "runtime_profile",
             Self::Environment => "environment",
             Self::Model => "model",
             Self::ModelCatalog => "model_catalog",
@@ -159,6 +165,10 @@ impl AgentTaskTarget {
 
     pub const fn runtime() -> Self {
         Self::without_resource(AgentTaskTargetKind::Runtime)
+    }
+
+    pub const fn runtime_profile() -> Self {
+        Self::without_resource(AgentTaskTargetKind::RuntimeProfile)
     }
 
     pub const fn environment() -> Self {
@@ -279,6 +289,7 @@ pub enum AgentTaskSuccessPredicate {
     EnvironmentDiagnosed,
     RepairFindingResolved,
     RuntimeModelActive,
+    RuntimeProfileActive,
     RuntimeModelStopped,
     ModelAbsent,
     CatalogResultsAvailable,
@@ -299,6 +310,7 @@ impl AgentTaskSuccessPredicate {
             Self::EnvironmentDiagnosed => "environment_diagnosed",
             Self::RepairFindingResolved => "repair_finding_resolved",
             Self::RuntimeModelActive => "runtime_model_active",
+            Self::RuntimeProfileActive => "runtime_profile_active",
             Self::RuntimeModelStopped => "runtime_model_stopped",
             Self::ModelAbsent => "model_absent",
             Self::CatalogResultsAvailable => "catalog_results_available",
@@ -430,6 +442,14 @@ const AGENT_TASK_WORKFLOWS: [AgentWorkflowDefinition; AGENT_TASK_KIND_COUNT] = [
         AgentTaskDesiredState::Running,
         AgentCapabilityDataScope::RuntimeMetadata,
         AgentTaskSuccessPredicate::RuntimeModelActive,
+        true,
+    ),
+    workflow(
+        AgentTaskKind::ActivateRuntimeProfile,
+        AgentTaskTargetKind::RuntimeProfile,
+        AgentTaskDesiredState::Running,
+        AgentCapabilityDataScope::RuntimeMetadata,
+        AgentTaskSuccessPredicate::RuntimeProfileActive,
         true,
     ),
     workflow(
@@ -672,6 +692,11 @@ impl AgentTaskSpec {
                 source,
                 AgentTaskEvidenceSource::RuntimeCatalog | AgentTaskEvidenceSource::RuntimeRecheck
             ),
+            AgentTaskKind::ActivateRuntimeProfile => matches!(
+                source,
+                AgentTaskEvidenceSource::RuntimeCatalog
+                    | AgentTaskEvidenceSource::RuntimeProfileRecheck
+            ),
             AgentTaskKind::RemoveModel => matches!(
                 source,
                 AgentTaskEvidenceSource::RuntimeCatalog
@@ -889,8 +914,8 @@ mod tests {
                 workflow.constraints.requires_native_confirmation
             );
         }
-        assert_eq!(controlled_task_count, 11);
-        assert_eq!(native_action_kinds.len(), 10);
+        assert_eq!(controlled_task_count, 12);
+        assert_eq!(native_action_kinds.len(), 11);
         assert_eq!(
             AgentTaskKind::RepairEnvironment.allowed_action_kinds(),
             &[
@@ -1049,7 +1074,7 @@ mod tests {
     }
 
     #[test]
-    fn success_predicate_manifest_covers_all_nineteen_rust_owned_workflows() {
+    fn success_predicate_manifest_covers_all_twenty_rust_owned_workflows() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
             "../../../contracts/agent-evals/v6-success-predicates.json"
         ))
@@ -1094,6 +1119,7 @@ mod tests {
                     match actual.target_kind {
                         AgentTaskTargetKind::System => AgentTaskTarget::system(),
                         AgentTaskTargetKind::Runtime => AgentTaskTarget::runtime(),
+                        AgentTaskTargetKind::RuntimeProfile => AgentTaskTarget::runtime_profile(),
                         AgentTaskTargetKind::Environment => AgentTaskTarget::environment(),
                         AgentTaskTargetKind::Model => {
                             AgentTaskTarget::model(Some("fixture".into())).expect("model target")

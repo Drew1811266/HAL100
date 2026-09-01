@@ -2,7 +2,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BackendKind, EngineInstallState, EngineRuntimeState, EnvironmentDiagnosticReport,
-    ExternalAgentGatewayProtocol, ExternalAgentIntegrationState,
+    ExternalAgentGatewayProtocol, ExternalAgentIntegrationState, InferenceAccelerator,
+    InferenceArchitecture, InferenceDeployment, InferenceEngineKind, InferenceEngineOwnership,
+    InferenceEngineRecommendation, InferenceEngineSupportEvidenceSummary,
+    InferenceEngineSupportStatus, InferenceModelFormat, InferencePlatform, InferenceProtocol,
+    RuntimeProfileIssue, RuntimeProfileReadiness,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +141,7 @@ pub enum AgentTaskEvidenceSource {
     ExternalIntegrationStatus,
     ActionPlan,
     RuntimeRecheck,
+    RuntimeProfileRecheck,
     ModelLibraryRecheck,
     EngineRecheck,
     IntegrationRecheck,
@@ -474,6 +479,7 @@ pub struct AgentRunResult {
 #[serde(rename_all = "camelCase")]
 pub enum AgentActionKind {
     StartOrSwitchModel,
+    ActivateRuntimeProfile,
     StopModel,
     DownloadModel,
     RemoveModel,
@@ -594,6 +600,78 @@ pub struct AgentRuntimeModel {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeProfile {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub ownership: InferenceEngineOwnership,
+    pub backend_id: Option<String>,
+    pub model_id: String,
+    pub model_display_name: String,
+    pub engine: String,
+    pub adapter_variant: String,
+    pub adapter_contract_revision: String,
+    pub engine_version: String,
+    pub context_window_tokens: Option<u32>,
+    /// Reviewed performance only when Rust matched this exact saved identity and current device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_performance: Option<crate::RuntimeProfileReviewedPerformance>,
+    pub readiness: RuntimeProfileReadiness,
+    pub issues: Vec<RuntimeProfileIssue>,
+    pub active: bool,
+}
+
+/// Bounded, non-secret projection of one registered inference-engine adapter for Pi.
+///
+/// This deliberately excludes endpoints, model digests, filesystem paths, commands, credentials,
+/// and runtime process details. Pi can use the projection to explain host compatibility and choose
+/// an exact saved `runtimeProfileId`; Rust still owns all live discovery, verification and
+/// activation authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeEngineCapability {
+    pub engine: InferenceEngineKind,
+    /// Stable storage key used to correlate this capability with saved runtime profiles.
+    pub engine_key: String,
+    pub adapter_variant: String,
+    pub adapter_contract_revision: String,
+    pub display_name: String,
+    pub ownership: InferenceEngineOwnership,
+    pub deployment: InferenceDeployment,
+    pub protocols: Vec<InferenceProtocol>,
+    pub model_formats: Vec<InferenceModelFormat>,
+    pub platforms: Vec<InferencePlatform>,
+    pub architectures: Vec<InferenceArchitecture>,
+    pub accelerators: Vec<InferenceAccelerator>,
+    pub managed_lifecycle: bool,
+    pub compatible: bool,
+    pub support_status: Option<InferenceEngineSupportStatus>,
+    pub matched_accelerators: Vec<InferenceAccelerator>,
+    pub issues: Vec<crate::EngineHostCompatibilityIssue>,
+    #[serde(default)]
+    pub support_evidence: Option<InferenceEngineSupportEvidenceSummary>,
+    #[serde(default)]
+    pub support_cells: Vec<AgentRuntimeSupportCell>,
+    #[serde(default)]
+    pub saved_profile_count: u32,
+    #[serde(default)]
+    pub recommendation: Option<InferenceEngineRecommendation>,
+}
+
+/// Redacted support-cell coordinates exposed to Pi for explanation and deterministic selection.
+/// It contains no evidence values or runtime identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeSupportCell {
+    pub platform: InferencePlatform,
+    pub architecture: InferenceArchitecture,
+    pub accelerator: InferenceAccelerator,
+    pub deployment: InferenceDeployment,
+    pub status: InferenceEngineSupportStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeCatalog {
     pub engine_install_state: EngineInstallState,
     pub engine_runtime_state: EngineRuntimeState,
@@ -602,6 +680,11 @@ pub struct AgentRuntimeCatalog {
     pub active_backend_id: Option<String>,
     pub configured_backend_count: u32,
     pub models: Vec<AgentRuntimeModel>,
+    #[serde(default)]
+    pub runtime_profiles: Vec<AgentRuntimeProfile>,
+    /// Static engine capability projection used by Pi for bounded, read-only planning context.
+    #[serde(default)]
+    pub engine_capabilities: Vec<AgentRuntimeEngineCapability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -665,6 +748,105 @@ mod tests {
         assert!(!status.active);
         assert!(status.backend_id.is_none());
         assert!(status.model.is_none());
+    }
+
+    #[test]
+    fn external_runtime_profile_exposes_bounded_identity_without_execution_authority() {
+        let profile = AgentRuntimeProfile {
+            id: "runtime-profile-external".to_owned(),
+            name: "外部代码助手".to_owned(),
+            description: "已验证 Ollama 组合".to_owned(),
+            ownership: InferenceEngineOwnership::External,
+            backend_id: Some("saved-ollama".to_owned()),
+            model_id: "qwen3:8b".to_owned(),
+            model_display_name: "qwen3:8b".to_owned(),
+            engine: "ollama".to_owned(),
+            adapter_variant: "official-loopback-api".to_owned(),
+            adapter_contract_revision: "engine-contract-v1".to_owned(),
+            engine_version: "0.12.6".to_owned(),
+            context_window_tokens: None,
+            reviewed_performance: None,
+            readiness: RuntimeProfileReadiness::Ready,
+            issues: Vec::new(),
+            active: false,
+        };
+        let value = serde_json::to_value(profile).expect("external profile JSON");
+        assert_eq!(value["ownership"], "external");
+        assert_eq!(value["backendId"], "saved-ollama");
+        assert!(value["contextWindowTokens"].is_null());
+        let rendered = value.to_string().to_ascii_lowercase();
+        for forbidden in [
+            "apiroot",
+            "digest",
+            "credential",
+            "apikey",
+            "command",
+            "path",
+        ] {
+            assert!(!rendered.contains(forbidden), "leaked {forbidden}");
+        }
+    }
+
+    #[test]
+    fn runtime_catalog_engine_capability_projection_is_bounded_and_non_secret() {
+        let capability = AgentRuntimeEngineCapability {
+            engine: InferenceEngineKind::Vllm,
+            engine_key: "vllm".to_owned(),
+            adapter_variant: "official-openai-server".to_owned(),
+            adapter_contract_revision: "engine-contract-v1".to_owned(),
+            display_name: "vLLM".to_owned(),
+            ownership: InferenceEngineOwnership::External,
+            deployment: InferenceDeployment::Local,
+            protocols: vec![InferenceProtocol::OpenAi],
+            model_formats: vec![InferenceModelFormat::Safetensors],
+            platforms: vec![InferencePlatform::Linux],
+            architectures: vec![InferenceArchitecture::X86_64],
+            accelerators: vec![InferenceAccelerator::Cuda],
+            managed_lifecycle: false,
+            compatible: false,
+            support_status: Some(InferenceEngineSupportStatus::Connected),
+            matched_accelerators: vec![InferenceAccelerator::Cuda],
+            issues: vec![crate::EngineHostCompatibilityIssue::SupportNotFormal],
+            support_evidence: Some(InferenceEngineSupportEvidenceSummary::for_status(
+                InferenceEngineSupportStatus::Connected,
+            )),
+            support_cells: vec![AgentRuntimeSupportCell {
+                platform: InferencePlatform::Linux,
+                architecture: InferenceArchitecture::X86_64,
+                accelerator: InferenceAccelerator::Cuda,
+                deployment: InferenceDeployment::Local,
+                status: InferenceEngineSupportStatus::Connected,
+            }],
+            saved_profile_count: 0,
+            recommendation: None,
+        };
+        let catalog = AgentRuntimeCatalog {
+            engine_install_state: EngineInstallState::NotInstalled,
+            engine_runtime_state: EngineRuntimeState::Stopped,
+            active_model_id: None,
+            active_model_name: None,
+            active_backend_id: None,
+            configured_backend_count: 0,
+            models: Vec::new(),
+            runtime_profiles: Vec::new(),
+            engine_capabilities: vec![capability],
+        };
+        let rendered = serde_json::to_string(&catalog).expect("bounded runtime catalog JSON");
+        assert!(rendered.contains("engineCapabilities"));
+        for forbidden in [
+            "apiRoot",
+            "digest",
+            "credential",
+            "apiKey",
+            "command",
+            "path",
+        ] {
+            assert!(
+                !rendered
+                    .to_ascii_lowercase()
+                    .contains(&forbidden.to_ascii_lowercase())
+            );
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ import { buildOverviewStatus } from "./status";
 
 const readyOverview: AppOverview = {
   appName: "HAL100",
-  version: "1.0.4",
+  version: "1.0.5",
   phase: "test",
   gatewayState: "运行中",
   databaseState: "已就绪",

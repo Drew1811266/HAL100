@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 12,
+  "protocolVersion": 13,
   "id": "contract-ping-1",
   "kind": "system.ping",
   "payload": {}

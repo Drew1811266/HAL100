@@ -10,6 +10,7 @@ mod model_management;
 mod openai;
 mod opencode;
 mod remote_models;
+mod runtime_profiles;
 mod tool_broker;
 mod usage;
 
@@ -23,7 +24,8 @@ pub use agent::{
     AgentIntentShadowProposalStatus, AgentOperationalEvent, AgentOperationalHealthObservation,
     AgentOperationalHealthSample, AgentOperationalHealthStatus, AgentOperationalHistory,
     AgentPromptRequest, AgentProviderProtocol, AgentRunEfficiency, AgentRunResult,
-    AgentRuntimeCatalog, AgentRuntimeModel, AgentStatus, AgentSystemSummary, AgentTaskCheckpoint,
+    AgentRuntimeCatalog, AgentRuntimeEngineCapability, AgentRuntimeModel, AgentRuntimeProfile,
+    AgentRuntimeSupportCell, AgentStatus, AgentSystemSummary, AgentTaskCheckpoint,
     AgentTaskCheckpointPhase, AgentTaskEvidenceSource, AgentTaskGraphCheckpoint,
     AgentTaskGraphCheckpointState, AgentTaskGraphKind, AgentTaskGraphNodeCheckpoint,
     AgentTaskGraphNodeCheckpointState, AgentTaskGraphStartRequest, AgentTaskRecoveryScope,
@@ -63,7 +65,18 @@ pub use diagnostics::{
     EnvironmentDiagnosticReport, EnvironmentHealthStatus,
 };
 pub use engine::{
-    EngineInstallPlan, EngineInstallState, EngineRemovePlan, EngineRuntimeState, LlamaCppStatus,
+    ENGINE_ADAPTER_CONTRACT_REVISION, ENGINE_PROTOCOL_CAPABILITY_REVISION, EngineAdapterId,
+    EngineHostCompatibility, EngineHostCompatibilityIssue, EngineInstallPlan, EngineInstallState,
+    EngineProtocolCapability, EngineProtocolCapabilitySet, EngineQualificationReport,
+    EngineRemovePlan, EngineRuntimeDeviceEvidence, EngineRuntimeState, ExternalEngineModelSummary,
+    ExternalEngineSnapshot, ExternalRuntimeProfileCandidate, HostCapabilitySnapshot,
+    InferenceAccelerator, InferenceArchitecture, InferenceCapabilityCatalog, InferenceDeployment,
+    InferenceEngineCapability, InferenceEngineDescriptor, InferenceEngineKind,
+    InferenceEngineManifest, InferenceEngineOwnership, InferenceEngineRecommendation,
+    InferenceEngineRecommendationReason, InferenceEngineSupportEvidenceKind,
+    InferenceEngineSupportEvidenceSummary, InferenceEngineSupportStatus,
+    InferenceEngineSupportUnit, InferenceModelFormat, InferencePlatform, InferenceProtocol,
+    LlamaCppStatus, ManagedEngineStatus,
 };
 pub use model_management::{
     DownloadSource, GgufImportPlan, GgufImportResult, HardwareProfile, HardwareRecommendation,
@@ -83,6 +96,14 @@ pub use remote_models::{
     ModelDownloadPlan, ModelDownloadSnapshot, ModelDownloadState, RemoteGgufFile,
     RemoteModelRepository, RemoteModelSearchItem, RemoteModelSearchResults,
 };
+pub use runtime_profiles::{
+    ExternalRuntimeProfileDraft, RUNTIME_PROFILE_SPEC_VERSION, RuntimeProfileActivationPlan,
+    RuntimeProfileActivationResult, RuntimeProfileAdapterBinding, RuntimeProfileCatalog,
+    RuntimeProfileDraft, RuntimeProfileEvidence, RuntimeProfileEvidenceKind, RuntimeProfileFailure,
+    RuntimeProfileFailureCode, RuntimeProfileFailureStage, RuntimeProfileIssue,
+    RuntimeProfileModelDigestKind, RuntimeProfileReadiness, RuntimeProfileRecoveryAction,
+    RuntimeProfileReviewedPerformance, RuntimeProfileSummary, RuntimeProfileSupportCell,
+};
 use serde::{Deserialize, Serialize};
 pub use tool_broker::{
     ENVIRONMENT_DIAGNOSTICS_TOOL, EXTERNAL_AGENT_STATUS_TOOL, MODEL_CATALOG_SEARCH_TOOL,
@@ -91,8 +112,8 @@ pub use tool_broker::{
     PLAN_ENGINE_REMOVE_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
     PLAN_EXTERNAL_AGENT_DISCONNECTION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
     PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL, PLAN_MODEL_DOWNLOAD_TOOL, PLAN_MODEL_REMOVAL_TOOL,
-    PLAN_MODEL_START_TOOL, PLAN_MODEL_STOP_TOOL, RUNTIME_CATALOG_TOOL,
-    SIMULATED_SYSTEM_SUMMARY_TOOL, SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload,
+    PLAN_MODEL_START_TOOL, PLAN_MODEL_STOP_TOOL, PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
+    RUNTIME_CATALOG_TOOL, SIMULATED_SYSTEM_SUMMARY_TOOL, SYSTEM_SUMMARY_TOOL, ToolCallErrorPayload,
     ToolCallRequestPayload, ToolCallResultPayload, ToolCallResultStatus,
 };
 pub use usage::{

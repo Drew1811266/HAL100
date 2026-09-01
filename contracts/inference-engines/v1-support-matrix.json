@@ -1,0 +1,306 @@
+{
+  "schemaVersion": 1,
+  "engines": [
+    {
+      "engine": "llamaCpp",
+      "adapterVariant": "hal100-managed-metal",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "macOs",
+          "architecture": "aarch64",
+          "accelerator": "metal",
+          "deployment": "local",
+          "status": "managed"
+        }
+      ]
+    },
+    {
+      "engine": "ollama",
+      "adapterVariant": "official-loopback-api",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "macOs",
+          "architecture": "aarch64",
+          "accelerator": "cpu",
+          "deployment": "local",
+          "status": "verifiedExternal"
+        },
+        {
+          "platform": "macOs",
+          "architecture": "aarch64",
+          "accelerator": "metal",
+          "deployment": "local",
+          "status": "verifiedExternal"
+        },
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "accelerator": "cpu",
+          "deployment": "local",
+          "status": "reserved"
+        },
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "cpu",
+          "deployment": "local",
+          "status": "reserved"
+        }
+      ]
+    },
+    {
+      "engine": "mlxLm",
+      "adapterVariant": "official-http-server",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "macOs",
+          "architecture": "aarch64",
+          "accelerator": "metal",
+          "deployment": "local",
+          "status": "verifiedExternal"
+        }
+      ]
+    },
+    {
+      "engine": "vllm",
+      "adapterVariant": "official-openai-server",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "aarch64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "sglang",
+      "adapterVariant": "official-openai-server",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "tensorRtLlm",
+      "adapterVariant": "trtllm-serve-openai-server",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "aarch64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "openVino",
+      "adapterVariant": "ovms-openai-cpu",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "accelerator": "cpu",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "cpu",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "openVino",
+      "adapterVariant": "ovms-openai-intel-gpu",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "accelerator": "intelGpu",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "intelGpu",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "openVino",
+      "adapterVariant": "ovms-openai-intel-npu",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "accelerator": "intelNpu",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "intelNpu",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "mlcLlm",
+      "adapterVariant": "official-openai-metal",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "macOs",
+          "architecture": "aarch64",
+          "accelerator": "metal",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "mlcLlm",
+      "adapterVariant": "official-openai-vulkan",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "accelerator": "vulkan",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "aarch64",
+          "accelerator": "vulkan",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "vulkan",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "mlcLlm",
+      "adapterVariant": "official-openai-cuda",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "aarch64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "mlcLlm",
+      "adapterVariant": "official-openai-rocm",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "accelerator": "rocm",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "aarch64",
+          "accelerator": "rocm",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "rocm",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    },
+    {
+      "engine": "lmDeploy",
+      "adapterVariant": "official-openai-server",
+      "contractRevision": "engine-contract-v1",
+      "supportUnits": [
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        },
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "accelerator": "cuda",
+          "deployment": "local",
+          "status": "connected"
+        }
+      ]
+    }
+  ]
+}

@@ -418,6 +418,8 @@ mod tests {
                 ready: true,
                 active: false,
             }],
+            runtime_profiles: Vec::new(),
+            engine_capabilities: Vec::new(),
         }
     }
 

@@ -4,6 +4,7 @@ pub const DEFAULT_KEYCHAIN_SERVICE: &str = "com.hal100.desktop.backends";
 
 #[derive(Debug, Clone)]
 pub struct MacOsKeychainSecretStore {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     service: String,
 }
 

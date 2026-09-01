@@ -20,6 +20,11 @@ const ModelTestPage = lazy(() =>
     default: module.ModelTestPage,
   })),
 );
+const RuntimeProfilesPage = lazy(() =>
+  import("./features/workspace/RuntimeProfilesPage").then((module) => ({
+    default: module.RuntimeProfilesPage,
+  })),
+);
 const IntegrationsPage = lazy(() =>
   import("./features/integrations/IntegrationsPage").then((module) => ({
     default: module.IntegrationsPage,
@@ -93,6 +98,8 @@ export default function App() {
           <Route path="/workspace/runtime" element={<BackendsPage view="runtime" />} />
           <Route path="/workspace/services" element={<BackendsPage view="services" />} />
           <Route path="/workspace/test" element={<ModelTestPage />} />
+          <Route path="/profiles" element={<RuntimeProfilesPage />} />
+          <Route path="/workspace/profiles" element={<Navigate replace to="/profiles" />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/agent" element={<AgentPage />} />
           <Route path="/activity" element={<Navigate replace to="/activity/usage" />} />

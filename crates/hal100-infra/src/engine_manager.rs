@@ -28,8 +28,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
 use crate::{
-    AgentRuntimeCapacityProfile, BackendConfig, Database, DatabaseError, GatewayRouteSwitchError,
-    GatewayState,
+    ActiveGatewayRoute, AgentRuntimeCapacityProfile, BackendConfig, Database, DatabaseError,
+    GatewayRouteSwitchError, GatewayState,
 };
 
 const LLAMA_CPP_VERSION: &str = "b10218";
@@ -138,7 +138,7 @@ struct RuntimeSession {
     child: Child,
     model_id: String,
     model_name: String,
-    previous_backend: Option<BackendConfig>,
+    previous_route: Option<ActiveGatewayRoute>,
     gateway_active: bool,
     port: u16,
 }
@@ -240,6 +240,10 @@ impl LlamaCppManager {
         })
     }
 
+    pub fn capacity_profile(&self) -> AgentRuntimeCapacityProfile {
+        self.capacity
+    }
+
     pub fn status(&self) -> Result<LlamaCppStatus, EngineManagerError> {
         let install_state = self.install_state();
         let mut runtime = self
@@ -254,7 +258,7 @@ impl LlamaCppManager {
         if exited {
             let session = runtime.session.take().expect("checked session");
             if session.gateway_active {
-                self.gateway.replace_backend(session.previous_backend);
+                self.gateway.replace_active_route(session.previous_route);
             }
             runtime.state = EngineRuntimeState::Error;
             runtime.last_error_code = Some("process_exited".to_owned());
@@ -599,7 +603,7 @@ impl LlamaCppManager {
                 child,
                 model_id: model.id,
                 model_name: model.display_name,
-                previous_backend: None,
+                previous_route: None,
                 gateway_active: false,
                 port,
             });
@@ -660,15 +664,16 @@ impl LlamaCppManager {
             Some(api_key),
         )
         .map_err(|_| EngineManagerError::GatewayConfiguration)?;
-        let backend_switch = if force_switch {
-            self.gateway.force_replace_backend(Some(backend)).await
+        let managed_route = Some(ActiveGatewayRoute::passthrough(backend));
+        let route_switch = if force_switch {
+            self.gateway.force_replace_active_route(managed_route).await
         } else {
             self.gateway
-                .replace_backend_when_idle(Some(backend), GATEWAY_DRAIN_TIMEOUT)
+                .replace_active_route_when_idle(managed_route, GATEWAY_DRAIN_TIMEOUT)
                 .await
         };
-        let previous_backend = match backend_switch {
-            Ok(previous_backend) => previous_backend,
+        let previous_route = match route_switch {
+            Ok(previous_route) => previous_route,
             Err(error) => {
                 let error_code = if force_switch {
                     "gateway_switch_failed"
@@ -685,7 +690,7 @@ impl LlamaCppManager {
                 .lock()
                 .map_err(|_| EngineManagerError::LockPoisoned)?;
             if let Some(session) = runtime.session.as_mut() {
-                session.previous_backend = previous_backend.clone();
+                session.previous_route = previous_route.clone();
                 session.gateway_active = true;
                 runtime.state = EngineRuntimeState::Running;
                 false
@@ -694,7 +699,9 @@ impl LlamaCppManager {
             }
         };
         if session_missing {
-            self.gateway.force_replace_backend(previous_backend).await?;
+            self.gateway
+                .force_replace_active_route(previous_route)
+                .await?;
             return Err(EngineManagerError::StartFailed);
         }
         self.status()
@@ -939,7 +946,7 @@ impl LlamaCppManager {
             let _ = session.child.kill();
             let _ = session.child.wait();
             if session.gateway_active {
-                self.gateway.replace_backend(session.previous_backend);
+                self.gateway.replace_active_route(session.previous_route);
             }
         }
         runtime.state = if error_code.is_some() {
@@ -955,7 +962,7 @@ impl LlamaCppManager {
         &self,
         error_code: Option<&str>,
     ) -> Result<(), EngineManagerError> {
-        let previous_backend = {
+        let previous_route = {
             let runtime = self
                 .runtime
                 .lock()
@@ -963,12 +970,12 @@ impl LlamaCppManager {
             runtime.session.as_ref().and_then(|session| {
                 session
                     .gateway_active
-                    .then(|| session.previous_backend.clone())
+                    .then(|| session.previous_route.clone())
             })
         };
-        if let Some(previous_backend) = previous_backend {
+        if let Some(previous_route) = previous_route {
             self.gateway
-                .replace_backend_when_idle(previous_backend, GATEWAY_DRAIN_TIMEOUT)
+                .replace_active_route_when_idle(previous_route, GATEWAY_DRAIN_TIMEOUT)
                 .await?;
             let mut runtime = self
                 .runtime
@@ -985,7 +992,7 @@ impl LlamaCppManager {
         &self,
         error_code: Option<&str>,
     ) -> Result<(), EngineManagerError> {
-        let previous_backend = {
+        let previous_route = {
             let runtime = self
                 .runtime
                 .lock()
@@ -993,11 +1000,13 @@ impl LlamaCppManager {
             runtime.session.as_ref().and_then(|session| {
                 session
                     .gateway_active
-                    .then(|| session.previous_backend.clone())
+                    .then(|| session.previous_route.clone())
             })
         };
-        if let Some(previous_backend) = previous_backend {
-            self.gateway.force_replace_backend(previous_backend).await?;
+        if let Some(previous_route) = previous_route {
+            self.gateway
+                .force_replace_active_route(previous_route)
+                .await?;
             let mut runtime = self
                 .runtime
                 .lock()
@@ -1300,6 +1309,11 @@ mod tests {
             crate::UsageWriter::start(database.clone()),
         )
         .unwrap();
+        let external_backend =
+            BackendConfig::new("external-ollama", "http://127.0.0.1:11434/v1", None).unwrap();
+        gateway.replace_active_route(Some(
+            ActiveGatewayRoute::resolved(external_backend, "qwen3.5:9b").unwrap(),
+        ));
         let engine_root = temp.0.join("engines");
         let install_path = engine_root.join("test-runtime");
         std::fs::create_dir_all(&install_path).unwrap();
@@ -1458,7 +1472,15 @@ with socketserver.TCPServer(("127.0.0.1", port), Handler) as server:
         assert_eq!(database.usage_request_count().unwrap(), 1);
         let stopped = manager.stop().await.expect("stop model");
         assert_eq!(stopped.runtime_state, EngineRuntimeState::Stopped);
-        assert!(!gateway.has_backend());
+        let restored = gateway.routing_snapshot();
+        assert_eq!(
+            restored.active_backend_id.as_deref(),
+            Some("external-ollama")
+        );
+        assert_eq!(
+            restored.active_resolved_model.as_deref(),
+            Some("qwen3.5:9b")
+        );
 
         let force_running = manager
             .force_start_model(&model.id)
@@ -1468,7 +1490,15 @@ with socketserver.TCPServer(("127.0.0.1", port), Handler) as server:
         assert!(gateway.has_backend());
         let force_stopped = manager.force_stop().await.expect("force stop model");
         assert_eq!(force_stopped.runtime_state, EngineRuntimeState::Stopped);
-        assert!(!gateway.has_backend());
+        let force_restored = gateway.routing_snapshot();
+        assert_eq!(
+            force_restored.active_backend_id.as_deref(),
+            Some("external-ollama")
+        );
+        assert_eq!(
+            force_restored.active_resolved_model.as_deref(),
+            Some("qwen3.5:9b")
+        );
 
         let mut tampered = std::fs::read(&model_path).unwrap();
         *tampered.last_mut().expect("model payload") ^= 0x01;

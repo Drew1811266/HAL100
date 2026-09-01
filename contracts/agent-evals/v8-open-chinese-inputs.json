@@ -71,6 +71,13 @@
       "expected": { "disposition": "task", "taskKind": "start_model" }
     },
     {
+      "id": "open-activate-runtime-profile",
+      "category": "task-coverage",
+      "variation": "personal-profile",
+      "input": { "prompt": "运行我保存的代码助手方案，切换前先复验。" },
+      "expected": { "disposition": "task", "taskKind": "activate_runtime_profile" }
+    },
+    {
       "id": "open-stop-current-model",
       "category": "task-coverage",
       "variation": "colloquial",

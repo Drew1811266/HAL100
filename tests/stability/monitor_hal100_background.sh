@@ -244,7 +244,35 @@ unsafe_audit_rows=0
 if [ -f "$database_path" ]; then
   usage_count_after=$(sqlite3 "$database_path" 'SELECT COUNT(*) FROM usage_requests;' 2>/dev/null || printf '0')
   audit_count_after=$(sqlite3 "$database_path" 'SELECT COUNT(*) FROM audit_events;' 2>/dev/null || printf '0')
-  unsafe_audit_rows=$(sqlite3 "$database_path" "SELECT COUNT(*) FROM audit_events WHERE lower(summary_json) LIKE '%prompt%' OR lower(summary_json) LIKE '%answer%' OR lower(summary_json) LIKE '%apikey%' OR lower(summary_json) LIKE '%authorization%' OR summary_json LIKE '%hal100_agent_session_%';" 2>/dev/null || printf '0')
+  unsafe_audit_rows=$(
+    sqlite3 "$database_path" 2>/dev/null <<'SQL' || printf '0'
+SELECT COUNT(*)
+FROM audit_events AS event
+WHERE json_valid(event.summary_json) = 0
+   OR EXISTS (
+     SELECT 1
+     FROM json_tree(event.summary_json) AS field
+     WHERE (
+       field.key IS NOT NULL
+       AND field.type IN ('text', 'object', 'array')
+       AND (
+         lower(CAST(field.key AS TEXT)) LIKE '%prompt%'
+         OR lower(CAST(field.key AS TEXT)) LIKE '%answer%'
+         OR lower(CAST(field.key AS TEXT)) LIKE '%apikey%'
+         OR lower(CAST(field.key AS TEXT)) LIKE '%authorization%'
+       )
+     )
+     OR (
+       field.type = 'text'
+       AND (
+         lower(CAST(field.value AS TEXT)) LIKE '%hal100_agent_session_%'
+         OR lower(CAST(field.value AS TEXT)) LIKE '%authorization%bearer%'
+         OR lower(CAST(field.value AS TEXT)) LIKE '%x-api-key%'
+       )
+     )
+   );
+SQL
+  )
 fi
 
 secret_match_files=0

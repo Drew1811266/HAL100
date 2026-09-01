@@ -45,6 +45,11 @@
       "completionEvidenceSources": ["runtimeCatalog", "runtimeRecheck"]
     },
     {
+      "taskKind": "activate_runtime_profile",
+      "predicate": "runtime_profile_active",
+      "completionEvidenceSources": ["runtimeCatalog", "runtimeProfileRecheck"]
+    },
+    {
       "taskKind": "stop_model",
       "predicate": "runtime_model_stopped",
       "completionEvidenceSources": ["runtimeCatalog", "runtimeRecheck"]

@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HAL100 inference engine acceptance evidence ledger",
+  "description": "A reviewed, redacted ledger of exact inference-engine support cells. Formal records require all seven evidence kinds, an immutable model revision, host identity and complete HAL100 control-plane resilience checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "records"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "records": {
+      "type": "array",
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/record" }
+    }
+  },
+  "$defs": {
+    "engine": {
+      "enum": [
+        "llamaCpp",
+        "ollama",
+        "mlxLm",
+        "vllm",
+        "sglang",
+        "tensorRtLlm",
+        "openVino",
+        "mlcLlm",
+        "lmDeploy"
+      ]
+    },
+    "adapterId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "variant", "contractRevision"],
+      "properties": {
+        "engine": { "$ref": "#/$defs/engine" },
+        "variant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "contractRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        }
+      }
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "instanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "evidenceKind": {
+      "enum": [
+        "officialContract",
+        "protocolQualification",
+        "platformRuntime",
+        "engineIdentity",
+        "modelDeploymentIdentity",
+        "runtimeProfileLifecycle",
+        "stability"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source", "assertion"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/evidenceKind" },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(README\\.md|contracts/|crates/|docs/)"
+        },
+        "assertion": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "resilience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cancellationVerified",
+        "failedSwitchRollbackVerified",
+        "restartCompensationVerified"
+      ],
+      "properties": {
+        "cancellationVerified": { "type": "boolean" },
+        "failedSwitchRollbackVerified": { "type": "boolean" },
+        "restartCompensationVerified": { "type": "boolean" }
+      }
+    },
+    "completeResilience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cancellationVerified",
+        "failedSwitchRollbackVerified",
+        "restartCompensationVerified"
+      ],
+      "properties": {
+        "cancellationVerified": { "const": true },
+        "failedSwitchRollbackVerified": { "const": true },
+        "restartCompensationVerified": { "const": true }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "adapterId",
+        "instanceId",
+        "originFingerprint",
+        "configRevision",
+        "protocolCapabilityHash",
+        "platform",
+        "architecture",
+        "accelerator",
+        "deployment",
+        "status",
+        "verifiedAtMs",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "adapterId": { "$ref": "#/$defs/adapterId" },
+        "instanceId": { "$ref": "#/$defs/instanceId" },
+        "originFingerprint": { "$ref": "#/$defs/fingerprint" },
+        "configRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "protocolCapabilityHash": { "$ref": "#/$defs/fingerprint" },
+        "platform": { "enum": ["macOs", "windows", "linux"] },
+        "architecture": { "enum": ["aarch64", "x86_64"] },
+        "accelerator": {
+          "enum": ["cpu", "metal", "cuda", "rocm", "vulkan", "sycl", "intelGpu", "intelNpu"]
+        },
+        "deployment": { "enum": ["local", "remote"] },
+        "status": {
+          "enum": ["reserved", "connected", "managed", "verifiedExternal"]
+        },
+        "verifiedAtMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "engineVersion": {
+          "type": ["string", "null"],
+          "maxLength": 512
+        },
+        "deploymentFingerprint": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "modelRevision": {
+          "type": ["string", "null"],
+          "maxLength": 512
+        },
+        "hostSummary": {
+          "type": ["string", "null"],
+          "maxLength": 512
+        },
+        "resilience": {
+          "anyOf": [{ "$ref": "#/$defs/resilience" }, { "type": "null" }]
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": { "enum": ["managed", "verifiedExternal"] }
+            }
+          },
+          "then": {
+            "required": ["modelRevision", "hostSummary", "resilience"],
+            "properties": {
+              "modelRevision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "not": { "pattern": "^model-id-sha256:" }
+              },
+              "hostSummary": {
+                "$ref": "#/$defs/boundedText"
+              },
+              "resilience": {
+                "$ref": "#/$defs/completeResilience"
+              },
+              "evidence": {
+                "minItems": 7,
+                "maxItems": 7
+              }
+            },
+            "anyOf": [
+              {
+                "required": ["engineVersion"],
+                "properties": {
+                  "engineVersion": { "$ref": "#/$defs/boundedText" }
+                }
+              },
+              {
+                "required": ["deploymentFingerprint"],
+                "properties": {
+                  "deploymentFingerprint": { "$ref": "#/$defs/fingerprint" }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

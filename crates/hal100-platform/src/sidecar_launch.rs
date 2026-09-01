@@ -138,6 +138,7 @@ fn development_sandbox_command(
     Err(SidecarLaunchError::UnsupportedIsolation)
 }
 
+#[cfg(target_os = "macos")]
 fn profile_definition(key: &str, value: &Path) -> OsString {
     let mut definition = OsString::from(key);
     definition.push("=");

@@ -23,6 +23,9 @@ pub enum AuthorizedAgentTool {
     PlanModelStop {
         model_id: String,
     },
+    PlanRuntimeProfileActivation {
+        profile_id: String,
+    },
     PlanModelRemoval {
         model_id: String,
     },
@@ -99,6 +102,11 @@ impl AgentToolPolicy {
             AgentCapabilityId::PlanModelStop => Ok(AuthorizedAgentTool::PlanModelStop {
                 model_id: exact_model_id(&request.arguments)?,
             }),
+            AgentCapabilityId::PlanRuntimeProfileActivation => {
+                Ok(AuthorizedAgentTool::PlanRuntimeProfileActivation {
+                    profile_id: exact_bounded_string(&request.arguments, "profileId", 1, 128)?,
+                })
+            }
             AgentCapabilityId::PlanModelRemoval => Ok(AuthorizedAgentTool::PlanModelRemoval {
                 model_id: exact_model_id(&request.arguments)?,
             }),
@@ -685,10 +693,10 @@ mod tests {
     }
 
     #[test]
-    fn rust_argument_policy_matches_shared_v12_fixtures() {
+    fn rust_argument_policy_matches_shared_v13_fixtures() {
         let manifest: Value =
-            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v12-tools.json"))
-                .expect("shared Agent RPC v12 tool policy");
+            serde_json::from_str(include_str!("../../../contracts/agent-rpc/v13-tools.json"))
+                .expect("shared Agent RPC v13 tool policy");
         let tools = manifest["tools"].as_array().expect("tool policy array");
         assert_eq!(
             manifest["protocolVersion"].as_u64(),

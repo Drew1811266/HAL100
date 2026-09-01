@@ -56,14 +56,35 @@ Pending → Downloading → Verifying → Installing → Ready
 
 ## 4. 硬件探测生命周期
 
-`hal100-platform::MacOsSystemProbe::hardware_profile`只从专用 Tauri命令调用，在阻塞线程中通过绝对系统程序读取固定白名单字段：
+`hal100-platform::NativeSystemProbe::capability_snapshot`只从启动容量选择、专用 Tauri命令或
+Agent明确只读工具调用，在阻塞线程中读取固定白名单字段。当前Apple Silicon实现使用：
 
 ```text
 /usr/sbin/sysctl -n hw.memsize hw.physicalcpu hw.logicalcpu machdep.cpu.brand_string hw.model
 /bin/df -Pk <HAL100模型目录>
 ```
 
-命令不经过 Shell，模型目录由应用数据目录生成。建议只是筛选起点，不是性能承诺：默认优先 GGUF `Q4_K_M`，更高质量再评估`Q5_K_M`；上下文长度和 KV Cache仍会改变实际内存占用。
+命令不经过 Shell，模型目录由应用数据目录生成。快照以受控枚举记录macOS/Windows/Linux、
+aarch64/x86_64、CPU和有系统证据的加速器。Linux只有同时看到NVIDIA驱动版本与DRM PCI厂商
+证据时才列出CUDA候选，且仍需具体引擎资格；未知离散GPU不猜测。原
+`HardwareProfile`由同一快照投影，建议只是筛选起点，不是性能承诺：默认优先 GGUF `Q4_K_M`，
+更高质量再评估`Q5_K_M`；上下文长度和 KV Cache仍会改变实际内存占用。
+
+### 4.1 外部Ollama模型身份
+
+`ExternalInferenceEngineAdapter`与HAL100托管模型生命周期分离。Ollama适配器只读官方版本和
+模型目录端点，将每个条目压缩为名称、64位摘要、大小、格式、家族、参数规模和量化信息；不读取
+Ollama模型文件路径，不调用pull、create、delete、stop或安装接口。版本端点可用但模型目录不可
+验证时只报告引擎身份，不能生成运行方案候选。
+
+外部候选要求用户先在后端页保存并启用同一个Ollama API根地址。候选的稳定身份由后端ID、引擎
+版本、模型名称和模型摘要组成，不等价于HAL100已经拥有该模型或引擎。用户从候选保存外部方案
+时，Rust重新读取完整目录并在spec v3/schema v15中固定适配器、后端配置修订、origin指纹、
+版本、模型、Ollama内容digest和协议能力指纹；
+容量保持为空并由外部引擎决定。读取方案目录会按引擎批量复用一次实时探测，模型被替换、删除、
+服务不可达或版本漂移都会进入明确状态。切换预检不静默接受漂移；桌面只能在Rust原生确认后
+显式更新验证快照，Pi没有该入口。激活前后和Agent最终成功证据仍再次复检，适配器不获得pull、
+create、delete、stop、安装或文件访问权限。
 
 ## 5. 数据与所有权
 
@@ -79,7 +100,7 @@ HAL100托管模型位于应用数据目录的`models/managed`子目录，所有�
 
 | 类别 | 命令 | 约束 |
 | --- | --- | --- |
-| 只读 | `get_hardware_profile`、`get_model_library`、`get_model_downloads` | 按需调用，无常驻扫描 |
+| 只读 | `get_hardware_profile`、`get_inference_capability_catalog`、`get_model_library`、`get_model_downloads` | 按需调用，无常驻扫描；能力目录只列已注册适配器，外部运行快照和候选均无执行权 |
 | 来源 | `set_default_download_source`、`search_remote_models`、`get_remote_model_repository` | 搜索不写模型文件 |
 | 下载 | `plan_model_download`、`start_model_download`、`resume_model_download`、`cancel_model_download` | 首次写文件必须消费一次性计划并通过 Rust原生确认 |
 | 导入 | `select_and_plan_gguf_import`、`apply_gguf_import` | 专用选择器；原生确认时复核文件快照和完整哈希 |

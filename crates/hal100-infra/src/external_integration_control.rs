@@ -114,6 +114,21 @@ impl<T> PendingPlanStore<T> {
     }
 }
 
+impl<T: Clone> PendingPlanStore<T> {
+    pub fn peek(&self, plan_id: &str) -> Result<T, PendingPlanError> {
+        let now_ms = now_ms();
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| PendingPlanError::LockPoisoned)?;
+        entries.retain(|_, entry| entry.expires_at_ms >= now_ms);
+        entries
+            .get(plan_id)
+            .map(|entry| entry.value.clone())
+            .ok_or(PendingPlanError::InvalidPlan)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum BoundedCommandError {
     #[error("failed to start external client command: {0}")]
@@ -357,6 +372,9 @@ mod tests {
             plans.take_at(&third.plan_id, 250),
             Err(PendingPlanError::InvalidPlan)
         );
+
+        let live = plans.replace("live").expect("live plan");
+        assert_eq!(plans.peek(&live.plan_id), Ok("live"));
     }
 
     #[test]

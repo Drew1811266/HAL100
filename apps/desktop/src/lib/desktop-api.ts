@@ -36,6 +36,170 @@ export interface HardwareProfile {
   recommendation: HardwareRecommendation;
 }
 
+export type InferencePlatform = "macOs" | "windows" | "linux";
+export type InferenceArchitecture = "aarch64" | "x86_64";
+export type InferenceAccelerator =
+  | "cpu"
+  | "metal"
+  | "cuda"
+  | "rocm"
+  | "vulkan"
+  | "sycl"
+  | "intelGpu"
+  | "intelNpu";
+export type InferenceEngineKind =
+  | "llamaCpp"
+  | "ollama"
+  | "mlxLm"
+  | "vllm"
+  | "sglang"
+  | "tensorRtLlm"
+  | "openVino"
+  | "mlcLlm"
+  | "lmDeploy";
+export type EngineHostCompatibilityIssue =
+  | "platformUnsupported"
+  | "architectureUnsupported"
+  | "acceleratorUnavailable"
+  | "supportCellAmbiguous"
+  | "supportNotFormal";
+export type InferenceEngineSupportStatus =
+  | "reserved"
+  | "connected"
+  | "verifiedExternal"
+  | "managed";
+
+export interface HostCapabilitySnapshot {
+  platform: InferencePlatform;
+  architecture: InferenceArchitecture;
+  cpuBrand: string;
+  deviceModel: string;
+  totalMemoryBytes: number;
+  physicalCpuCores: number;
+  logicalCpuCores: number;
+  accelerators: InferenceAccelerator[];
+  modelStoragePath: string;
+  modelStorageAvailableBytes: number;
+  probeRevision: string;
+}
+
+export interface InferenceEngineDescriptor {
+  kind: InferenceEngineKind;
+  displayName: string;
+  ownership: "managed" | "external";
+  deployment: "local" | "remote";
+  protocols: ("openAi" | "anthropic" | "ollama")[];
+  platforms: InferencePlatform[];
+  architectures: InferenceArchitecture[];
+  accelerators: InferenceAccelerator[];
+  modelFormats: ("gguf" | "safetensors" | "mlx" | "mlc" | "openVino")[];
+  managedLifecycle: boolean;
+}
+
+export interface EngineHostCompatibility {
+  engine: InferenceEngineKind;
+  compatible: boolean;
+  matchedAccelerators: InferenceAccelerator[];
+  supportStatus: InferenceEngineSupportStatus | null;
+  supportEvidence?: InferenceEngineSupportEvidenceSummary;
+  issues: EngineHostCompatibilityIssue[];
+}
+
+export interface InferenceEngineCapability {
+  descriptor: InferenceEngineDescriptor;
+  compatibility: EngineHostCompatibility;
+  externalRuntimes: ExternalEngineSnapshot[];
+  supportEvidence?: InferenceEngineSupportEvidenceSummary;
+  recommendation?: InferenceEngineRecommendation;
+}
+
+export type InferenceEngineSupportEvidenceKind =
+  | "officialContract"
+  | "protocolQualification"
+  | "platformRuntime"
+  | "engineIdentity"
+  | "modelDeploymentIdentity"
+  | "runtimeProfileLifecycle"
+  | "stability";
+
+export interface InferenceEngineSupportEvidenceSummary {
+  verified: InferenceEngineSupportEvidenceKind[];
+  missing: InferenceEngineSupportEvidenceKind[];
+}
+
+export type InferenceEngineRecommendationReason =
+  | "hostCompatible"
+  | "formalSupport"
+  | "managedLifecycle"
+  | "verifiedRuntimeObserved"
+  | "connectedOnly"
+  | "hostMismatch"
+  | "supportCellAmbiguous"
+  | "protocolRequiresExplicitQualification";
+
+export interface InferenceEngineRecommendation {
+  eligible: boolean;
+  score: number;
+  reasons: InferenceEngineRecommendationReason[];
+}
+
+export interface ExternalEngineModelSummary {
+  name: string;
+  digest: string;
+  sizeBytes: number;
+  format: string;
+  family: string | null;
+  parameterSize: string | null;
+  quantization: string | null;
+  evidence: {
+    kind: "contentDigest" | "repositoryRevision" | "deploymentFingerprint" | "catalogIdentity";
+    algorithm: string;
+    value: string;
+  };
+}
+
+export interface ExternalEngineSnapshot {
+  engine: InferenceEngineKind;
+  displayName: string;
+  apiRoot: string;
+  version: string;
+  engineVersionExact: boolean;
+  models: ExternalEngineModelSummary[];
+  modelCatalogComplete: boolean;
+}
+
+export interface ExternalRuntimeProfileCandidate {
+  backendId: string;
+  backendDisplayName: string;
+  backendApiRoot: string;
+  engine: InferenceEngineKind;
+  engineVersion: string;
+  modelId: string;
+  modelDigest: string;
+  evidence: {
+    kind: "contentDigest" | "repositoryRevision" | "deploymentFingerprint" | "catalogIdentity";
+    algorithm: string;
+    value: string;
+  };
+  modelFormat: string;
+  parameterSize: string | null;
+  quantization: string | null;
+  supportCells: RuntimeProfileSupportCell[];
+}
+
+export interface RuntimeProfileSupportCell {
+  platform: InferencePlatform;
+  architecture: InferenceArchitecture;
+  accelerator: InferenceAccelerator;
+  deployment: "local" | "remote";
+}
+
+export interface InferenceCapabilityCatalog {
+  host: HostCapabilitySnapshot;
+  engines: InferenceEngineCapability[];
+  runtimeProfileCandidates: ExternalRuntimeProfileCandidate[];
+}
+
 export type ModelSource = "huggingFace" | "modelScope" | "localFile";
 export type ModelOwnership = "managed" | "external";
 export type LocalModelState = "ready" | "missing" | "changed" | "verificationFailed";
@@ -149,6 +313,210 @@ export interface LlamaCppStatus {
   lastErrorCode: string | null;
 }
 
+export type RuntimeProfileReadiness = "active" | "ready" | "needsVerification" | "needsRepair";
+
+export type RuntimeProfileOwnership = "managed" | "external";
+export type RuntimeProfileModelDigestKind = "sha256" | "ollamaDigest" | "evidenceFingerprint";
+
+export type RuntimeProfileIssue =
+  | "engineNotInstalled"
+  | "backendUnavailable"
+  | "backendIdentityChanged"
+  | "engineIncompatible"
+  | "engineVersionChanged"
+  | "modelUnavailable"
+  | "modelIntegrityChanged"
+  | "capacityPolicyChanged"
+  | "supportCellMissing"
+  | "supportCellChanged";
+
+const runtimeProfileFailureCodes = [
+  "invalidRequest",
+  "persistenceUnavailable",
+  "managedEngineUnavailable",
+  "backendUnavailable",
+  "engineClientUnavailable",
+  "engineEndpointInvalid",
+  "engineUnreachable",
+  "engineResponseInvalid",
+  "engineAdapterRegistryInvalid",
+  "engineAdapterUnavailable",
+  "qualificationUnavailable",
+  "qualificationFailed",
+  "acceptanceEvidenceUnavailable",
+  "actionPlanUnavailable",
+  "noVerifiedRuntime",
+  "duplicateProfile",
+  "profileNotFound",
+  "profileNeedsRepair",
+  "profileChanged",
+  "liveVerificationRequired",
+  "supportCellSelectionRequired",
+  "invalidSupportCell",
+  "runtimeDeviceUnproven",
+  "externalProfileRequired",
+  "activationFailed",
+  "activationRecoveryRequired",
+  "interactionIncomplete",
+] as const;
+export type RuntimeProfileFailureCode = (typeof runtimeProfileFailureCodes)[number];
+
+const runtimeProfileFailureStages = [
+  "input",
+  "persistence",
+  "discovery",
+  "inspection",
+  "qualification",
+  "evidence",
+  "verification",
+  "planning",
+  "activation",
+  "recovery",
+  "interaction",
+] as const;
+export type RuntimeProfileFailureStage = (typeof runtimeProfileFailureStages)[number];
+
+const runtimeProfileRecoveryActions = [
+  "correctInput",
+  "startRuntime",
+  "checkService",
+  "reviewProfile",
+  "reverifyProfile",
+  "selectSupportCell",
+  "retry",
+  "recoverActivation",
+  "updateApplication",
+] as const;
+export type RuntimeProfileRecoveryAction = (typeof runtimeProfileRecoveryActions)[number];
+
+const runtimeProfileFailureCodeSet = new Set<string>(runtimeProfileFailureCodes);
+const runtimeProfileFailureStageSet = new Set<string>(runtimeProfileFailureStages);
+const runtimeProfileRecoveryActionSet = new Set<string>(runtimeProfileRecoveryActions);
+
+export interface RuntimeProfileFailure {
+  code: RuntimeProfileFailureCode;
+  stage: RuntimeProfileFailureStage;
+  retryable: boolean;
+  recoveryAction: RuntimeProfileRecoveryAction;
+}
+
+export function isRuntimeProfileFailure(value: unknown): value is RuntimeProfileFailure {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<RuntimeProfileFailure>;
+  return (
+    typeof candidate.code === "string" &&
+    runtimeProfileFailureCodeSet.has(candidate.code) &&
+    typeof candidate.stage === "string" &&
+    runtimeProfileFailureStageSet.has(candidate.stage) &&
+    typeof candidate.retryable === "boolean" &&
+    typeof candidate.recoveryAction === "string" &&
+    runtimeProfileRecoveryActionSet.has(candidate.recoveryAction)
+  );
+}
+
+export interface RuntimeProfileDraft {
+  name: string;
+  description: string;
+}
+
+export interface ExternalRuntimeProfileDraft extends RuntimeProfileDraft {
+  backendId: string;
+  modelId: string;
+  expectedEvidence: {
+    kind: "contentDigest" | "repositoryRevision" | "deploymentFingerprint" | "catalogIdentity";
+    algorithm: string;
+    value: string;
+  };
+  supportCell: RuntimeProfileSupportCell | null;
+}
+
+export interface RuntimeProfileSummary {
+  id: string;
+  name: string;
+  description: string;
+  specVersion: number;
+  ownership: RuntimeProfileOwnership;
+  backendId: string | null;
+  backendApiRoot: string | null;
+  modelId: string;
+  modelDisplayName: string;
+  modelDigestKind: RuntimeProfileModelDigestKind;
+  engine: string;
+  engineVersion: string;
+  capacityTier: string | null;
+  contextWindowTokens: number | null;
+  capacityRevision: string | null;
+  adapterBinding: {
+    variant: string;
+    contractRevision: string;
+    backendConfigRevision: number | null;
+    originFingerprint: string | null;
+    protocolCapabilityHash: string | null;
+    supportCell: RuntimeProfileSupportCell | null;
+  };
+  evidence: {
+    kind: "contentDigest" | "repositoryRevision" | "deploymentFingerprint" | "catalogIdentity";
+    algorithm: string;
+    value: string;
+  };
+  reviewedPerformance?: RuntimeProfileReviewedPerformance;
+  readiness: RuntimeProfileReadiness;
+  issues: RuntimeProfileIssue[];
+  verifiedAtMs: number;
+  lastActivatedAtMs: number | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface RuntimeProfileReviewedPerformance {
+  workloadRevision: string;
+  attempts: number;
+  concurrency: number;
+  p95LatencyMs: number;
+  maxLatencyMs: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  wallTimeMs: number;
+  sampleCompletionTokensPerSecondMilli: number;
+  reviewedAtMs: number;
+}
+
+export interface RuntimeProfileCatalog {
+  profiles: RuntimeProfileSummary[];
+  activeProfileId: string | null;
+  canSaveCurrent: boolean;
+}
+
+export interface RuntimeProfileActivationPlan {
+  planId: string;
+  expiresAtMs: number;
+  profileId: string;
+  profileName: string;
+  modelId: string;
+  modelDisplayName: string;
+  ownership: RuntimeProfileOwnership;
+  backendId: string | null;
+  engine: string;
+  engineVersion: string;
+  supportCell: RuntimeProfileSupportCell | null;
+  contextWindowTokens: number | null;
+  currentBackendId: string | null;
+  currentModelId: string | null;
+  currentModelName: string | null;
+  issues: RuntimeProfileIssue[];
+  actionSummary: string;
+  requiresConfirmation: boolean;
+}
+
+export interface RuntimeProfileActivationResult {
+  profileId: string;
+  ownership: RuntimeProfileOwnership;
+  activeBackendId: string | null;
+  activeModelId: string;
+  managedRuntime: LlamaCppStatus | null;
+  catalog: RuntimeProfileCatalog;
+}
+
 export interface GatewayModelRoute {
   alias: string;
   backendId: string;
@@ -157,6 +525,7 @@ export interface GatewayModelRoute {
 
 export interface GatewayRoutingSnapshot {
   activeBackendId: string | null;
+  activeResolvedModel: string | null;
   backendIds: string[];
   modelRoutes: GatewayModelRoute[];
   backendHealth: Array<{
@@ -180,6 +549,8 @@ export interface BackendSummary {
   id: string;
   displayName: string;
   kind: BackendKind;
+  engine: InferenceEngineKind | null;
+  adapterVariant: string | null;
   apiRoot: string;
   authMethod: BackendAuthMethod;
   credentialConfigured: boolean;
@@ -207,6 +578,8 @@ export interface BackendDraft {
   id: string | null;
   displayName: string;
   kind: BackendKind;
+  engine: InferenceEngineKind | null;
+  adapterVariant: string | null;
   apiRoot: string;
   authMethod: BackendAuthMethod;
   apiKey: string | null;
@@ -220,6 +593,8 @@ export interface BackendRouteDraft {
 
 export interface LocalBackendCandidate {
   kind: BackendKind;
+  engine: InferenceEngineKind | null;
+  adapterVariant: string | null;
   displayName: string;
   apiRoot: string;
   evidence: string;
@@ -229,6 +604,7 @@ export interface LocalBackendCandidate {
 export interface LocalBackendDiscovery {
   candidates: LocalBackendCandidate[];
   checkedTargets: number;
+  externalEngines: ExternalEngineSnapshot[];
 }
 
 export type BackendProbeStatus =
@@ -737,6 +1113,7 @@ export type AgentTaskEvidenceSource =
   | "externalIntegrationStatus"
   | "actionPlan"
   | "runtimeRecheck"
+  | "runtimeProfileRecheck"
   | "modelLibraryRecheck"
   | "engineRecheck"
   | "integrationRecheck"
@@ -1002,6 +1379,7 @@ export interface AgentRunEfficiency {
 
 export type AgentActionKind =
   | "startOrSwitchModel"
+  | "activateRuntimeProfile"
   | "stopModel"
   | "downloadModel"
   | "removeModel"
@@ -1037,8 +1415,8 @@ export interface AgentActionResult {
 
 const developmentOverview: AppOverview = {
   appName: "HAL100",
-  version: "1.0.4",
-  phase: "1.0.4 · 开发初期",
+  version: "1.0.5",
+  phase: "1.0.5 · 开发初期",
   gatewayState: "运行中",
   databaseState: "已就绪",
   platform: {
@@ -1171,6 +1549,116 @@ const browserHardwareProfile: HardwareProfile = {
       "当前是浏览器预览数据，Tauri 开发版会读取真实硬件。",
     ],
   },
+};
+
+const browserInferenceCapabilityCatalog: InferenceCapabilityCatalog = {
+  host: {
+    platform: "macOs",
+    architecture: "aarch64",
+    cpuBrand: browserHardwareProfile.chip,
+    deviceModel: browserHardwareProfile.modelIdentifier,
+    totalMemoryBytes: browserHardwareProfile.totalUnifiedMemoryBytes,
+    physicalCpuCores: browserHardwareProfile.physicalCpuCores,
+    logicalCpuCores: browserHardwareProfile.logicalCpuCores,
+    accelerators: ["cpu", "metal"],
+    modelStoragePath: browserHardwareProfile.modelStoragePath,
+    modelStorageAvailableBytes: browserHardwareProfile.modelStorageAvailableBytes,
+    probeRevision: "host-capabilities-v3-preview",
+  },
+  engines: [
+    {
+      descriptor: {
+        kind: "llamaCpp",
+        displayName: "HAL100 托管 llama.cpp",
+        ownership: "managed",
+        deployment: "local",
+        protocols: ["openAi"],
+        platforms: ["macOs"],
+        architectures: ["aarch64"],
+        accelerators: ["metal"],
+        modelFormats: ["gguf"],
+        managedLifecycle: true,
+      },
+      compatibility: {
+        engine: "llamaCpp",
+        compatible: true,
+        matchedAccelerators: ["metal"],
+        supportStatus: "managed",
+        issues: [],
+      },
+      externalRuntimes: [],
+    },
+    {
+      descriptor: {
+        kind: "ollama",
+        displayName: "用户所有的本机 Ollama",
+        ownership: "external",
+        deployment: "local",
+        protocols: ["openAi", "ollama"],
+        platforms: ["macOs", "windows", "linux"],
+        architectures: ["aarch64", "x86_64"],
+        accelerators: ["cpu", "metal", "cuda", "rocm", "vulkan"],
+        modelFormats: ["gguf"],
+        managedLifecycle: false,
+      },
+      compatibility: {
+        engine: "ollama",
+        compatible: true,
+        matchedAccelerators: ["cpu", "metal"],
+        supportStatus: "verifiedExternal",
+        issues: [],
+      },
+      externalRuntimes: [
+        {
+          engine: "ollama",
+          displayName: "本机 Ollama（预览示例）",
+          apiRoot: "http://127.0.0.1:11434/v1/",
+          version: "0.12.x",
+          engineVersionExact: true,
+          models: [
+            {
+              name: "qwen3:8b",
+              digest: "a".repeat(64),
+              sizeBytes: 4 * 1024 ** 3,
+              format: "gguf",
+              family: "qwen3",
+              parameterSize: "8.2B",
+              quantization: "Q4_K_M",
+              evidence: {
+                kind: "contentDigest",
+                algorithm: "ollama-digest",
+                value: "a".repeat(64),
+              },
+            },
+          ],
+          modelCatalogComplete: true,
+        },
+      ],
+    },
+  ],
+  runtimeProfileCandidates: [
+    {
+      backendId: "backend-ollama-preview",
+      backendDisplayName: "本机 Ollama（预览示例）",
+      backendApiRoot: "http://127.0.0.1:11434/v1/",
+      engine: "ollama",
+      engineVersion: "0.12.x",
+      modelId: "qwen3:8b",
+      modelDigest: "a".repeat(64),
+      evidence: {
+        kind: "contentDigest",
+        algorithm: "ollama-digest",
+        value: "a".repeat(64),
+      },
+      modelFormat: "gguf",
+      parameterSize: "8.2B",
+      quantization: "Q4_K_M",
+      supportCells: [
+        { platform: "macOs", architecture: "aarch64", accelerator: "cpu", deployment: "local" },
+        { platform: "macOs", architecture: "aarch64", accelerator: "metal", deployment: "local" },
+      ],
+    },
+  ],
 };
 
 const browserModelLibrary: ModelLibrary = {
@@ -1597,6 +2085,11 @@ export async function getHardwareProfile(): Promise<HardwareProfile> {
   return invoke<HardwareProfile>("get_hardware_profile");
 }
 
+export async function getInferenceCapabilityCatalog(): Promise<InferenceCapabilityCatalog> {
+  if (!isTauriRuntime()) return browserInferenceCapabilityCatalog;
+  return invoke<InferenceCapabilityCatalog>("get_inference_capability_catalog");
+}
+
 export async function getModelLibrary(): Promise<ModelLibrary> {
   if (!isTauriRuntime()) {
     return browserModelLibrary;
@@ -1770,8 +2263,98 @@ const browserLlamaCppStatus: LlamaCppStatus = {
   lastErrorCode: null,
 };
 
+const browserRuntimeProfileCatalog: RuntimeProfileCatalog = {
+  activeProfileId: null,
+  canSaveCurrent: false,
+  profiles: [
+    {
+      id: "runtime-profile-code",
+      name: "代码助手",
+      description: "日常编码与仓库分析，已在当前设备完成验证。",
+      specVersion: 3,
+      ownership: "managed",
+      backendId: null,
+      backendApiRoot: null,
+      modelId: "qwen35-2b-q4",
+      modelDisplayName: "Qwen3.5-2B-GGUF",
+      modelDigestKind: "sha256",
+      engine: "llama.cpp",
+      engineVersion: "b10218",
+      capacityTier: "standard32k",
+      contextWindowTokens: 32_768,
+      capacityRevision: "agent-runtime-v2",
+      adapterBinding: {
+        variant: "hal100-managed",
+        contractRevision: "engine-contract-v1",
+        backendConfigRevision: null,
+        originFingerprint: null,
+        protocolCapabilityHash: null,
+        supportCell: {
+          platform: "macOs",
+          architecture: "aarch64",
+          accelerator: "metal",
+          deployment: "local",
+        },
+      },
+      evidence: {
+        kind: "contentDigest",
+        algorithm: "sha256",
+        value: "a".repeat(64),
+      },
+      readiness: "ready",
+      issues: [],
+      verifiedAtMs: Date.now() - 2 * 24 * 60 * 60 * 1000,
+      lastActivatedAtMs: Date.now() - 3 * 60 * 60 * 1000,
+      createdAtMs: Date.now() - 7 * 24 * 60 * 60 * 1000,
+      updatedAtMs: Date.now() - 2 * 24 * 60 * 60 * 1000,
+    },
+    {
+      id: "runtime-profile-light",
+      name: "轻量问答",
+      description: "低资源占用的快速本地问答方案。",
+      specVersion: 3,
+      ownership: "managed",
+      backendId: null,
+      backendApiRoot: null,
+      modelId: "qwen-small-q4",
+      modelDisplayName: "Qwen 轻量模型",
+      modelDigestKind: "sha256",
+      engine: "llama.cpp",
+      engineVersion: "b10100",
+      capacityTier: "baseline16k",
+      contextWindowTokens: 16_384,
+      capacityRevision: "agent-runtime-v1",
+      adapterBinding: {
+        variant: "hal100-managed",
+        contractRevision: "engine-contract-v1",
+        backendConfigRevision: null,
+        originFingerprint: null,
+        protocolCapabilityHash: null,
+        supportCell: {
+          platform: "macOs",
+          architecture: "aarch64",
+          accelerator: "metal",
+          deployment: "local",
+        },
+      },
+      evidence: {
+        kind: "contentDigest",
+        algorithm: "sha256",
+        value: "b".repeat(64),
+      },
+      readiness: "needsVerification",
+      issues: ["engineVersionChanged", "capacityPolicyChanged"],
+      verifiedAtMs: Date.now() - 20 * 24 * 60 * 60 * 1000,
+      lastActivatedAtMs: Date.now() - 18 * 24 * 60 * 60 * 1000,
+      createdAtMs: Date.now() - 30 * 24 * 60 * 60 * 1000,
+      updatedAtMs: Date.now() - 20 * 24 * 60 * 60 * 1000,
+    },
+  ],
+};
+
 const browserGatewayRoutingSnapshot: GatewayRoutingSnapshot = {
   activeBackendId: null,
+  activeResolvedModel: null,
   backendIds: [],
   modelRoutes: [],
   backendHealth: [],
@@ -1786,6 +2369,94 @@ const browserBackendCatalog: BackendCatalog = {
 export async function getLlamaCppStatus(): Promise<LlamaCppStatus> {
   if (!isTauriRuntime()) return browserLlamaCppStatus;
   return invoke<LlamaCppStatus>("get_llama_cpp_status");
+}
+
+export async function getRuntimeProfileCatalog(): Promise<RuntimeProfileCatalog> {
+  if (!isTauriRuntime()) {
+    const preview = new URLSearchParams(window.location.search).get("preview");
+    return preview === "profiles"
+      ? browserRuntimeProfileCatalog
+      : { activeProfileId: null, canSaveCurrent: false, profiles: [] };
+  }
+  return invoke<RuntimeProfileCatalog>("get_runtime_profile_catalog");
+}
+
+export async function saveCurrentRuntimeProfile(
+  draft: RuntimeProfileDraft,
+): Promise<RuntimeProfileCatalog> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会保存运行方案");
+  return invoke<RuntimeProfileCatalog>("save_current_runtime_profile", { draft });
+}
+
+export async function saveExternalRuntimeProfile(
+  draft: ExternalRuntimeProfileDraft,
+): Promise<RuntimeProfileCatalog> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会保存外部运行方案");
+  return invoke<RuntimeProfileCatalog>("save_external_runtime_profile", { draft });
+}
+
+export async function reverifyExternalRuntimeProfile(
+  profileId: string,
+): Promise<RuntimeProfileCatalog> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会更新外部方案验证快照");
+  return invoke<RuntimeProfileCatalog>("reverify_external_runtime_profile", { profileId });
+}
+
+export async function updateRuntimeProfile(
+  profileId: string,
+  draft: RuntimeProfileDraft,
+): Promise<RuntimeProfileCatalog> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会修改运行方案");
+  return invoke<RuntimeProfileCatalog>("update_runtime_profile", { profileId, draft });
+}
+
+export async function deleteRuntimeProfile(profileId: string): Promise<RuntimeProfileCatalog> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会删除运行方案");
+  return invoke<RuntimeProfileCatalog>("delete_runtime_profile", { profileId });
+}
+
+export async function planRuntimeProfileActivation(
+  profileId: string,
+): Promise<RuntimeProfileActivationPlan> {
+  if (!isTauriRuntime()) {
+    const profile = browserRuntimeProfileCatalog.profiles.find(
+      (candidate) => candidate.id === profileId,
+    );
+    if (!profile) throw new Error("运行方案不存在");
+    return {
+      planId: `browser-${profileId}`,
+      expiresAtMs: Date.now() + 5 * 60 * 1000,
+      profileId: profile.id,
+      profileName: profile.name,
+      modelId: profile.modelId,
+      modelDisplayName: profile.modelDisplayName,
+      ownership: profile.ownership,
+      backendId: profile.backendId,
+      engine: profile.engine,
+      engineVersion: "b10218",
+      supportCell: profile.adapterBinding.supportCell,
+      contextWindowTokens: profile.contextWindowTokens,
+      currentBackendId: null,
+      currentModelId: null,
+      currentModelName: null,
+      issues: profile.issues,
+      actionSummary: `启动并验证 ${profile.modelDisplayName}`,
+      requiresConfirmation: false,
+    };
+  }
+  return invoke<RuntimeProfileActivationPlan>("plan_runtime_profile_activation", { profileId });
+}
+
+export async function discardRuntimeProfileActivationPlan(planId: string): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  return invoke<boolean>("discard_runtime_profile_activation_plan", { planId });
+}
+
+export async function applyRuntimeProfileActivation(
+  planId: string,
+): Promise<RuntimeProfileActivationResult> {
+  if (!isTauriRuntime()) throw new Error("浏览器预览模式不会切换运行方案");
+  return invoke<RuntimeProfileActivationResult>("apply_runtime_profile_activation", { planId });
 }
 
 export async function getGatewayRoutingSnapshot(): Promise<GatewayRoutingSnapshot> {
@@ -1844,10 +2515,15 @@ export async function deleteExternalBackend(backendId: string): Promise<BackendC
 export async function discoverLocalBackends(): Promise<LocalBackendDiscovery> {
   if (!isTauriRuntime()) {
     return {
-      checkedTargets: 3,
+      checkedTargets: 9,
+      externalEngines: browserInferenceCapabilityCatalog.engines.flatMap(
+        (engine) => engine.externalRuntimes,
+      ),
       candidates: [
         {
           kind: "externalOllama",
+          engine: "ollama",
+          adapterVariant: "official-loopback-api",
           displayName: "本机 Ollama（预览示例）",
           apiRoot: "http://127.0.0.1:11434/v1/",
           evidence: "浏览器预览不会实际扫描端口",

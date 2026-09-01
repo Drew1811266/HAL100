@@ -10,7 +10,7 @@ use hal100_infra::{
     CredentialRegistry, Database, GatewayState, LlamaCppManager, ModelDownloadManager,
     RemoteModelCatalog, UsageWriter, serve_gateway, stored_client_credential,
 };
-use hal100_platform::MacOsSystemProbe;
+use hal100_platform::NativeSystemProbe;
 use hal100_protocol::{
     DownloadSource, EngineInstallState, EngineRuntimeState, LocalModelSummary, ModelDownloadState,
 };
@@ -143,7 +143,7 @@ async fn ensure_model(
         catalog,
         model_storage.to_owned(),
     )?);
-    let available = MacOsSystemProbe.model_storage_available_bytes(model_storage)?;
+    let available = NativeSystemProbe.model_storage_available_bytes(model_storage)?;
 
     let matching_download = database.downloads()?.into_iter().find(|download| {
         download.source == DownloadSource::HuggingFace

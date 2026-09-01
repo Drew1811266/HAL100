@@ -18,6 +18,7 @@ export const AGENT_TASK_KIND_KEYS = [
   "analyze_operational_history",
   "observe_deployment_health",
   "start_model",
+  "activate_runtime_profile",
   "stop_model",
   "remove_model",
   "search_model_catalog",
@@ -86,9 +87,9 @@ const INTENT_SYSTEM_PROMPT =
   'schemaVersion固定为1。disposition只能是"task"、"clarify"、"reject"或"unresolved"。' +
   "task时只允许taskKind和可选targetId。taskKind只能从以下值选择：" +
   [...TASK_KINDS].join(",") +
-  "。含义依次覆盖：检查硬件、检查运行时、环境诊断、诊断修复、失败历史、部署观测、启动模型、停止当前模型、移除模型、搜索模型、检查模型仓库、下载模型、安装引擎、移除引擎、检查外部Agent、配置外部Agent、断开外部Agent、安装HAL100私有Agent、移除HAL100私有Agent。" +
+  "。含义依次覆盖：检查硬件、检查运行时、环境诊断、诊断修复、失败历史、部署观测、启动模型、启用已保存运行方案、停止当前模型、移除模型、搜索模型、检查模型仓库、下载模型、安装引擎、移除引擎、检查外部Agent、配置外部Agent、断开外部Agent、安装HAL100私有Agent、移除HAL100私有Agent。" +
   "。外部Agent targetId只能是opencode、pi-coding-agent、openclaw或hermes-agent。" +
-  "只有外部Agent任务需要上述targetId；检查硬件、运行时、环境诊断/修复、失败历史、部署观测、模型目录/仓库、下载和引擎任务必须完全省略targetId，不能写system、runtime、environment、model、null或自然语言。" +
+  "只有外部Agent任务需要上述targetId；检查硬件、运行时、环境诊断/修复、失败历史、部署观测、运行方案、模型目录/仓库、下载和引擎任务必须完全省略targetId，不能写system、runtime、environment、model、null或自然语言。" +
   "受管安装或移除只支持pi-coding-agent，其他外部Agent不得使用这两类taskKind。" +
   "名称映射必须严格使用：OpenCode=opencode，Pi Coding Agent或Pi=pi-coding-agent，OpenClaw=openclaw，Hermes Agent或Hermes=hermes-agent。出现其中一个名称时目标已经明确，禁止返回external_agent_target。" +
   "外部Agent动作规则：询问当前如何连接、状态或安装情况=inspect_external_agent；迁移、改指向、接到或改用HAL100=configure_external_agent；HAL100通道不要了、停止使用HAL100但保留程序=disconnect_external_agent；程序未安装且要求HAL100维护自己的副本=install_managed_external_agent。" +
@@ -98,7 +99,7 @@ const INTENT_SYSTEM_PROMPT =
   [...CLARIFICATION_KINDS].join(",") +
   "。要求跳过计划或确认直接改文件、运行Shell、任意文件操作时必须reject为outside_capability_boundary；要求删除用户设置、配置或密钥时必须reject为outside_ownership_boundary。rejectionReason只能是" +
   [...REJECTION_REASONS].join(",") +
-  '。非外部任务例：机器能否跑模型=>{"schemaVersion":1,"disposition":"task","taskKind":"inspect_system"}；现在跑哪套模型和服务=>{"schemaVersion":1,"disposition":"task","taskKind":"inspect_runtime"}；把当前推理模型停下来=>{"schemaVersion":1,"disposition":"task","taskKind":"stop_model"}；环境哪里不对=>{"schemaVersion":1,"disposition":"task","taskKind":"diagnose_environment"}；查毛病并给一个安全修复方案=>{"schemaVersion":1,"disposition":"task","taskKind":"repair_environment"}；最近为何出错=>{"schemaVersion":1,"disposition":"task","taskKind":"analyze_operational_history"}；上线前短时观察稳不稳=>{"schemaVersion":1,"disposition":"task","taskKind":"observe_deployment_health"}。外部任务例：让OpenCode改走HAL100=>{"schemaVersion":1,"disposition":"task","taskKind":"configure_external_agent","targetId":"opencode"}；Pi不再走HAL100但保留程序=>{"schemaVersion":1,"disposition":"task","taskKind":"disconnect_external_agent","targetId":"pi-coding-agent"}；Hermes现在如何连接=>{"schemaVersion":1,"disposition":"task","taskKind":"inspect_external_agent","targetId":"hermes-agent"}；给HAL100准备私有Pi副本=>{"schemaVersion":1,"disposition":"task","taskKind":"install_managed_external_agent","targetId":"pi-coding-agent"}；跳过计划直接改配置文件=>{"schemaVersion":1,"disposition":"reject","rejectionReason":"outside_capability_boundary"}；清除用户设置和密钥=>{"schemaVersion":1,"disposition":"reject","rejectionReason":"outside_ownership_boundary"}；只说卸载Pi=>{"schemaVersion":1,"disposition":"clarify","clarificationKind":"managed_ownership"}。不能安全判断时返回{"schemaVersion":1,"disposition":"unresolved"}。';
+  '。非外部任务例：机器能否跑模型=>{"schemaVersion":1,"disposition":"task","taskKind":"inspect_system"}；现在跑哪套模型和服务=>{"schemaVersion":1,"disposition":"task","taskKind":"inspect_runtime"}；运行我保存的代码助手方案=>{"schemaVersion":1,"disposition":"task","taskKind":"activate_runtime_profile"}；把当前推理模型停下来=>{"schemaVersion":1,"disposition":"task","taskKind":"stop_model"}；环境哪里不对=>{"schemaVersion":1,"disposition":"task","taskKind":"diagnose_environment"}；查毛病并给一个安全修复方案=>{"schemaVersion":1,"disposition":"task","taskKind":"repair_environment"}；最近为何出错=>{"schemaVersion":1,"disposition":"task","taskKind":"analyze_operational_history"}；上线前短时观察稳不稳=>{"schemaVersion":1,"disposition":"task","taskKind":"observe_deployment_health"}。外部任务例：让OpenCode改走HAL100=>{"schemaVersion":1,"disposition":"task","taskKind":"configure_external_agent","targetId":"opencode"}；Pi不再走HAL100但保留程序=>{"schemaVersion":1,"disposition":"task","taskKind":"disconnect_external_agent","targetId":"pi-coding-agent"}；Hermes现在如何连接=>{"schemaVersion":1,"disposition":"task","taskKind":"inspect_external_agent","targetId":"hermes-agent"}；给HAL100准备私有Pi副本=>{"schemaVersion":1,"disposition":"task","taskKind":"install_managed_external_agent","targetId":"pi-coding-agent"}；跳过计划直接改配置文件=>{"schemaVersion":1,"disposition":"reject","rejectionReason":"outside_capability_boundary"}；清除用户设置和密钥=>{"schemaVersion":1,"disposition":"reject","rejectionReason":"outside_ownership_boundary"}；只说卸载Pi=>{"schemaVersion":1,"disposition":"clarify","clarificationKind":"managed_ownership"}。不能安全判断时返回{"schemaVersion":1,"disposition":"unresolved"}。';
 
 export function validateAgentIntentRequest(request: AgentIntentRequest): AgentIntentRequest {
   if (

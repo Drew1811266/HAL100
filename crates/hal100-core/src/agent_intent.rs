@@ -347,6 +347,13 @@ impl AgentTaskIntentRouter {
         if requests_model_stop(&normalized) {
             return task(AgentTaskKind::StopModel, model_target(), provider_mode);
         }
+        if requests_runtime_profile_activation(&normalized) {
+            return task(
+                AgentTaskKind::ActivateRuntimeProfile,
+                AgentTaskTarget::runtime_profile(),
+                provider_mode,
+            );
+        }
         if requests_model_removal(&normalized) {
             return task(AgentTaskKind::RemoveModel, model_target(), provider_mode);
         }
@@ -427,6 +434,11 @@ impl AgentTaskIntentRouter {
                 "当前模型",
                 "活动模型",
                 "引擎状态",
+                "推理引擎",
+                "引擎能力",
+                "支持哪些引擎",
+                "支持的引擎",
+                "引擎兼容",
                 "后端状态",
                 "运行状态",
             ],
@@ -664,6 +676,9 @@ fn validate_task_proposal(
     let target = match AgentTaskWorkflowRegistry::for_kind(task_kind).target_kind {
         AgentTaskTargetKind::System if target_id.is_none() => AgentTaskTarget::system(),
         AgentTaskTargetKind::Runtime if target_id.is_none() => AgentTaskTarget::runtime(),
+        AgentTaskTargetKind::RuntimeProfile if target_id.is_none() => {
+            AgentTaskTarget::runtime_profile()
+        }
         AgentTaskTargetKind::Environment if target_id.is_none() => AgentTaskTarget::environment(),
         AgentTaskTargetKind::Model => AgentTaskTarget::model(target_id.map(str::to_owned))
             .map_err(|_| AgentTaskProposalError::InvalidTarget)?,
@@ -1005,6 +1020,18 @@ fn requests_model_start(normalized: &str) -> bool {
         && contains_any(normalized, &["启动", "切换", "换成", "改用", "设为当前"])
 }
 
+fn requests_runtime_profile_activation(normalized: &str) -> bool {
+    normalized.contains("方案")
+        && contains_any(
+            normalized,
+            &["运行", "启用", "启动", "切换到", "换成", "改用"],
+        )
+        && !contains_any(
+            normalized,
+            &["生成方案", "部署方案", "安装方案", "修复方案", "受控计划"],
+        )
+}
+
 fn requests_model_repository_inspection(normalized: &str) -> bool {
     contains_any(
         normalized,
@@ -1154,7 +1181,7 @@ mod tests {
         .expect("open Chinese evaluation manifest");
         let scenarios = manifest["scenarios"].as_array().expect("open scenarios");
         let pi_scenarios = manifest["piScenarios"].as_array().expect("Pi scenarios");
-        assert_eq!(scenarios.len(), 42);
+        assert_eq!(scenarios.len(), 43);
         assert_eq!(pi_scenarios.len(), 12);
         assert_eq!(manifest["failureClasses"].as_array().map(Vec::len), Some(8));
 
@@ -1341,8 +1368,8 @@ mod tests {
             }
         }
 
-        assert_eq!(evaluated, 20);
-        assert_eq!(matched, 20, "structured route mismatches: {mismatch_ids:?}");
+        assert_eq!(evaluated, 21);
+        assert_eq!(matched, 21, "structured route mismatches: {mismatch_ids:?}");
         assert_eq!(adversarial_tasks, 0);
     }
 
@@ -1351,6 +1378,7 @@ mod tests {
         let cases = [
             ("检查这台 Mac 的硬件", AgentTaskKind::InspectSystem),
             ("列出当前可用模型和引擎状态", AgentTaskKind::InspectRuntime),
+            ("现在支持哪些推理引擎", AgentTaskKind::InspectRuntime),
             ("执行 HAL100 环境诊断", AgentTaskKind::DiagnoseEnvironment),
             ("诊断并修复最高优先级问题", AgentTaskKind::RepairEnvironment),
             (
@@ -1362,6 +1390,10 @@ mod tests {
                 AgentTaskKind::ObserveDeploymentHealth,
             ),
             ("启动这个 GGUF 模型", AgentTaskKind::StartModel),
+            (
+                "运行我保存的代码助手方案",
+                AgentTaskKind::ActivateRuntimeProfile,
+            ),
             ("停止当前推理模型", AgentTaskKind::StopModel),
             ("删除 Qwen GGUF 模型", AgentTaskKind::RemoveModel),
             ("搜索 Qwen GGUF 模型", AgentTaskKind::SearchModelCatalog),

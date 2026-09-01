@@ -27,11 +27,11 @@ function pingFixture(): AgentRpcEnvelope {
   return JSON.parse(readFileSync(pingFixtureUrl, "utf8")) as AgentRpcEnvelope;
 }
 
-describe("Agent RPC v12 framing", () => {
-  it("matches the shared v12 envelope schema", () => {
+describe("Agent RPC v13 framing", () => {
+  it("matches the shared v13 envelope schema", () => {
     const schema = JSON.parse(
       readFileSync(
-        new URL("../../../contracts/agent-rpc/v12.schema.json", import.meta.url),
+        new URL("../../../contracts/agent-rpc/v13.schema.json", import.meta.url),
         "utf8",
       ),
     ) as { properties: { protocolVersion: { const: number } } };

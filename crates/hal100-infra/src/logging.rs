@@ -212,9 +212,14 @@ fn secure_file_permissions(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::SystemTime,
+    };
 
     use super::*;
+
+    static NEXT_TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn redacted_values_never_render_the_inner_secret() {
@@ -277,12 +282,13 @@ mod tests {
     impl TestDirectory {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "hal100-logging-test-{}-{}",
+                "hal100-logging-test-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .expect("current time")
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT_TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
             ));
             fs::create_dir_all(&path).expect("create logging test directory");
             Self(path)

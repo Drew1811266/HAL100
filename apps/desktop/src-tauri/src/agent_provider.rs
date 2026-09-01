@@ -394,6 +394,8 @@ mod tests {
                 id: "cloud-provider".to_owned(),
                 display_name: "测试云端后端".to_owned(),
                 kind: "external_anthropic".to_owned(),
+                engine_kind: None,
+                adapter_variant: None,
                 api_root: "http://127.0.0.1:48991/v1/".to_owned(),
                 auth_style: "anthropic_api_key".to_owned(),
                 credential_id: Some("keychain-reference".to_owned()),

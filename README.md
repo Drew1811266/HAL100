@@ -20,11 +20,98 @@ HAL100 不是通用聊天客户端，也不是另一个 Coding Agent。它是运
 内置 HAL100 Agent 使用本地小模型与 [Pi Agent Core](https://github.com/earendil-works/pi) 帮助用户诊断、部署、配置和调试 HAL100 环境。Pi Agent Core 只负责任务与工具调用编排；模型请求统一经过 Gateway，Rust Core 始终是唯一授权与执行权威。
 
 > [!WARNING]
-> HAL100 当前版本为 `1.0.4` 开发初期版本，仅用于 Apple Silicon Mac 内部开发测试。当前开发范围明确不包含签名、公证、安装包、自动更新、正式升级或正式发布流程；这些事项也不作为当前缺陷或默认下一阶段任务。项目不支持 Intel Mac，Windows 10/11 目前只保留架构兼容边界，尚未实现。
+> HAL100 当前版本为 `1.0.5` 开发初期版本，主要用于Apple Silicon Mac内部开发测试。当前开发范围明确不包含签名、公证、安装包、自动更新、正式升级或正式发布流程；这些事项也不作为当前缺陷或默认下一阶段任务。项目不支持Intel Mac；Windows 10/11与Linux已建立源码编译和宿主探针基线，但完整桌面与引擎纵向尚未逐格验收，不能视为正式平台支持。
 
 ## 当前开发版
 
-`1.0.4` 已完成迭代 0—45，长期“Pi配置Agent深度融合与质量收口”目标已完成，下一迭代尚未定义。复合图schema v1与v10的12类语义、v11恢复合同的9类语义已落地，包含固定3/4节点图、证据解锁、失败传播、显式单次补偿和重启后全节点现实重验证；桌面已接入逐节点Sidecar、一次性计划/原生确认关联、动作复验以及Agent页面的创建、继续、取消、显式补偿和重新绑定恢复入口，仍不自动批量执行或自动补偿。只有执行前后同一Rust谓词明确发生`Unsatisfied→Satisfied`，节点才会获得补偿资格；隔离OpenCode纵向已证明配置与逆向断开分别使用新计划、新确认和现实复验。非终态图只保存不超过16KiB的0600脱敏语义形状；重启后必须由用户重新选择精确目标，全部节点清权并重读现实。最终真实Pi整图以0/0/2回合完成，伪造计划拒绝、精确计划经确认路径执行、重复工具结果0，并由现实接入状态进入`succeeded`。Rust拥有19类Agent任务、成功谓词和证据来源白名单；RPC v12仅在确定性入口无法解析时请求Pi输出无工具、无参数的结构化意图，再由Rust复验并双路裁决，并显式携带Rust设备容量、复核完成载荷中的回合、上下文和重复工具结果指标。可信任务由Rust工作流派生规范`requiredTools`，Pi不能提交工具、证据或扩大权限；任务状态机现已接入有界澄清、真实运行、一次性计划、原生确认、确定性执行和动作专属复验。内置Qwen/Pi保留16K基线，并在16 GiB及以上使用已实测的32K标准档；M1/16 GiB已完成27,725 Token真实输入、内存、取消与回收验收，20轮真实连续任务达到20/20、最大2执行回合、重复工具结果0，停机后无活动任务或子运行时。7个内存选择边界只证明Rust策略，64K因无最低设备实测继续关闭。Pi现在按任务装配指令和直接工具依赖，计划成功后用固定安全说明收口；迭代41原18条动作路径的回合下降32.7%、重复工具结果归零。HAL100托管用户模型及Pi/OpenClaw受管配置使用同一Rust设备档与`managed-route-v3`，Hermes仍保持64000 Token最低门槛并故障关闭当前不足档位。schema v3脱敏检查点不保存提示词、回答、具体目标、计划/run ID、路径、凭据或原始工具结果；v7有界澄清合同达到10/10。v8开放中文主集已扩展为42场景并覆盖19/19任务，真实Pi独立子集12场景×2轮达到24/24、安全4/4和零工具。v9动作纵向矩阵19/19覆盖11/11受控任务、10/10原生动作以及四适配器的配置与断开；新增模型停止任务已通过32K真实Pi隔离确认，停止后文件与索引保持不变。v6合同达到19/19成功谓词和6/6证据故障场景。迭代44统一了页面标题/子导航、内容宽度、卡片、按钮和响应式节奏；迭代45进一步把首页收敛为单卡行动结构，并让Agent在常用窗口保持输入/结果并视、主动作前置和闲置复合任务降噪。现有五个业务入口、独立设置入口和用量统计闭环保持可运行。界面仍在快速迭代，README 不再嵌入容易过期的页面截图；易变实现事实以[当前开发状态](docs/CURRENT_STATE.md)为准，实际页面、交互和验收状态以当前源码、[UI/UX 规范](docs/UI_UX_SPEC.md)与[开发路线图](docs/ROADMAP.md)为准。
+`1.0.5` 已完成迭代0—59，当前推进迭代60多引擎验收收口。运行方案已升级为schema v15/spec v3，绑定精确适配器、后端配置修订、origin指纹、协议能力指纹、类型化模型证据及“平台 × 架构 × 加速器 × 部署”支持格；切换由持久化journal保护，启动时只补偿到旧安全状态。外部引擎检查使用Rust验证目标和Keychain认证，禁代理/重定向并支持多个实例。Windows/Linux宿主探针与目标编译基线已建立；vLLM固定版本/健康/模型检查及Chat、SSE、Usage、工具资格探针已接入，但真实Linux/CUDA验收前仍保持`connected`。MLX-LM官方回环服务已在Apple M1/Metal上完成真实模型资格与运行方案激活闭环，支持单元为`verifiedExternal`。MLC LLM官方OpenAI回环适配器已接入，正式资格使用Rust有界的本地部署内容指纹而不依赖官方空`system_fingerprint`；固定Qwen3.5-2B候选已通过单次目录、工具、普通流式、Usage和Gateway形态，但官方0.20调度器在工具请求后的后续请求中可复现rollback崩溃，0.26 nightly又存在编译/运行包漂移，因此没有稳定性证据并继续保持`connected`。OpenVINO Model Server（OVMS）已接入KServe元数据/健康、OpenAI模型目录与共同协议资格适配器，并拆分为CPU、Intel GPU、Intel NPU三个单设备变体；平台真机和Intel设备插件证据完成前保持`connected`。SGLang官方OpenAI Server适配器已接入版本、健康、模型目录和共同协议资格检查；Linux/CUDA真机证据完成前保持`connected`。LMDeploy官方`api_server`适配器已接入健康、模型目录和共同协议资格检查；由于官方服务没有稳定机器可读版本端点，Linux/Windows CUDA真机身份证据完成前保持`connected`。TensorRT-LLM官方`trtllm-serve`适配器已接入版本、健康、模型目录和共同协议资格检查；Linux NVIDIA真机、GPU/后端/模型形态与运行方案证据完成前保持`connected`。迭代60能力目录现额外展示官方合同、协议资格、平台真机、引擎身份、模型部署身份、方案闭环和稳定性七类证据进度，版本化支持矩阵位于[`contracts/inference-engines/v1-support-matrix.json`](contracts/inference-engines/v1-support-matrix.json)。Agent RPC已升级到v13，包含20类任务和20个固定工具；运行方案启用也进入Rust一次性计划、原生确认和现实复验链路。复合任务图、16K/32K设备档、有界澄清、脱敏检查点和用量统计保持可运行；64K因缺少最低设备实测继续关闭。易变实现事实以[当前开发状态](docs/CURRENT_STATE.md)为准。
+
+迭代51—60按[推理引擎正式支持计划](docs/INFERENCE_ENGINE_SUPPORT_PLAN.md)持续实施；能力目录现在
+由Rust给出基于设备与正式支持状态的可解释排序，预留或仅连通
+引擎不会因为代码接入或进入路线图就提前显示为正式可用。
+
+迭代60当前使用v2版本化验收证据账本：[`contracts/inference-engines/v2-acceptance-evidence.json`](contracts/inference-engines/v2-acceptance-evidence.json)，其结构合同位于[`v2-acceptance-evidence.schema.json`](contracts/inference-engines/v2-acceptance-evidence.schema.json)。真实平台验收记录导入并通过Rust晋级门禁前，支持等级保持保守；验收产物会绑定已验证服务实例的实例 ID、origin 指纹、配置修订、结构化协议能力哈希，以及原生宿主探针修订和隐私安全的设备类别SHA-256，防止跨实例、协议或支持格重放。v1账本保留为只读历史；既有Ollama两格与MLX-LM一格在v2中明确标记为`legacyHostSummaryV1`，不会伪造回填设备指纹，新导入和重新资格验证只接受`nativeHostProbeV1`。
+
+被忽略的真实验收测试会先通过三平台原生 `NativeSystemProbe` 校验实际平台、架构与加速器，
+不接受合成硬件快照。多支持格入口必须显式选择加速器：Ollama 使用
+`HAL100_OLLAMA_ACCELERATOR=cpu|metal`（Metal 仅限 Apple Silicon，Linux/Windows 当前只声明
+x86_64 CPU 格），OpenVINO 使用 `HAL100_OPENVINO_ACCELERATOR=cpu|intel_gpu|intel_npu`；选择值仍须命中当前
+适配器 manifest 与原生宿主探针，不能用环境变量扩张支持范围。
+八个外部引擎验收测试统一使用同一个 manifest 驱动的本地支持格选择器；仓库回归会检查当前全部
+28 个外部支持格都有可执行入口，并拒绝未知或未声明的平台、架构、加速器组合。该门禁不探测服务，
+也不替代目标主机上的真实模型、加速器、稳定性和运行方案证据。
+同一组非 ignored 回归还以纯结构夹具逐格证明：完整运行产物能够经过人工模型修订、原子账本追加、
+canonical 协议能力哈希复核和审查注册表投影，使候选严格覆盖报告达到 29/29；夹具账本只存在于
+测试内存中，不会写入正式账本或冒充真机验收。
+通过后，测试支持显式生成脱敏运行产物：设置 `HAL100_ACCEPTANCE_EVIDENCE_EMIT=1` 可输出
+JSON，或同时设置 `HAL100_ACCEPTANCE_EVIDENCE_WRITE=1` 和明确的
+`HAL100_ACCEPTANCE_EVIDENCE_OUT` 可创建一个不覆盖旧文件的产物；详见
+[`contracts/inference-engines/v2-acceptance-run.schema.json`](contracts/inference-engines/v2-acceptance-run.schema.json)。
+运行产物只是待审查材料，不会自动提升任何引擎支持等级；八个 live acceptance 入口还会共享
+20 次、每波最多 4 并发的有界稳定性探针，并把成功计数、并发度和最大延迟以脱敏 `stability` 对象
+写入产物。取消、切换失败和重启补偿仍需额外真实验收。
+对没有稳定软件包版本端点的 MLC LLM 与 LMDeploy，不伪造版本。MLC LLM要求绝对本地部署目录并
+有界哈希配置、权重清单、全部声明分片和tokenizer；LMDeploy在服务实际返回非空
+`system_fingerprint`时才将其与模型标识绑定为部署指纹。运行方案使用“版本未暴露”标记表达这一
+事实，不把标记当作版本或内容摘要。
+
+八个真实验收入口也可通过统一的白名单脚本执行。服务、模型和对应的版本/部署指纹必须由操作者
+提前准备，脚本只运行指定的 ignored acceptance，不启动或安装任何引擎：
+
+```bash
+HAL100_RUN_REAL_ACCEPTANCE=1 \
+  scripts/run-engine-live-acceptance.sh vllm
+```
+
+Windows 主机可使用等价的 PowerShell 入口（需要已安装 Rust/Cargo）：
+
+```powershell
+$env:HAL100_RUN_REAL_ACCEPTANCE = "1"
+.\scripts\run-engine-live-acceptance.ps1 vllm
+```
+
+可选引擎参数为 `ollama`、`mlx-lm`、`mlc-llm`、`openvino`、`vllm`、`sglang`、`lmdeploy` 和
+`tensorrt-llm`；脚本会将产物写入 `output/inference-acceptance/`，并使用 create-new 语义避免
+覆盖已有记录。脚本不会自动导入账本，导入前仍需人工复核模型不可变修订。
+
+仓库另提供仅 `workflow_dispatch` 可触发的
+`.github/workflows/live-engine-acceptance.yml`。它只调度带 `hal100-acceptance` 标签的隔离自托管
+macOS ARM64、Linux x64/ARM64 或 Windows x64 主机，连接操作者已准备的回环服务，并把 create-new
+脱敏 JSON 作为短期 artifact 上传。工作流不会安装、下载、启动或重配置引擎，也不会自动导入账本
+或改变支持状态。手动触发参数只包含引擎、平台和加速器；API root、模型ID/本地路径、审查版本及
+可选vLLM密钥必须放在对应精确支持格的受保护GitHub Environment secrets中，避免进入触发事件和
+运行标题。一个无秘密的普通Ubuntu验证任务会先用版本化支持矩阵把三个选择解析为唯一适配器和
+支持格；矩阵外组合不会调度自托管主机。通过后，Rust原生preflight仍会在任何服务请求前重新证明
+实际平台、架构和加速器。
+当前需要准备的精确runner/Environment清单可由
+`node scripts/list-engine-acceptance-targets.mjs`只读生成，隔离、secret和人工审查要求见
+[推理引擎真机验收runner手册](docs/INFERENCE_ENGINE_ACCEPTANCE_RUNNERS.md)。
+
+真实运行产物不能直接晋级。人工复核模型修订后，可用 Infra 的导入工具生成一个新的账本文件（原
+账本不会被覆盖），并在输出前再次校验所有标准适配器与精确支持格：
+
+```bash
+cargo run -p hal100-infra --bin hal100-engine-acceptance-import -- \
+  --run ./acceptance-run.json \
+  --ledger ./contracts/inference-engines/v2-acceptance-evidence.json \
+  --output ./acceptance-evidence.reviewed.json \
+  --model-revision 'Qwen3-8B@immutable-revision'
+```
+
+该命令只接受通过七类证据门禁的 `passed` 产物、显式的非脱敏模型修订和
+`verifiedExternal` 状态；输出路径必须是新文件。审查结果确认无误后，再由维护者将新文件作为
+代码变更提交，桌面端才会在内存中晋级对应支持格。证据来源必须是仓库相对的允许前缀，路径穿越、
+URL 和绝对路径会被拒绝。
+
+在准备验收或审查账本前，可以运行只读覆盖报告查看每个适配器的支持格、有效状态和待补证据：
+
+```bash
+cargo run -p hal100-infra --bin hal100-engine-support-report -- --json
+```
+
+传入 `--ledger REVIEWED_LEDGER.json` 可检查候选账本；`--strict` 会在仍有非正式支持格或正式格
+缺少账本记录时以非零状态退出。该报告只读，不连接、启动、安装或激活任何引擎，也不替代真实
+三平台验收和人工审查。
 
 | 入口 | 当前职责 |
 | --- | --- |
@@ -33,6 +120,7 @@ HAL100 不是通用聊天客户端，也不是另一个 Coding Agent。它是运
 | 软件接入 | 检测、配置和断开 OpenCode、Pi、OpenClaw、Hermes 及通用客户端 |
 | Agent | 诊断环境、检查部署状态并生成由 Rust 执行的受控操作计划 |
 | 活动 | 分别查看精确 Token 用量和最近 50 条受控操作记录 |
+| 运行方案 | 保存、复验并快速切换多个本机模型与推理引擎组合 |
 | 设置 | 管理下载来源、启动行为、外观、本机数据保留策略与版本信息 |
 
 用量页以同一时间范围和筛选条件驱动摘要、客户端分布、趋势、Token 构成与明细；支持年、月、周、天四档，折线分别显示输入（缓存命中）、输入（缓存未命中）与输出，全年活动图固定展示过去 365 天并可联动单日数据。
@@ -42,7 +130,7 @@ HAL100 不是通用聊天客户端，也不是另一个 Coding Agent。它是运
 | 能力 | 当前实现 |
 | --- | --- |
 | 模型管理 | 从 Hugging Face 或 ModelScope 搜索公开 GGUF，支持断点下载、哈希与 GGUF 校验、原子安装；本地 GGUF 可只读导入索引 |
-| 推理服务 | 安装和管理固定、可校验的 Apple Silicon `llama.cpp`；连接外部 Ollama、vLLM、llama.cpp Server 及 OpenAI/Anthropic 兼容后端 |
+| 推理服务 | 安装和管理固定、可校验的 Apple Silicon `llama.cpp`；只读识别本机Ollama、官方 MLX-LM 与 MLC LLM 回环服务；连接外部 Ollama、vLLM、llama.cpp Server 及 OpenAI/Anthropic 兼容后端 |
 | 本地 Gateway | 固定回环入口，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、SSE、Tool Calling 与取消 |
 | 路由与切换 | `hal100-active` 活动模型、模型别名、安全排空切换、经原生确认的强制切换与故障关闭 |
 | 软件接入 | 专门适配 OpenCode、Pi Coding Agent、OpenClaw 与 Hermes Agent；每个客户端拥有独立配置、凭据、Usage 身份和可逆断开流程，同时支持通用 OpenAI/Anthropic 客户端 |
@@ -86,7 +174,7 @@ HAL100 Agent 只负责 HAL100、本地模型和推理环境，不作为通用聊
 - Agent 只能调用 HAL100 暴露的固定工具；Rust 会重新校验工具、参数、现实状态和请求关联。
 - 安装、卸载、删除、配置写入和强制切换始终需要 Rust 发起的原生确认。
 - Rust任务检查点会区分检查、规划、等待确认、执行、复验和终态，并显示有界证据结论；执行器或模型回答不能自行声明成功，应用重启不会恢复旧计划或确认权限。
-- 当前 Agent 可诊断环境、读取脱敏运维历史、执行短时部署观测、搜索公开模型目录，并生成模型下载、启动、切换、单项修复、外部 Agent 配置/断开以及 Pi 私有安装/卸载计划。
+- 当前 Agent 可诊断环境、读取脱敏运维历史、执行短时部署观测、读取 Rust 生成的脱敏引擎能力与支持格摘要、搜索公开模型目录，并生成模型下载、启动、切换、单项修复、外部 Agent 配置/断开以及 Pi 私有安装/卸载计划。
 - 模型搜索最多返回有界公开目录元数据；下载必须命中同一任务的可信文件快照，仍由 Rust 复验并在原生确认后执行。
 - Pi 私有安装固定官方归档与完整 npm 依赖闭包；私有卸载只处理 HAL100 所有的运行时并移入系统废纸篓，不触碰用户安装的 Pi、配置、凭据或会话。
 - OpenCode、Pi Coding Agent、OpenClaw 与 Hermes Agent 均支持独立检测、配置预览、确认写入和精确断开；当前只有 Pi 提供 HAL100 受管安装配方。
@@ -111,8 +199,8 @@ HAL100 Agent 只负责 HAL100、本地模型和推理环境，不作为通用聊
 | --- | --- |
 | macOS Apple Silicon | 当前唯一开发与测试平台 |
 | macOS Intel | 不支持，未来也不计划支持 |
-| Windows 10/11 | 架构已隔离平台边界，尚未开始实现 |
-| Linux | 不在当前产品范围 |
+| Windows 10/11 | 源码构建与宿主能力探针基线已建立；完整桌面纵向和具体引擎支持仍需逐格验收 |
+| Linux | 源码构建与宿主能力探针基线已建立；完整桌面纵向和具体引擎支持仍需逐格验收 |
 
 首版界面仅提供中文，不区分“简单模式”和“高级模式”。
 
@@ -189,7 +277,7 @@ HAL100/
 ├── crates/
 │   ├── hal100-core/            领域状态与业务规则
 │   ├── hal100-infra/           Gateway、SQLite、下载和运行时实现
-│   ├── hal100-platform/        macOS 平台能力与未来 Windows 边界
+│   ├── hal100-platform/        macOS/Windows/Linux 平台能力与宿主探针边界
 │   └── hal100-protocol/        IPC、Gateway 与 Agent 协议类型
 ├── sidecars/agent-kernel/      Pi Agent Core 薄适配层
 ├── contracts/agent-rpc/        Agent 私有 RPC 契约
@@ -217,7 +305,7 @@ HAL100 的常驻核心与按需推理进程分离。窗口隐藏、无模型和�
 ## 当前限制
 
 - 当前开发范围明确不包含签名、公证、安装包、自动更新、正式升级或正式发布流水线。
-- Windows 版本尚未开发。
+- Windows/Linux 桌面纵向与具体引擎支持尚未完成；当前仅承诺源码构建、协议边界和宿主探针基线。
 - Agent 模型权重、用户模型和推理引擎二进制不会提交到源码仓库。
 - Agent 不能执行任意 Shell、任意路径文件操作或通用桌面自动化；模型搜索与下载只能通过有界目录、一次性计划、Rust 复验和原生确认完成。
 - OpenCode、OpenClaw 与 Hermes Agent 暂无 HAL100 受管安装配方；HAL100 只管理其已明确预览和确认的接入配置。

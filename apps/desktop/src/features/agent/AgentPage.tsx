@@ -94,6 +94,7 @@ const agentTaskEvidenceSourceCopy: Record<AgentTaskEvidenceSource, string> = {
   externalIntegrationStatus: "软件接入状态",
   actionPlan: "Rust 一次性计划",
   runtimeRecheck: "模型运行态复验",
+  runtimeProfileRecheck: "个人运行方案复验",
   modelLibraryRecheck: "模型库复验",
   engineRecheck: "引擎复验",
   integrationRecheck: "软件接入复验",
@@ -211,6 +212,12 @@ const agentTaskLibrary: AgentTaskTemplate[] = [
     prompt: "读取可用模型，并为 Qwen3.5-2B Q4_K_M 生成启动或安全切换计划；不要直接执行。",
   },
   {
+    id: "activate-runtime-profile",
+    category: "models",
+    label: "运行已保存方案",
+    prompt: "读取个人运行方案，并为我指定的已保存方案生成安全启用计划；不要直接执行。",
+  },
+  {
     id: "stop-current-model",
     category: "models",
     label: "生成当前模型停止计划",
@@ -282,6 +289,11 @@ const agentActionCopy: Record<
     title: "启动或切换本地模型",
     targetLabel: "目标模型",
     pendingSummary: "Agent 尚未执行任何模型切换",
+  },
+  activateRuntimeProfile: {
+    title: "启用已保存运行方案",
+    targetLabel: "目标方案",
+    pendingSummary: "Agent 尚未切换模型或运行参数",
   },
   stopModel: {
     title: "停止当前本地模型",

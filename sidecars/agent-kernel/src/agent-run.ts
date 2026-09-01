@@ -28,6 +28,7 @@ import {
   PLAN_MODEL_REMOVAL_TOOL,
   PLAN_MODEL_START_TOOL,
   PLAN_MODEL_STOP_TOOL,
+  PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
   RUNTIME_CATALOG_TOOL,
   SYSTEM_SUMMARY_TOOL,
   type ToolBrokerBridge,
@@ -116,6 +117,7 @@ export const AGENT_TOOL_NAMES = [
   PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
   PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
   PLAN_MODEL_STOP_TOOL,
+  PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
 ] as const;
 
 export const ACTION_PLAN_TOOLS = new Set<string>([
@@ -130,11 +132,13 @@ export const ACTION_PLAN_TOOLS = new Set<string>([
   PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
   PLAN_MANAGED_EXTERNAL_AGENT_REMOVAL_TOOL,
   PLAN_MODEL_DOWNLOAD_TOOL,
+  PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
 ]);
 
 export const TOOL_PREREQUISITES = new Map<string, readonly string[]>([
   [PLAN_MODEL_START_TOOL, [RUNTIME_CATALOG_TOOL]],
   [PLAN_MODEL_STOP_TOOL, [RUNTIME_CATALOG_TOOL]],
+  [PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL, [RUNTIME_CATALOG_TOOL]],
   [PLAN_MODEL_REMOVAL_TOOL, [RUNTIME_CATALOG_TOOL]],
   [PLAN_DIAGNOSTIC_REPAIR_TOOL, [ENVIRONMENT_DIAGNOSTICS_TOOL]],
   [PLAN_ENGINE_INSTALL_TOOL, [RUNTIME_CATALOG_TOOL]],
@@ -198,6 +202,10 @@ const TOOL_SYSTEM_INSTRUCTIONS = new Map<string, string>([
   [
     PLAN_MODEL_STOP_TOOL,
     "停止当前模型时，从运行目录复制精确活动modelId调用hal100.plan_model_stop；计划尚未执行，必须提醒用户在HAL100原生窗口确认。",
+  ],
+  [
+    PLAN_RUNTIME_PROFILE_ACTIVATION_TOOL,
+    "运行或切换已保存方案时，先读取运行目录中的runtimeProfiles，再按用户名称选择唯一匹配项并复制精确profileId调用hal100.plan_runtime_profile_activation；ownership=external时contextWindowTokens可以为空，表示容量由外部引擎决定，不得猜测；reviewedPerformance只代表Rust精确匹配同一适配器、支持格、实例配置、引擎身份、模型证据和当前设备后的固定工作负载实测，只能在workloadRevision相同的方案间作为参考，字段缺失表示未知，禁止跨模型、跨设备或跨工作负载泛化；不能唯一匹配、方案需要修复或Rust报告实时身份漂移时必须如实说明。",
   ],
   [
     PLAN_MODEL_REMOVAL_TOOL,

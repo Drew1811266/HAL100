@@ -25,6 +25,19 @@
       }
     },
     {
+      "id": "template-activate-runtime-profile",
+      "category": "structured-routing",
+      "input": {
+        "mode": "template",
+        "prompt": "运行我保存的代码助手方案。"
+      },
+      "expected": {
+        "disposition": "task",
+        "taskKind": "activate_runtime_profile",
+        "requiresNativeConfirmation": true
+      }
+    },
+    {
       "id": "template-configure-pi",
       "category": "structured-routing",
       "input": {
