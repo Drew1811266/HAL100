@@ -83,7 +83,7 @@ jobs:
       ACCEPTANCE_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
       ACCEPTANCE_ENGINE_VERSION: ${{ secrets.HAL100_ACCEPTANCE_ENGINE_VERSION }}
       HAL100_RUN_REAL_ACCEPTANCE: "1"
-      HAL100_ACCEPTANCE_EVIDENCE_OUT: ${{ runner.temp }}/hal100-${{ inputs.engine }}-${{ github.run_id }}-${{ github.run_attempt }}.json
+      HAL100_ACCEPTANCE_EVIDENCE_OUT: output/inference-acceptance/hal100-${{ inputs.engine }}-${{ github.run_id }}-${{ github.run_attempt }}.json
       HAL100_OLLAMA_ACCELERATOR: ${{ inputs.accelerator }}
       HAL100_OLLAMA_API_ROOT: ${{ secrets.HAL100_ACCEPTANCE_API_ROOT }}
       HAL100_OLLAMA_MODEL_ID: ${{ secrets.HAL100_ACCEPTANCE_MODEL_ID }}
