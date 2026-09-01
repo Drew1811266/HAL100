@@ -280,19 +280,29 @@ mod tests {
             .parent()
             .and_then(Path::parent)
             .expect("workspace root");
+        let outside_root = std::env::temp_dir().join(format!(
+            "hal100-outside-workspace-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("current time")
+                .as_nanos()
+        ));
+        fs::create_dir(&outside_root).expect("outside test directory");
+        let outside_entrypoint = outside_root.join("index.ts");
+        fs::write(&outside_entrypoint, b"export {};\n").expect("outside test entrypoint");
         let spec = AgentKernelLaunchSpec {
             runtime_binary: std::env::current_exe().expect("test executable"),
-            entrypoint: PathBuf::from("/System/Library/CoreServices/SystemVersion.plist"),
+            entrypoint: outside_entrypoint,
             working_directory: workspace.join("sidecars/agent-kernel"),
             workspace_root: workspace.to_owned(),
-            session_root: std::env::temp_dir().join("hal100-never-created"),
+            session_root: outside_root.join("session-never-created"),
             isolation: SidecarIsolation::ProcessBoundaryOnly,
             arguments: Vec::new(),
         };
 
-        assert!(matches!(
-            prepare_agent_kernel_command(&spec),
-            Err(SidecarLaunchError::OutsideWorkspace)
-        ));
+        let result = prepare_agent_kernel_command(&spec);
+        fs::remove_dir_all(outside_root).expect("remove outside test directory");
+        assert!(matches!(result, Err(SidecarLaunchError::OutsideWorkspace)));
     }
 }

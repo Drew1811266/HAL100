@@ -291,6 +291,8 @@ fn resolve_node_binary(workspace_root: &Path) -> Result<PathBuf, AgentKernelErro
 }
 
 fn set_owner_only_directory(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
