@@ -233,7 +233,11 @@ mod tests {
         }
         assert_eq!(
             command.get_current_dir(),
-            Some(spec.working_directory.as_path())
+            Some(
+                fs::canonicalize(&spec.working_directory)
+                    .expect("canonical working directory")
+                    .as_path()
+            )
         );
 
         fs::remove_dir_all(session_root).expect("remove test session root");
