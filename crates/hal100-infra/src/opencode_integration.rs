@@ -937,6 +937,8 @@ fn atomic_write(target: &Path, contents: &[u8], mode: u32) -> Result<(), OpenCod
 }
 
 fn write_new_file(path: &Path, contents: &[u8], mode: u32) -> Result<(), OpenCodeIntegrationError> {
+    #[cfg(not(unix))]
+    let _ = mode;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

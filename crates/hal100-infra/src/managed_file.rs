@@ -67,6 +67,8 @@ pub fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> Result<(), Manag
 }
 
 pub fn write_new_file(path: &Path, contents: &[u8], mode: u32) -> Result<(), ManagedFileError> {
+    #[cfg(not(unix))]
+    let _ = mode;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

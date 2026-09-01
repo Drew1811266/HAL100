@@ -171,9 +171,6 @@ impl LlamaCppManager {
         engine_root: PathBuf,
         capacity: AgentRuntimeCapacityProfile,
     ) -> Result<Self, EngineManagerError> {
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return Err(EngineManagerError::UnsupportedPlatform);
-        }
         let release = EngineRelease {
             version: LLAMA_CPP_VERSION.to_owned(),
             archive_name: LLAMA_CPP_ARCHIVE_NAME.to_owned(),
@@ -282,6 +279,7 @@ impl LlamaCppManager {
     }
 
     pub fn plan_install(&self) -> Result<EngineInstallPlan, EngineManagerError> {
+        ensure_managed_runtime_supported()?;
         if self.install_state() == EngineInstallState::Installed {
             return Err(EngineManagerError::AlreadyInstalled);
         }
@@ -306,6 +304,7 @@ impl LlamaCppManager {
     }
 
     pub async fn apply_install(&self, plan_id: &str) -> Result<LlamaCppStatus, EngineManagerError> {
+        ensure_managed_runtime_supported()?;
         let _lifecycle = self.lifecycle.lock().await;
         let plan = {
             let mut pending = self
@@ -369,6 +368,7 @@ impl LlamaCppManager {
     }
 
     pub fn plan_remove(&self) -> Result<EngineRemovePlan, EngineManagerError> {
+        ensure_managed_runtime_supported()?;
         if self.install_state() == EngineInstallState::NotInstalled {
             return Err(EngineManagerError::NotInstalled);
         }
@@ -392,6 +392,7 @@ impl LlamaCppManager {
     }
 
     pub async fn apply_remove(&self, plan_id: &str) -> Result<LlamaCppStatus, EngineManagerError> {
+        ensure_managed_runtime_supported()?;
         let _lifecycle = self.lifecycle.lock().await;
         let plan = {
             let mut pending = self
@@ -498,6 +499,7 @@ impl LlamaCppManager {
         model_id: &str,
         cancellation: Option<Arc<AtomicBool>>,
     ) -> Result<(PathBuf, hal100_protocol::LocalModelSummary), EngineManagerError> {
+        ensure_managed_runtime_supported()?;
         ensure_not_cancelled(cancellation.as_deref())?;
         if self.install_state() != EngineInstallState::Installed {
             return Err(EngineManagerError::NotInstalled);
@@ -527,6 +529,7 @@ impl LlamaCppManager {
         model_id: &str,
         force_switch: bool,
     ) -> Result<LlamaCppStatus, EngineManagerError> {
+        ensure_managed_runtime_supported()?;
         let _lifecycle = self.lifecycle.lock().await;
         if self.install_state() != EngineInstallState::Installed {
             return Err(EngineManagerError::NotInstalled);
@@ -1130,6 +1133,14 @@ fn sha256_file_with_cancellation(
     Ok(hasher.finalize().into())
 }
 
+fn ensure_managed_runtime_supported() -> Result<(), EngineManagerError> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Ok(())
+    } else {
+        Err(EngineManagerError::UnsupportedPlatform)
+    }
+}
+
 fn ensure_not_cancelled(cancellation: Option<&AtomicBool>) -> Result<(), EngineManagerError> {
     if cancellation.is_some_and(|cancellation| cancellation.load(Ordering::Acquire)) {
         Err(EngineManagerError::OperationCancelled)
@@ -1527,6 +1538,7 @@ with socketserver.TCPServer(("127.0.0.1", port), Handler) as server:
         encoder.finish().unwrap()
     }
 
+    #[cfg(unix)]
     fn gguf_payload() -> Vec<u8> {
         let mut output = Vec::new();
         output.extend_from_slice(b"GGUF");
