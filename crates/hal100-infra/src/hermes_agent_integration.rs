@@ -1196,8 +1196,10 @@ fn stable_version_triplet(version: &str) -> Option<(u64, u64, u64)> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     struct TestDirectory(PathBuf);
 
+    #[cfg(unix)]
     impl TestDirectory {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!("hal100-hermes-{}", Uuid::new_v4()));
@@ -1206,12 +1208,14 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
 
+    #[cfg(unix)]
     struct Fixture {
         root: TestDirectory,
         adapter: HermesAgentIntegrationAdapter,
@@ -1221,6 +1225,7 @@ mod tests {
         environment_path: PathBuf,
     }
 
+    #[cfg(unix)]
     impl Fixture {
         fn new() -> Self {
             let root = TestDirectory::new();
@@ -1281,6 +1286,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn hermes_capable_profile() -> ExternalAgentModelProfile {
         ExternalAgentModelProfile {
             model_id: "hal100-active".to_owned(),

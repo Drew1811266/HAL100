@@ -1003,8 +1003,10 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     struct TestDirectory(PathBuf);
 
+    #[cfg(unix)]
     impl TestDirectory {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!("hal100-pi-agent-{}", Uuid::new_v4()));
@@ -1013,12 +1015,14 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
 
+    #[cfg(unix)]
     struct Fixture {
         root: TestDirectory,
         adapter: PiCodingAgentIntegrationAdapter,
@@ -1028,6 +1032,7 @@ mod tests {
         credential_path: PathBuf,
     }
 
+    #[cfg(unix)]
     impl Fixture {
         fn new() -> Self {
             let root = TestDirectory::new();
