@@ -83,17 +83,38 @@ pub fn prepare_agent_kernel_command(
         .args(&spec.arguments)
         .current_dir(&working_directory)
         .env_clear()
-        .env("HOME", home_directory)
-        .env("TMPDIR", temp_directory)
+        .env("HOME", &home_directory)
+        .env("TMPDIR", &temp_directory)
         .env("LANG", "en_US.UTF-8")
         .env("NO_COLOR", "1")
         .env("NODE_NO_WARNINGS", "1")
-        .env("HAL100_RPC_VERSION", "1")
+        .env("HAL100_RPC_VERSION", "1");
+    #[cfg(windows)]
+    configure_windows_process_environment(&mut command, &home_directory, &temp_directory);
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     Ok(command)
+}
+
+#[cfg(windows)]
+fn configure_windows_process_environment(
+    command: &mut Command,
+    home_directory: &Path,
+    temp_directory: &Path,
+) {
+    command
+        .env("USERPROFILE", home_directory)
+        .env("TEMP", temp_directory)
+        .env("TMP", temp_directory);
+    if let Some(system_root) = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("WINDIR"))
+    {
+        command
+            .env("SystemRoot", &system_root)
+            .env("WINDIR", system_root);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -184,6 +205,7 @@ mod tests {
             .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
             .collect();
 
+        #[cfg(not(windows))]
         assert_eq!(environment.len(), 6);
         assert!(!environment.contains_key(std::ffi::OsStr::new("PATH")));
         assert!(!environment.contains_key(std::ffi::OsStr::new("SSH_AUTH_SOCK")));
@@ -193,6 +215,22 @@ mod tests {
                 .and_then(Option::as_deref),
             Some(canonical_session_root.join("home").as_os_str())
         );
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                environment
+                    .get(std::ffi::OsStr::new("USERPROFILE"))
+                    .and_then(Option::as_deref),
+                Some(canonical_session_root.join("home").as_os_str())
+            );
+            assert_eq!(
+                environment
+                    .get(std::ffi::OsStr::new("TEMP"))
+                    .and_then(Option::as_deref),
+                Some(canonical_session_root.join("tmp").as_os_str())
+            );
+            assert!(environment.contains_key(std::ffi::OsStr::new("SystemRoot")));
+        }
         assert_eq!(
             command.get_current_dir(),
             Some(spec.working_directory.as_path())

@@ -26,7 +26,7 @@ const PINNED_NODE_VERSION: &str = "v24.18.0";
 #[cfg(not(windows))]
 const PINNED_NODE_RELATIVE_PATH: &str = "node_modules/node/bin/node";
 #[cfg(windows)]
-const PINNED_NODE_RELATIVE_PATH: &str = "node_modules/node/bin/node.exe";
+const PINNED_NODE_RELATIVE_PATH: &str = "node_modules/node/node.exe";
 const SIDECAR_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 const SIDECAR_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIDECAR_CANCELLATION_POLL: Duration = Duration::from_millis(100);
@@ -280,10 +280,11 @@ fn resolve_node_binary(workspace_root: &Path) -> Result<PathBuf, AgentKernelErro
     let candidate = candidate
         .canonicalize()
         .map_err(|_| AgentKernelError::Unavailable)?;
-    let output = Command::new(&candidate)
-        .arg("--version")
-        .env_clear()
-        .stdin(Stdio::null())
+    let mut command = Command::new(&candidate);
+    command.arg("--version").env_clear().stdin(Stdio::null());
+    #[cfg(windows)]
+    configure_windows_runtime_environment(&mut command);
+    let output = command
         .output()
         .map_err(|_| AgentKernelError::Unavailable)?;
     if !output.status.success()
@@ -292,6 +293,19 @@ fn resolve_node_binary(workspace_root: &Path) -> Result<PathBuf, AgentKernelErro
         return Err(AgentKernelError::RuntimeVersion);
     }
     Ok(candidate)
+}
+
+#[cfg(windows)]
+fn configure_windows_runtime_environment(command: &mut Command) {
+    if let Some(system_root) = env::var_os("SystemRoot").or_else(|| env::var_os("WINDIR")) {
+        command
+            .env("SystemRoot", &system_root)
+            .env("WINDIR", system_root);
+    }
+    let temp_directory = env::temp_dir();
+    command
+        .env("TEMP", &temp_directory)
+        .env("TMP", temp_directory);
 }
 
 fn set_owner_only_directory(path: &Path) -> Result<(), std::io::Error> {

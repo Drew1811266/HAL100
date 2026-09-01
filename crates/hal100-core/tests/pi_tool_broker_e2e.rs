@@ -217,7 +217,7 @@ fn spawn_sidecar(workspace: &Path, sidecar: &Path) -> Child {
     #[cfg(not(windows))]
     let node = workspace.join("node_modules/node/bin/node");
     #[cfg(windows)]
-    let node = workspace.join("node_modules/node/bin/node.exe");
+    let node = workspace.join("node_modules/node/node.exe");
     assert!(node.is_file(), "install the pinned workspace Node runtime");
     Command::new(node)
         .arg(sidecar)
