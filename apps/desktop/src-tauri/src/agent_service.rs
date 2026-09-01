@@ -9,11 +9,12 @@ use std::{
 };
 
 #[cfg(test)]
-use std::{env, fs, thread};
+use std::{env, fs};
 #[cfg(all(test, unix))]
 use std::{
     io::{Read, Write},
     sync::mpsc,
+    thread,
 };
 
 #[cfg(test)]
@@ -86,10 +87,10 @@ use crate::agent_intent_observation::{
     AgentIntentShadowObservation, AgentIntentShadowObserver, AgentTaskRoutingObserver,
 };
 use crate::agent_kernel::{AgentKernelChannel, AgentKernelError, AgentKernelRunner};
+#[cfg(all(test, unix))]
+use crate::agent_provider::CLOUD_AGENT_ROUTE_PREFIX;
 #[cfg(test)]
-use crate::agent_provider::{
-    AGENT_CLIENT_APP_ID, CLOUD_AGENT_CLIENT_APP_ID, CLOUD_AGENT_ROUTE_PREFIX,
-};
+use crate::agent_provider::{AGENT_CLIENT_APP_ID, CLOUD_AGENT_CLIENT_APP_ID};
 use crate::agent_provider::{AgentProviderError, AgentProviderService, ResolvedAgentProvider};
 use crate::agent_task_evidence::AgentTaskEvidence;
 use crate::agent_task_graph_runtime::{AgentTaskGraphRuntime, AgentTaskGraphRuntimeError};
