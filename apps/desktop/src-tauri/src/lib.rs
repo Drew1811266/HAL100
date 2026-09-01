@@ -2880,7 +2880,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("HAL100 desktop runtime failed")
-        .run(|app, event| match event {
+        .run(|_app, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } if should_prevent_exit(code) => {
                 tracing::debug!("background_runtime_retained");
                 api.prevent_exit();
@@ -2889,7 +2889,7 @@ pub fn run() {
             tauri::RunEvent::Reopen {
                 has_visible_windows: false,
                 ..
-            } => show_or_create_main_window(app),
+            } => show_or_create_main_window(_app),
             _ => {}
         });
 }

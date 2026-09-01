@@ -103,10 +103,11 @@ use hal100_protocol::{
     AgentActionKind, AgentTaskRecoveryScope, BackendKind, DiagnosticComponent, DiagnosticSeverity,
     ENVIRONMENT_DIAGNOSTICS_TOOL, EXTERNAL_AGENT_STATUS_TOOL, EnvironmentDiagnosticFinding,
     EnvironmentHealthStatus, LocalModelState, LocalModelSummary, ModelOwnership, ModelSource,
-    OpenCodeIntegrationState, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_ENGINE_REMOVE_TOOL,
-    PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL, PLAN_MODEL_REMOVAL_TOOL, PLAN_MODEL_START_TOOL,
-    RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
+    OpenCodeIntegrationState, PLAN_DIAGNOSTIC_REPAIR_TOOL, PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL,
+    PLAN_MODEL_REMOVAL_TOOL, RUNTIME_CATALOG_TOOL, SYSTEM_SUMMARY_TOOL,
 };
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+use hal100_protocol::{PLAN_ENGINE_REMOVE_TOOL, PLAN_MODEL_START_TOOL};
 
 const MAX_TOOL_CALLS_PER_RUN: usize = AGENT_RPC_MAX_REQUIRED_TOOLS;
 const AGENT_TASK_ROUTING_MODE_ENV: &str = "HAL100_AGENT_TASK_ROUTING_MODE";
@@ -6070,6 +6071,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn bounded_route_label(route: Option<&AgentTaskRoute>) -> String {
         match route {
             Some(AgentTaskRoute::Task(spec)) => format!(
@@ -7302,6 +7304,7 @@ mod tests {
         gateway_task.abort();
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn answer_contains_hardware_evidence(answer: &str) -> bool {
         answer.contains("Apple")
             || answer.contains("Q4_K_M")

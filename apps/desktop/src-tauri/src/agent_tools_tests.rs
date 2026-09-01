@@ -1,6 +1,6 @@
 use std::{
     fs, future,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use axum::{
     Json, Router,
     body::Body,
@@ -26,19 +27,26 @@ use hal100_infra::{
     RemoteModelCatalog, RemoteModelCatalogError, UsageWriter,
 };
 use hal100_protocol::{
-    AGENT_RPC_MAX_TOOL_RESULT_BYTES, DownloadSource, EXTERNAL_AGENT_STATUS_TOOL,
-    HostCapabilitySnapshot, InferenceAccelerator, InferenceArchitecture, InferencePlatform,
-    MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL, ModelDownloadState,
+    AGENT_RPC_MAX_TOOL_RESULT_BYTES, EXTERNAL_AGENT_STATUS_TOOL, HostCapabilitySnapshot,
+    InferenceAccelerator, InferenceArchitecture, InferencePlatform,
     OPERATIONAL_HEALTH_OBSERVATION_TOOL, OPERATIONAL_HISTORY_TOOL,
     PLAN_EXTERNAL_AGENT_CONFIGURATION_TOOL, PLAN_EXTERNAL_AGENT_INSTALLATION_TOOL,
-    PLAN_MODEL_DOWNLOAD_TOOL, RuntimeProfileActivationPlan, RuntimeProfileAdapterBinding,
-    RuntimeProfileCatalog, RuntimeProfileEvidence, RuntimeProfileEvidenceKind,
-    RuntimeProfileModelDigestKind, RuntimeProfileReadiness, RuntimeProfileSummary,
-    ToolCallRequestPayload, ToolCallResultStatus,
+    RuntimeProfileActivationPlan, RuntimeProfileAdapterBinding, RuntimeProfileCatalog,
+    RuntimeProfileEvidence, RuntimeProfileEvidenceKind, RuntimeProfileModelDigestKind,
+    RuntimeProfileReadiness, RuntimeProfileSummary, ToolCallRequestPayload, ToolCallResultStatus,
+};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use hal100_protocol::{
+    DownloadSource, MODEL_CATALOG_SEARCH_TOOL, MODEL_REPOSITORY_INSPECTION_TOOL,
+    ModelDownloadState, PLAN_MODEL_DOWNLOAD_TOOL,
 };
 use serde_json::{Value, json};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::path::Path;
 
 use super::*;
 
