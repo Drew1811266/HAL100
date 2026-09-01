@@ -9,11 +9,11 @@ use std::{
 };
 
 #[cfg(test)]
+use std::{env, fs, thread};
+#[cfg(all(test, unix))]
 use std::{
-    env, fs,
     io::{Read, Write},
     sync::mpsc,
-    thread,
 };
 
 #[cfg(test)]
@@ -4844,6 +4844,7 @@ mod tests {
         let _ = fs::remove_dir_all(data_dir);
     }
 
+    #[cfg(unix)]
     fn spawn_openai_upstream_for_pi_intent() -> (
         std::net::SocketAddr,
         mpsc::Receiver<String>,
@@ -4924,6 +4925,7 @@ mod tests {
         (address, receiver, worker)
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn cloud_agent_session_completes_through_the_real_gateway_without_local_fallback() {
         let (upstream_address, upstream_request, upstream_worker) =
