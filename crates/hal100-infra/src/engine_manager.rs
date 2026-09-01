@@ -122,6 +122,7 @@ pub struct LlamaCppManager {
     release: EngineRelease,
     client: Client,
     capacity: AgentRuntimeCapacityProfile,
+    managed_actions_available: bool,
     pending_install: Mutex<Option<EngineInstallPlan>>,
     pending_remove: Mutex<Option<EngineRemovePlan>>,
     lifecycle: AsyncMutex<()>,
@@ -182,7 +183,14 @@ impl LlamaCppManager {
             download_url: Url::parse(LLAMA_CPP_DOWNLOAD_URL)
                 .expect("pinned llama.cpp URL is valid"),
         };
-        Self::with_release_and_capacity(database, gateway, engine_root, release, capacity)
+        Self::with_release_and_capacity(
+            database,
+            gateway,
+            engine_root,
+            release,
+            capacity,
+            cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        )
     }
 
     #[cfg(test)]
@@ -198,6 +206,7 @@ impl LlamaCppManager {
             engine_root,
             release,
             AgentRuntimeCapacityProfile::baseline(),
+            true,
         )
     }
 
@@ -207,6 +216,7 @@ impl LlamaCppManager {
         engine_root: PathBuf,
         release: EngineRelease,
         capacity: AgentRuntimeCapacityProfile,
+        managed_actions_available: bool,
     ) -> Result<Self, EngineManagerError> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -226,6 +236,7 @@ impl LlamaCppManager {
             release,
             client,
             capacity,
+            managed_actions_available,
             pending_install: Mutex::new(None),
             pending_remove: Mutex::new(None),
             lifecycle: AsyncMutex::new(()),
@@ -239,6 +250,14 @@ impl LlamaCppManager {
 
     pub fn capacity_profile(&self) -> AgentRuntimeCapacityProfile {
         self.capacity
+    }
+
+    fn ensure_managed_runtime_supported(&self) -> Result<(), EngineManagerError> {
+        if self.managed_actions_available {
+            Ok(())
+        } else {
+            Err(EngineManagerError::UnsupportedPlatform)
+        }
     }
 
     pub fn status(&self) -> Result<LlamaCppStatus, EngineManagerError> {
@@ -279,7 +298,7 @@ impl LlamaCppManager {
     }
 
     pub fn plan_install(&self) -> Result<EngineInstallPlan, EngineManagerError> {
-        ensure_managed_runtime_supported()?;
+        self.ensure_managed_runtime_supported()?;
         if self.install_state() == EngineInstallState::Installed {
             return Err(EngineManagerError::AlreadyInstalled);
         }
@@ -304,7 +323,7 @@ impl LlamaCppManager {
     }
 
     pub async fn apply_install(&self, plan_id: &str) -> Result<LlamaCppStatus, EngineManagerError> {
-        ensure_managed_runtime_supported()?;
+        self.ensure_managed_runtime_supported()?;
         let _lifecycle = self.lifecycle.lock().await;
         let plan = {
             let mut pending = self
@@ -368,7 +387,7 @@ impl LlamaCppManager {
     }
 
     pub fn plan_remove(&self) -> Result<EngineRemovePlan, EngineManagerError> {
-        ensure_managed_runtime_supported()?;
+        self.ensure_managed_runtime_supported()?;
         if self.install_state() == EngineInstallState::NotInstalled {
             return Err(EngineManagerError::NotInstalled);
         }
@@ -392,7 +411,7 @@ impl LlamaCppManager {
     }
 
     pub async fn apply_remove(&self, plan_id: &str) -> Result<LlamaCppStatus, EngineManagerError> {
-        ensure_managed_runtime_supported()?;
+        self.ensure_managed_runtime_supported()?;
         let _lifecycle = self.lifecycle.lock().await;
         let plan = {
             let mut pending = self
@@ -499,7 +518,7 @@ impl LlamaCppManager {
         model_id: &str,
         cancellation: Option<Arc<AtomicBool>>,
     ) -> Result<(PathBuf, hal100_protocol::LocalModelSummary), EngineManagerError> {
-        ensure_managed_runtime_supported()?;
+        self.ensure_managed_runtime_supported()?;
         ensure_not_cancelled(cancellation.as_deref())?;
         if self.install_state() != EngineInstallState::Installed {
             return Err(EngineManagerError::NotInstalled);
@@ -529,7 +548,7 @@ impl LlamaCppManager {
         model_id: &str,
         force_switch: bool,
     ) -> Result<LlamaCppStatus, EngineManagerError> {
-        ensure_managed_runtime_supported()?;
+        self.ensure_managed_runtime_supported()?;
         let _lifecycle = self.lifecycle.lock().await;
         if self.install_state() != EngineInstallState::Installed {
             return Err(EngineManagerError::NotInstalled);
@@ -1131,14 +1150,6 @@ fn sha256_file_with_cancellation(
     }
     ensure_not_cancelled(cancellation)?;
     Ok(hasher.finalize().into())
-}
-
-fn ensure_managed_runtime_supported() -> Result<(), EngineManagerError> {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Ok(())
-    } else {
-        Err(EngineManagerError::UnsupportedPlatform)
-    }
 }
 
 fn ensure_not_cancelled(cancellation: Option<&AtomicBool>) -> Result<(), EngineManagerError> {
