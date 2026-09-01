@@ -1121,6 +1121,7 @@ mod tests {
         assert!((1, 17, 9) >= MIN_TESTED_OPENCODE_VERSION);
     }
 
+    #[cfg(unix)]
     #[test]
     fn detection_warns_when_opencode_is_older_than_the_tested_floor() {
         let temp = TestDirectory::new();

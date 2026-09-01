@@ -1100,6 +1100,7 @@ mod tests {
         assert!(fragment.get("supportsTools").is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn configuration_preserves_user_defaults_and_isolates_the_credential() {
         let fixture = Fixture::new();
@@ -1170,6 +1171,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn disconnection_removes_only_hal100_and_revokes_only_the_pi_key() {
         let fixture = Fixture::new();
@@ -1213,6 +1215,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn detects_external_modification_and_refuses_to_overwrite() {
         let fixture = Fixture::new();
@@ -1246,6 +1249,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn rejects_jsonc_because_pi_requires_strict_json() {
         let fixture = Fixture::new();
@@ -1263,6 +1267,7 @@ mod tests {
         assert_eq!(command, "!/bin/cat '/tmp/O'\"'\"'Brien/$(touch nope).key'");
     }
 
+    #[cfg(unix)]
     #[test]
     fn stale_and_discarded_plans_do_not_mutate_files() {
         let fixture = Fixture::new();

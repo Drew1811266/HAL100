@@ -1180,6 +1180,7 @@ exit 9
         (temp, manager)
     }
 
+    #[cfg(unix)]
     #[test]
     fn exact_pi_recipe_installs_privately_and_is_single_use() {
         let (_temp, manager) = fixture();
@@ -1205,6 +1206,7 @@ exit 9
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn unsupported_recipe_and_registry_drift_fail_closed() {
         let (temp, manager) = fixture();
@@ -1242,6 +1244,7 @@ exit 9
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn dependency_closure_drift_fails_before_runtime_activation() {
         let (_temp, mut manager) = fixture();
@@ -1257,6 +1260,7 @@ exit 9
         assert!(!manager.integration_runtime().exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn private_runtime_removal_is_previewed_single_use_and_preserves_user_pi() {
         let (temp, mut manager) = fixture();
@@ -1295,6 +1299,7 @@ exit 9
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn failed_trash_operation_restores_private_runtime() {
         let (_temp, manager) = fixture();
@@ -1316,6 +1321,7 @@ exit 9
         assert!(manager.managed_pi_binary().is_file());
     }
 
+    #[cfg(unix)]
     #[test]
     fn removal_revalidation_rejects_changed_dependency_lock() {
         let (_temp, manager) = fixture();

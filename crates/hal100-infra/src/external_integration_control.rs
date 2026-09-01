@@ -377,6 +377,7 @@ mod tests {
         assert_eq!(plans.peek(&live.plan_id), Ok("live"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn bounded_runner_clears_environment_and_limits_output() {
         let runner = BoundedCommandRunner::new(Duration::from_secs(1), 5);
@@ -392,6 +393,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn bounded_runner_exposes_only_explicit_client_environment() {
         let runner = BoundedCommandRunner::new(Duration::from_secs(1), 64);
@@ -412,6 +414,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn bounded_runner_terminates_a_hung_process() {
         let runner = BoundedCommandRunner::new(Duration::from_millis(20), 64);

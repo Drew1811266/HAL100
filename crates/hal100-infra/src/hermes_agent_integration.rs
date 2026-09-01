@@ -1294,6 +1294,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn configuration_preserves_defaults_and_other_secrets() {
         let fixture = Fixture::new();
@@ -1348,6 +1349,7 @@ mod tests {
         assert!(fixture.root.0.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn disconnection_removes_only_hal100_fragments_and_revokes_its_key() {
         let fixture = Fixture::new();
@@ -1383,6 +1385,7 @@ mod tests {
         assert!(fixture.credentials.authenticate(&key).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn foreign_fragment_and_external_modification_are_never_overwritten() {
         let fixture = Fixture::new();
@@ -1415,6 +1418,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn stale_and_discarded_plans_never_mutate_files() {
         let fixture = Fixture::new();
@@ -1447,6 +1451,7 @@ mod tests {
         assert_eq!(stable_version_triplet("development"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn conservative_route_is_reported_as_blocked_instead_of_overstating_context() {
         let fixture = Fixture::new();
