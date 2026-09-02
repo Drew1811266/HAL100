@@ -14,9 +14,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { type FormEvent, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { type FormEvent, useEffect, useState } from "react";
+import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Drawer } from "../../components/ui/Drawer";
+import { Modal } from "../../components/ui/Modal";
 import { PageHeader } from "../../components/ui/PageHeader";
 import {
   activateExternalBackend,
@@ -26,6 +27,7 @@ import {
   type BackendDraft,
   type BackendKind,
   type BackendProbeStatus,
+  completeOnboarding,
   deleteExternalBackend,
   deleteModelRoute,
   discoverLocalBackends,
@@ -35,6 +37,7 @@ import {
   forceStartLlamaCppModel,
   forceStopLlamaCpp,
   getBackendCatalog,
+  getDesktopSettings,
   getLlamaCppStatus,
   getModelLibrary,
   type InferenceEngineKind,
@@ -48,33 +51,7 @@ import {
   stopLlamaCpp,
   testActiveModel,
 } from "../../lib/desktop-api";
-
-interface SectionTab {
-  label: string;
-  path: string;
-}
-
-const workspaceTabs: SectionTab[] = [
-  { label: "模型", path: "/workspace/models" },
-  { label: "运行", path: "/workspace/runtime" },
-  { label: "推理服务", path: "/workspace/services" },
-];
-
-function SectionTabs({ label, tabs }: { label: string; tabs: SectionTab[] }) {
-  return (
-    <nav aria-label={label} className="section-tabs">
-      {tabs.map((tab) => (
-        <NavLink
-          className={({ isActive }) => (isActive ? "active" : undefined)}
-          key={tab.path}
-          to={tab.path}
-        >
-          {tab.label}
-        </NavLink>
-      ))}
-    </nav>
-  );
-}
+import { WorkspaceTabs } from "./WorkspaceTabs";
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1024 ** 3) {
@@ -112,7 +89,7 @@ function EngineConfirmationDialog({
   const installing = operation.kind === "install";
   const plan = operation.plan;
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={applying} onClose={onCancel}>
       <section
         aria-labelledby="engine-confirmation-title"
         aria-modal="true"
@@ -174,7 +151,7 @@ function EngineConfirmationDialog({
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -298,6 +275,16 @@ export function BackendsPage({
   view: "runtime" | "services";
 }) {
   const queryClient = useQueryClient();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const setupMode = searchParams.get("setup");
+  const clearSetupMode = () => {
+    if (!searchParams.has("setup")) return;
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete("setup");
+    setSearchParams(nextSearchParams, { replace: true });
+  };
   const status = useQuery({
     queryKey: ["llama-cpp-status"],
     queryFn: getLlamaCppStatus,
@@ -316,14 +303,45 @@ export function BackendsPage({
     staleTime: Number.POSITIVE_INFINITY,
     refetchOnWindowFocus: false,
   });
+  const desktopSettings = useQuery({
+    queryKey: ["desktop-settings"],
+    queryFn: getDesktopSettings,
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: false,
+  });
   const [enginePlan, setEnginePlan] = useState<EnginePlan | null>(null);
   const [modelTestOpen, setModelTestOpen] = useState(initialTestOpen);
   const [selectedModelId, setSelectedModelId] = useState("");
-  const [serviceSetupOpen, setServiceSetupOpen] = useState(false);
-  const [editingBackend, setEditingBackend] = useState<BackendDraft | null>(null);
+  const [serviceSetupOpen, setServiceSetupOpen] = useState(
+    () => view === "services" && setupMode === "1",
+  );
+  const [autoDiscoveryStarted, setAutoDiscoveryStarted] = useState(false);
+  const [editingBackend, setEditingBackend] = useState<BackendDraft | null>(() =>
+    view === "services" && setupMode === "cloud"
+      ? {
+          ...emptyBackendDraft,
+          apiRoot: "https://api.openai.com/v1/",
+          authMethod: "bearer",
+        }
+      : null,
+  );
   const [routeAlias, setRouteAlias] = useState("");
   const [routeBackendId, setRouteBackendId] = useState("");
   const [routeResolvedModel, setRouteResolvedModel] = useState("");
+  const closeModelTest = () => {
+    setModelTestOpen(false);
+    if (initialTestOpen && location.pathname === "/workspace/test") {
+      navigate("/workspace/runtime", { replace: true });
+    }
+  };
+  const closeServiceSetup = () => {
+    setServiceSetupOpen(false);
+    clearSetupMode();
+  };
+  const closeBackendEditor = () => {
+    setEditingBackend(null);
+    clearSetupMode();
+  };
   const installPlanMutation = useMutation({
     mutationFn: planLlamaCppInstall,
     onSuccess: (plan) => setEnginePlan({ kind: "install", plan }),
@@ -371,12 +389,40 @@ export function BackendsPage({
       queryClient.invalidateQueries({ queryKey: ["backend-catalog"] });
     },
   });
+  const setupConnectMutation = useMutation({
+    mutationFn: async (backendId: string) => {
+      const probe = await probeExternalBackend(backendId);
+      if (probe.status !== "healthy") {
+        throw new Error("服务已保存，但连接验证没有通过。请检查地址、凭据或服务状态后重试。");
+      }
+      let catalog = await getBackendCatalog();
+      const backend = catalog.backends.find((item) => item.id === backendId);
+      if (!backend) throw new Error("服务已保存，但无法读取连接状态。请重新检测。");
+      if (!backend.isActive) catalog = await activateExternalBackend(backendId);
+      const settings = await completeOnboarding();
+      return { catalog, settings };
+    },
+    onSuccess: ({ catalog, settings }) => {
+      queryClient.setQueryData(["backend-catalog"], catalog);
+      queryClient.setQueryData(["desktop-settings"], settings);
+      void queryClient.invalidateQueries({ queryKey: ["app-overview"] });
+      void queryClient.invalidateQueries({ queryKey: ["audit-log"] });
+    },
+  });
   const saveBackendMutation = useMutation({
     mutationFn: saveExternalBackend,
-    onSuccess: (catalog) => {
+    onSuccess: (catalog, draft) => {
       queryClient.setQueryData(["backend-catalog"], catalog);
       queryClient.invalidateQueries({ queryKey: ["agent-cloud-session"] });
-      setEditingBackend(null);
+      closeBackendEditor();
+      if (desktopSettings.data && !desktopSettings.data.onboardingCompleted) {
+        const savedBackend = draft.id
+          ? catalog.backends.find((backend) => backend.id === draft.id)
+          : [...catalog.backends]
+              .reverse()
+              .find((backend) => backend.kind === draft.kind && backend.apiRoot === draft.apiRoot);
+        if (savedBackend) setupConnectMutation.mutate(savedBackend.id);
+      }
     },
   });
   const activateBackendMutation = useMutation({
@@ -411,6 +457,13 @@ export function BackendsPage({
     mutationFn: probeExternalBackend,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["backend-catalog"] }),
   });
+
+  useEffect(() => {
+    if (view === "services" && setupMode === "1" && serviceSetupOpen && !autoDiscoveryStarted) {
+      setAutoDiscoveryStarted(true);
+      discoverBackendsMutation.mutate();
+    }
+  }, [autoDiscoveryStarted, discoverBackendsMutation, serviceSetupOpen, setupMode, view]);
 
   if (status.isPending || library.isPending || backendCatalog.isPending) {
     return <div className="state-message">正在读取推理引擎与模型状态…</div>;
@@ -458,7 +511,8 @@ export function BackendsPage({
     saveRouteMutation.error ??
     deleteRouteMutation.error ??
     discoverBackendsMutation.error ??
-    probeBackendMutation.error;
+    probeBackendMutation.error ??
+    setupConnectMutation.error;
 
   return (
     <div className="page-content backends-page">
@@ -489,17 +543,15 @@ export function BackendsPage({
           )
         }
         className="model-page-header"
-        description={
-          view === "runtime"
-            ? "管理 HAL100 托管的本地模型运行时。"
-            : "连接本机或远程推理服务；路由和模型别名按需展开。"
-        }
-        eyebrow={view === "runtime" ? "本地推理" : "推理连接"}
-        title={view === "runtime" ? "运行" : "推理服务"}
+        description="集中管理可用模型、当前运行状态和推理服务。"
+        title="模型与运行"
       />
-      <SectionTabs label="模型与运行" tabs={workspaceTabs} />
+      <WorkspaceTabs />
 
       {operationError && <p className="inline-error">{errorMessage(operationError)}</p>}
+      {setupConnectMutation.isPending && (
+        <p className="inline-notice">服务已保存，正在验证连接并设为当前服务…</p>
+      )}
 
       {view === "runtime" && (
         <div className="backend-primary-grid">
@@ -722,7 +774,7 @@ export function BackendsPage({
             <div className="routing-heading">
               <div>
                 <p className="eyebrow">外部推理服务</p>
-                <h2 id="external-backends-title">已配置后端</h2>
+                <h2 id="external-backends-title">已连接服务</h2>
               </div>
             </div>
             {backendCatalog.data.backends.length > 0 ? (
@@ -779,10 +831,10 @@ export function BackendsPage({
                         {backend.circuitOpen
                           ? "暂时熔断"
                           : backend.isActive
-                            ? "当前活动"
+                            ? "当前使用"
                             : backend.runtimeAvailable
-                              ? "已加载"
-                              : "凭据不可用"}
+                              ? "可以使用"
+                              : "需要配置"}
                       </span>
                       <div className="backend-row-actions">
                         <button
@@ -804,7 +856,7 @@ export function BackendsPage({
                           onClick={() => activateBackendMutation.mutate(backend.id)}
                           type="button"
                         >
-                          设为活动
+                          设为当前
                         </button>
                         <button
                           className="danger-button compact-button"
@@ -836,7 +888,7 @@ export function BackendsPage({
                           }
                           type="button"
                         >
-                          编辑
+                          {backend.runtimeAvailable ? "查看详情" : "完善配置"}
                         </button>
                         <button
                           aria-label={`删除后端 ${backend.displayName}`}
@@ -882,7 +934,7 @@ export function BackendsPage({
                 <p className="eyebrow">高级配置</p>
                 <h2>默认服务与模型名称映射</h2>
                 <small>
-                  {backendCatalog.data.activeBackendId ?? "尚未配置活动后端"} ·{" "}
+                  {backendCatalog.data.activeBackendId ?? "尚未选择当前服务"} ·{" "}
                   {backendCatalog.data.modelRoutes.length} 个模型别名
                 </small>
               </div>
@@ -894,11 +946,11 @@ export function BackendsPage({
             </summary>
             <div className="routing-metrics">
               <div>
-                <span>活动后端</span>
-                <strong>{backendCatalog.data.activeBackendId ?? "尚未配置"}</strong>
+                <span>当前服务</span>
+                <strong>{backendCatalog.data.activeBackendId ?? "尚未选择"}</strong>
               </div>
               <div>
-                <span>已加载后端</span>
+                <span>可用服务</span>
                 <strong>
                   {
                     backendCatalog.data.backends.filter((backend) => backend.runtimeAvailable)
@@ -998,7 +1050,7 @@ export function BackendsPage({
               </div>
             ) : (
               <p className="routing-empty">
-                `hal100-active` 始终指向当前活动后端；尚未添加指向其他后端的显式模型别名。
+                `hal100-active` 始终指向当前服务；尚未添加指向其他服务的显式模型别名。
               </p>
             )}
             <p className="routing-footnote">
@@ -1023,7 +1075,7 @@ export function BackendsPage({
         <Drawer
           description="发送一次非流式请求，验证本地运行时、Gateway、鉴权和 Token 计量闭环。"
           eyebrow="单轮验证"
-          onClose={() => setModelTestOpen(false)}
+          onClose={closeModelTest}
           title="测试当前模型"
         >
           <ModelTestPanel />
@@ -1033,7 +1085,7 @@ export function BackendsPage({
         <Drawer
           description="可按需检查固定的本机回环端口，或手动输入远程服务地址。HAL100 不扫描局域网。"
           eyebrow="推理服务"
-          onClose={() => setServiceSetupOpen(false)}
+          onClose={closeServiceSetup}
           title="添加推理服务"
         >
           <section className="drawer-section service-discovery-section">
@@ -1100,7 +1152,7 @@ export function BackendsPage({
                     <button
                       className="secondary-button compact-button"
                       onClick={() => {
-                        setServiceSetupOpen(false);
+                        closeServiceSetup();
                         setEditingBackend({
                           id: null,
                           displayName: candidate.displayName,
@@ -1132,7 +1184,7 @@ export function BackendsPage({
             <button
               className="primary-button"
               onClick={() => {
-                setServiceSetupOpen(false);
+                closeServiceSetup();
                 setEditingBackend({ ...emptyBackendDraft });
               }}
               type="button"
@@ -1143,9 +1195,10 @@ export function BackendsPage({
         </Drawer>
       )}
       {view === "services" && editingBackend && (
-        <div className="dialog-backdrop" role="presentation">
+        <Modal closeDisabled={saveBackendMutation.isPending} onClose={closeBackendEditor}>
           <form
             aria-labelledby="backend-editor-title"
+            aria-modal="true"
             className="dialog backend-editor-dialog"
             onSubmit={(event) => {
               event.preventDefault();
@@ -1155,16 +1208,16 @@ export function BackendsPage({
           >
             <div className="dialog-heading">
               <div>
-                <p className="eyebrow">外部推理服务</p>
+                <p className="eyebrow">推理服务</p>
                 <h2 id="backend-editor-title">
-                  {editingBackend.id ? "编辑外部后端" : "添加外部后端"}
+                  {editingBackend.id ? "编辑服务连接" : "添加推理服务"}
                 </h2>
               </div>
               <button
                 aria-label="关闭后端编辑器"
                 className="icon-button"
                 disabled={saveBackendMutation.isPending}
-                onClick={() => setEditingBackend(null)}
+                onClick={closeBackendEditor}
                 type="button"
               >
                 <X size={16} />
@@ -1300,7 +1353,7 @@ export function BackendsPage({
               <button
                 className="secondary-button"
                 disabled={saveBackendMutation.isPending}
-                onClick={() => setEditingBackend(null)}
+                onClick={closeBackendEditor}
                 type="button"
               >
                 取消
@@ -1318,11 +1371,15 @@ export function BackendsPage({
                 }
                 type="submit"
               >
-                {saveBackendMutation.isPending ? "正在保存…" : "保存后端"}
+                {saveBackendMutation.isPending
+                  ? "正在保存…"
+                  : desktopSettings.data && !desktopSettings.data.onboardingCompleted
+                    ? "保存并验证"
+                    : "保存连接"}
               </button>
             </div>
           </form>
-        </div>
+        </Modal>
       )}
     </div>
   );

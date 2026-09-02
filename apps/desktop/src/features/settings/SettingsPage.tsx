@@ -1,44 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Cable,
-  ChevronRight,
-  Cpu,
-  HardDrive,
-  Moon,
-  RefreshCw,
-  ShieldCheck,
-  Sun,
-} from "lucide-react";
+import { HardDrive, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
+import { Drawer } from "../../components/ui/Drawer";
 import { PageHeader } from "../../components/ui/PageHeader";
 import {
   applyDataRetention,
-  completeOnboarding,
   type DesktopSettings,
   getAppOverview,
   getDataCleanupPreview,
   getDesktopSettings,
-  getHardwareProfile,
-  getLlamaCppStatus,
   getModelLibrary,
-  getOpenCodeDetection,
   isTauriRuntime,
   type RetentionSettingsDraft,
   setDefaultDownloadSource,
   setLaunchAtLogin,
   updateRetentionSettings,
 } from "../../lib/desktop-api";
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 ** 3) {
-    return `${(bytes / 1024 ** 3).toFixed(bytes >= 10 * 1024 ** 3 ? 0 : 1)} GB`;
-  }
-  if (bytes >= 1024 ** 2) {
-    return `${(bytes / 1024 ** 2).toFixed(bytes >= 10 * 1024 ** 2 ? 0 : 1)} MB`;
-  }
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -61,7 +39,6 @@ export function SettingsPage({
   onToggleTheme: () => void;
 }) {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const settings = useQuery({
     queryKey: ["desktop-settings"],
     queryFn: getDesktopSettings,
@@ -86,30 +63,10 @@ export function SettingsPage({
     staleTime: Number.POSITIVE_INFINITY,
     refetchOnWindowFocus: false,
   });
-  const hardware = useQuery({
-    queryKey: ["hardware-profile"],
-    queryFn: getHardwareProfile,
-    enabled: settings.data?.onboardingCompleted === false,
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: false,
-  });
-  const engine = useQuery({
-    queryKey: ["llama-cpp-status"],
-    queryFn: getLlamaCppStatus,
-    enabled: settings.data?.onboardingCompleted === false,
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: false,
-  });
-  const openCode = useQuery({
-    queryKey: ["opencode-detection"],
-    queryFn: getOpenCodeDetection,
-    enabled: settings.data?.onboardingCompleted === false,
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: false,
-  });
   const [usageRetentionDays, setUsageRetentionDays] = useState<number | null>(90);
   const [auditRetentionDays, setAuditRetentionDays] = useState<number | null>(365);
-  const [setupLaunchChoice, setSetupLaunchChoice] = useState<boolean | null>(null);
+  const [storageOpen, setStorageOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   useEffect(() => {
     if (settings.data) {
@@ -129,13 +86,6 @@ export function SettingsPage({
     mutationFn: setDefaultDownloadSource,
     onSuccess: (nextLibrary) => {
       queryClient.setQueryData(["model-library"], nextLibrary);
-    },
-  });
-  const completionMutation = useMutation({
-    mutationFn: (launchAtLogin: boolean) => completeOnboarding({ launchAtLogin }),
-    onSuccess: (nextSettings) => {
-      queryClient.setQueryData(["desktop-settings"], nextSettings);
-      queryClient.invalidateQueries({ queryKey: ["audit-log"] });
     },
   });
   const retentionMutation = useMutation({
@@ -163,12 +113,6 @@ export function SettingsPage({
     },
   });
 
-  useEffect(() => {
-    if (completionMutation.isSuccess && settings.data?.onboardingCompleted) {
-      navigate("/", { replace: true });
-    }
-  }, [completionMutation.isSuccess, navigate, settings.data?.onboardingCompleted]);
-
   if (settings.isPending) {
     return <div className="state-message">正在读取桌面设置…</div>;
   }
@@ -177,242 +121,79 @@ export function SettingsPage({
   }
 
   const data = settings.data;
-  const setupRequired = !data.onboardingCompleted;
   const selectedSource = modelLibrary.data?.defaultDownloadSource ?? null;
-  const sourceReady = selectedSource !== null;
-  const launchReady = setupRequired ? setupLaunchChoice !== null : true;
-  const completedSetupItems = Number(sourceReady) + Number(launchReady);
-  const setupProgress = completedSetupItems * 50;
-  const readyModelCount =
-    modelLibrary.data?.models.filter((model) => model.state === "ready").length ?? 0;
-  const engineInstalled = engine.data?.installState === "installed";
-  const openCodeConfigured = openCode.data?.integrationState === "configured";
-  const retentionChanged =
-    usageRetentionDays !== data.usageRetentionDays ||
-    auditRetentionDays !== data.auditRetentionDays;
   const preview = cleanupPreview.data;
   const cleanupCount = (preview?.usageRequestCount ?? 0) + (preview?.auditEventCount ?? 0);
+  const settingsSaving =
+    launchMutation.isPending || sourceMutation.isPending || retentionMutation.isPending;
+
+  const changeRetention = (
+    nextUsageRetentionDays: number | null,
+    nextAuditRetentionDays: number | null,
+  ) => {
+    setUsageRetentionDays(nextUsageRetentionDays);
+    setAuditRetentionDays(nextAuditRetentionDays);
+    if (isTauriRuntime()) {
+      retentionMutation.mutate({
+        usageRetentionDays: nextUsageRetentionDays,
+        auditRetentionDays: nextAuditRetentionDays,
+      });
+    }
+  };
 
   return (
     <div className="page-content settings-page">
       <PageHeader
         action={
-          setupRequired ? (
-            <span className="settings-readiness attention">
-              <span />
-              需要完成基础设置
-            </span>
-          ) : undefined
+          <span className={`status-pill ${settingsSaving ? "neutral" : "ok"}`}>
+            {settingsSaving ? "正在保存…" : "设置已保存"}
+          </span>
         }
-        description="管理基础偏好、外观和本机数据策略。"
-        eyebrow="全局设置"
+        description="管理全局偏好、数据保留与产品信息。"
         title="设置"
       />
 
-      {setupRequired && (
-        <section className="setup-center compact is-first-run">
-          <div className="setup-center-heading">
-            <div>
-              <p className="eyebrow">首次使用</p>
-              <h2>初始化配置中心</h2>
-              <p>完成两项基础选择即可；其余功能按需配置。</p>
-            </div>
-            <div
-              aria-label={`基础设置完成 ${completedSetupItems} / 2 项`}
-              className="setup-progress-summary"
-              role="status"
-            >
-              <strong>{completedSetupItems} / 2</strong>
-              <span>基础项</span>
-            </div>
+      {!data.onboardingCompleted && (
+        <section className="settings-first-run-note">
+          <div>
+            <strong>首次使用从首页开始</strong>
+            <p>先选择本地模型、已有服务或云端服务；这里的偏好都可以稍后再调整。</p>
           </div>
-
-          <div className="setup-progress-track" aria-hidden="true">
-            <span style={{ width: `${setupProgress}%` }} />
-          </div>
-
-          <div className="setup-essential-grid">
-            <div className="setup-essential-item">
-              <div className="setup-essential-heading">
-                <div>
-                  <strong>模型下载源</strong>
-                  <span>搜索时仍可临时切换</span>
-                </div>
-                <span className={`status-pill ${sourceReady ? "ok" : "warning"}`}>
-                  {sourceReady ? "已选择" : "必选"}
-                </span>
-              </div>
-              <fieldset
-                aria-label="默认模型下载源"
-                className="source-selector setup-source-selector"
-              >
-                <button
-                  aria-pressed={selectedSource === "huggingFace"}
-                  disabled={sourceMutation.isPending}
-                  onClick={() => sourceMutation.mutate("huggingFace")}
-                  type="button"
-                >
-                  Hugging Face
-                </button>
-                <button
-                  aria-pressed={selectedSource === "modelScope"}
-                  disabled={sourceMutation.isPending}
-                  onClick={() => sourceMutation.mutate("modelScope")}
-                  type="button"
-                >
-                  ModelScope
-                </button>
-              </fieldset>
-            </div>
-
-            <div className="setup-essential-item">
-              <div className="setup-essential-heading">
-                <div>
-                  <strong>随系统登录启动</strong>
-                  <span>推荐保持关闭</span>
-                </div>
-                <span className={`status-pill ${launchReady ? "ok" : "warning"}`}>
-                  {launchReady ? "已选择" : "必选"}
-                </span>
-              </div>
-              <fieldset aria-label="随系统登录启动偏好" className="setup-choice-group">
-                <button
-                  aria-pressed={setupLaunchChoice === false}
-                  onClick={() => setSetupLaunchChoice(false)}
-                  type="button"
-                >
-                  保持关闭
-                </button>
-                <button
-                  aria-pressed={setupLaunchChoice === true}
-                  onClick={() => setSetupLaunchChoice(true)}
-                  type="button"
-                >
-                  登录时启动
-                </button>
-              </fieldset>
-            </div>
-          </div>
-
-          <section className="setup-overview-strip" aria-label="环境准备状态">
-            <article>
-              <span className="setup-overview-icon">
-                <Cpu size={15} />
-              </span>
-              <div>
-                <small>这台 Mac</small>
-                <strong>
-                  {hardware.isPending
-                    ? "检测中"
-                    : hardware.data
-                      ? `${hardware.data.chip} · ${formatBytes(hardware.data.totalUnifiedMemoryBytes)}`
-                      : "检测失败"}
-                </strong>
-              </div>
-              <button
-                aria-label="重新检测设备"
-                className="icon-button"
-                disabled={hardware.isFetching}
-                onClick={() => hardware.refetch()}
-                type="button"
-              >
-                <RefreshCw className={hardware.isFetching ? "spinning" : ""} size={14} />
-              </button>
-            </article>
-            <Link to="/workspace/runtime">
-              <span className="setup-overview-icon">
-                <HardDrive size={15} />
-              </span>
-              <div>
-                <small>本地推理</small>
-                <strong>
-                  {engineInstalled ? `llama.cpp · ${readyModelCount} 个模型` : "尚未安装引擎"}
-                </strong>
-              </div>
-              <ChevronRight size={14} />
-            </Link>
-            <Link to="/integrations">
-              <span className="setup-overview-icon">
-                <Cable size={15} />
-              </span>
-              <div>
-                <small>软件接入</small>
-                <strong>{openCodeConfigured ? "OpenCode 已接入" : "尚未配置"}</strong>
-              </div>
-              <ChevronRight size={14} />
-            </Link>
-          </section>
-
-          {(sourceMutation.isError || launchMutation.isError) && (
-            <p className="inline-error">
-              {errorMessage(sourceMutation.error ?? launchMutation.error)}
-            </p>
-          )}
-
-          <div className="setup-completion-bar compact">
-            <p>
-              <strong>
-                {sourceReady && launchReady ? "可以完成基础设置" : "请完成两项必选设置"}
-              </strong>
-              <span>模型、后端和软件接入可稍后处理。</span>
-            </p>
-            <button
-              className="primary-button"
-              disabled={!sourceReady || !launchReady || completionMutation.isPending}
-              onClick={() => completionMutation.mutate(setupLaunchChoice ?? false)}
-              type="button"
-            >
-              {completionMutation.isPending ? "正在保存…" : "完成设置"}
-              {!completionMutation.isPending && <ChevronRight size={14} />}
-            </button>
-          </div>
-          {completionMutation.isError && (
-            <p className="inline-error">{errorMessage(completionMutation.error)}</p>
-          )}
+          <Link className="secondary-button" to="/">
+            返回首页
+          </Link>
         </section>
       )}
 
-      {!setupRequired && (
-        <section className="settings-card">
+      <div className="settings-grid-v2">
+        <section className="settings-card settings-section-v2">
           <div className="settings-card-heading">
-            <div>
-              <p className="eyebrow">基础偏好</p>
-              <h2>下载与启动</h2>
-            </div>
+            <h2>通用</h2>
+            <span>外观与启动</span>
           </div>
           <div className="settings-row">
             <div>
-              <strong>默认模型下载源</strong>
-              <span>模型搜索时仍可临时切换来源。</span>
+              <strong>深色外观</strong>
+              <span>只影响 HAL100，不改变系统设置。</span>
             </div>
-            <fieldset
-              aria-label="默认模型下载源"
-              className="source-selector settings-source-selector"
+            <button
+              aria-label="切换深色外观"
+              aria-pressed={darkMode}
+              className={`toggle-button${darkMode ? " enabled" : ""}`}
+              onClick={onToggleTheme}
+              type="button"
             >
-              <button
-                aria-pressed={selectedSource === "huggingFace"}
-                disabled={sourceMutation.isPending}
-                onClick={() => sourceMutation.mutate("huggingFace")}
-                type="button"
-              >
-                Hugging Face
-              </button>
-              <button
-                aria-pressed={selectedSource === "modelScope"}
-                disabled={sourceMutation.isPending}
-                onClick={() => sourceMutation.mutate("modelScope")}
-                type="button"
-              >
-                ModelScope
-              </button>
-            </fieldset>
+              <span />
+              <span className="visually-hidden">{darkMode ? "已开启" : "已关闭"}</span>
+            </button>
           </div>
           <div className="settings-row">
             <div>
               <strong>随系统登录启动</strong>
-              <span>关闭时仍可随时手动启动 HAL100。</span>
+              <span>达到稳定使用后再按需开启。</span>
             </div>
             <button
+              aria-label="切换登录启动"
               aria-pressed={data.launchAtLoginEnabled}
               className={`toggle-button${data.launchAtLoginEnabled ? " enabled" : ""}`}
               disabled={launchMutation.isPending || !isTauriRuntime()}
@@ -420,47 +201,61 @@ export function SettingsPage({
               type="button"
             >
               <span />
-              {data.launchAtLoginEnabled ? "已开启" : "已关闭"}
+              <span className="visually-hidden">
+                {data.launchAtLoginEnabled ? "已开启" : "已关闭"}
+              </span>
             </button>
           </div>
-          {(sourceMutation.isError || launchMutation.isError) && (
-            <p className="inline-error">
-              {errorMessage(sourceMutation.error ?? launchMutation.error)}
-            </p>
-          )}
         </section>
-      )}
-      <section className="settings-card">
-        <div className="settings-card-heading">
-          <div>
-            <p className="eyebrow">通用</p>
-            <h2>界面外观</h2>
-          </div>
-        </div>
-        <div className="settings-row">
-          <div>
-            <strong>界面外观</strong>
-            <span>当前使用{darkMode ? "深色" : "浅色"}外观；选择保存在本机 WebView。</span>
-          </div>
-          <button className="secondary-button" onClick={onToggleTheme} type="button">
-            {darkMode ? <Sun size={14} /> : <Moon size={14} />}
-            切换为{darkMode ? "浅色" : "深色"}
-          </button>
-        </div>
-      </section>
 
-      <section className="settings-card">
-        <div className="settings-card-heading">
-          <div>
-            <p className="eyebrow">Token 与数据</p>
-            <h2>本机保留策略</h2>
+        <section className="settings-card settings-section-v2">
+          <div className="settings-card-heading">
+            <h2>模型来源</h2>
+            <span>下载时仍可临时切换</span>
           </div>
-        </div>
-        <div className="retention-grid">
-          <label>
-            <span>Token 请求记录</span>
+          <div className="settings-row">
+            <div>
+              <strong>默认下载源</strong>
+              <span>只用于 HAL100 管理的本地模型。</span>
+            </div>
             <select
-              onChange={(event) => setUsageRetentionDays(retentionOption(event.target.value))}
+              aria-label="默认模型下载源"
+              disabled={sourceMutation.isPending || !isTauriRuntime()}
+              onChange={(event) =>
+                sourceMutation.mutate(event.target.value as "huggingFace" | "modelScope")
+              }
+              value={selectedSource ?? "huggingFace"}
+            >
+              <option value="huggingFace">Hugging Face</option>
+              <option value="modelScope">ModelScope</option>
+            </select>
+          </div>
+          <div className="settings-row">
+            <div>
+              <strong>模型存储</strong>
+              <span>技术路径按需查看。</span>
+            </div>
+            <button className="secondary-button" onClick={() => setStorageOpen(true)} type="button">
+              查看占用
+            </button>
+          </div>
+        </section>
+
+        <section className="settings-card settings-section-v2">
+          <div className="settings-card-heading">
+            <h2>数据保留</h2>
+            <span>仅保存在本机</span>
+          </div>
+          <div className="settings-row">
+            <div>
+              <strong>用量记录</strong>
+              <span>保存精确 Token 和脱敏请求摘要。</span>
+            </div>
+            <select
+              aria-label="用量记录保留时间"
+              onChange={(event) =>
+                changeRetention(retentionOption(event.target.value), auditRetentionDays)
+              }
               value={retentionSelectValue(usageRetentionDays)}
             >
               <option value="30">30 天</option>
@@ -469,11 +264,17 @@ export function SettingsPage({
               <option value="365">365 天</option>
               <option value="forever">永久保留</option>
             </select>
-          </label>
-          <label>
-            <span>审计记录</span>
+          </div>
+          <div className="settings-row">
+            <div>
+              <strong>操作记录</strong>
+              <span>不保存提示词、回答或 API Key。</span>
+            </div>
             <select
-              onChange={(event) => setAuditRetentionDays(retentionOption(event.target.value))}
+              aria-label="操作记录保留时间"
+              onChange={(event) =>
+                changeRetention(usageRetentionDays, retentionOption(event.target.value))
+              }
               value={retentionSelectValue(auditRetentionDays)}
             >
               <option value="30">30 天</option>
@@ -482,97 +283,127 @@ export function SettingsPage({
               <option value="365">365 天</option>
               <option value="forever">永久保留</option>
             </select>
-          </label>
-        </div>
-        <div className="settings-actions-row">
-          <div>
-            <strong>当前可清理 {cleanupPreview.isPending ? "…" : `${cleanupCount} 条`}</strong>
-            <span>保存策略不会立即删除；“按策略清理”才会显示原生确认并执行。</span>
           </div>
-          <button
-            className="secondary-button"
-            disabled={!retentionChanged || retentionMutation.isPending || !isTauriRuntime()}
-            onClick={() => retentionMutation.mutate({ usageRetentionDays, auditRetentionDays })}
-            type="button"
-          >
-            {retentionMutation.isPending ? "保存中…" : "保存保留策略"}
-          </button>
-          <button
-            className="danger-button"
-            disabled={
-              cleanupPreview.isPending ||
-              cleanupCount === 0 ||
-              cleanupMutation.isPending ||
-              !isTauriRuntime()
-            }
-            onClick={() => cleanupMutation.mutate()}
-            type="button"
-          >
-            {cleanupMutation.isPending ? "正在清理…" : "按策略清理"}
-          </button>
-        </div>
-        {retentionMutation.isError && (
-          <p className="inline-error">{errorMessage(retentionMutation.error)}</p>
-        )}
-        {cleanupMutation.isError && (
-          <p className="inline-error">{errorMessage(cleanupMutation.error)}</p>
-        )}
-        {cleanupMutation.data && (
-          <p className="inline-success">
-            已删除 {cleanupMutation.data.usageRequestsDeleted} 条 Token 请求记录和{" "}
-            {cleanupMutation.data.auditEventsDeleted} 条审计记录。
-          </p>
-        )}
-      </section>
+          <div className="settings-row">
+            <div>
+              <strong>清理过期记录</strong>
+              <span>
+                预计可清理 {cleanupPreview.isPending ? "…" : `${cleanupCount} 条`}
+                ，执行前会再次确认。
+              </span>
+            </div>
+            <button
+              className="danger-button"
+              disabled={
+                cleanupPreview.isPending ||
+                cleanupCount === 0 ||
+                cleanupMutation.isPending ||
+                !isTauriRuntime()
+              }
+              onClick={() => cleanupMutation.mutate()}
+              type="button"
+            >
+              {cleanupMutation.isPending ? "正在清理…" : "预览并清理"}
+            </button>
+          </div>
+        </section>
 
-      <section className="settings-card">
-        <div className="settings-card-heading">
-          <div>
-            <p className="eyebrow">关于</p>
-            <h2>HAL100</h2>
+        <section className="settings-card settings-section-v2">
+          <div className="settings-card-heading">
+            <h2>关于</h2>
+            <span>HAL100 {overview.data?.version ?? "—"}</span>
           </div>
-          <span className="status-pill neutral">开发版</span>
-        </div>
-        <div className="settings-row static-setting">
-          <div>
-            <strong>应用版本</strong>
-            <span>当前本机运行的 HAL100 Desktop 版本。</span>
+          <div className="settings-row">
+            <div>
+              <strong>产品与系统信息</strong>
+              <span>版本、平台与后台行为。</span>
+            </div>
+            <button className="secondary-button" onClick={() => setAboutOpen(true)} type="button">
+              产品详情
+            </button>
           </div>
-          <strong>v{overview.data?.version ?? "—"}</strong>
-        </div>
-        <div className="settings-row static-setting">
-          <div>
-            <strong>运行平台</strong>
-            <span>首版仅支持 Apple Silicon Mac。</span>
+          <div className="settings-row">
+            <div>
+              <strong>首次使用引导</strong>
+              <span>重新查看三种连接方式。</span>
+            </div>
+            <Link className="secondary-button" to="/?guide=1">
+              重新体验
+            </Link>
           </div>
-          <span className={`status-pill ${overview.data?.platform.supported ? "ok" : "warning"}`}>
-            {overview.data
-              ? `${overview.data.platform.os} · ${overview.data.platform.architecture}`
-              : "正在读取…"}
-          </span>
-        </div>
-        <div className="settings-row static-setting">
-          <div>
-            <strong>关闭窗口时</strong>
-            <span>{data.closeBehavior}；只有托盘“退出 HAL100”才结束后台核心。</span>
+        </section>
+      </div>
+
+      {(sourceMutation.isError || launchMutation.isError || retentionMutation.isError) && (
+        <p className="inline-error">
+          {errorMessage(sourceMutation.error ?? launchMutation.error ?? retentionMutation.error)}
+        </p>
+      )}
+      {cleanupMutation.isError && (
+        <p className="inline-error">{errorMessage(cleanupMutation.error)}</p>
+      )}
+      {cleanupMutation.data && (
+        <p className="inline-success">
+          已删除 {cleanupMutation.data.usageRequestsDeleted} 条 Token 请求记录和{" "}
+          {cleanupMutation.data.auditEventsDeleted} 条操作记录。
+        </p>
+      )}
+
+      {storageOpen && (
+        <Drawer
+          description="HAL100 管理的模型与外部导入索引。"
+          eyebrow="模型存储"
+          onClose={() => setStorageOpen(false)}
+          title="模型存储"
+        >
+          <div className="settings-drawer-summary">
+            <HardDrive size={20} />
+            <div>
+              <strong>{modelLibrary.data?.models.length ?? 0} 个模型</strong>
+              <span>存储路径和单个模型大小可在模型库中查看。</span>
+            </div>
           </div>
-          <span className="status-pill ok">固定安全行为</span>
-        </div>
-        <div className="settings-row">
-          <div>
-            <strong>帮助与环境诊断</strong>
-            <span>检查模型、引擎、软件接入与系统权限准备情况。</span>
-          </div>
-          <Link className="secondary-button" to="/agent">
-            打开 Agent 诊断
+          <Link className="primary-button" to="/workspace/models">
+            打开模型库
           </Link>
-        </div>
-      </section>
+        </Drawer>
+      )}
+
+      {aboutOpen && (
+        <Drawer
+          description="本机正在运行的产品和平台信息。"
+          eyebrow="关于"
+          onClose={() => setAboutOpen(false)}
+          title={`HAL100 ${overview.data?.version ?? ""}`}
+        >
+          <dl className="settings-about-list">
+            <div>
+              <dt>平台</dt>
+              <dd>
+                {overview.data
+                  ? `${overview.data.platform.os} · ${overview.data.platform.architecture}`
+                  : "正在读取…"}
+              </dd>
+            </div>
+            <div>
+              <dt>窗口关闭后</dt>
+              <dd>{data.closeBehavior}</dd>
+            </div>
+            <div>
+              <dt>数据位置</dt>
+              <dd>仅保存在本机</dd>
+            </div>
+          </dl>
+          <Link className="secondary-button" to="/agent">
+            让 Agent 检查环境
+          </Link>
+        </Drawer>
+      )}
 
       {!isTauriRuntime() && (
         <section className="idle-cost-note">
           <ShieldCheck className="idle-cost-icon" size={16} />
-          <p>浏览器预览可体验配置流程，但不会修改系统登录项、SQLite 或执行数据清理。</p>
+          <p>浏览器预览不会修改系统登录项、SQLite 或执行数据清理。</p>
         </section>
       )}
     </div>

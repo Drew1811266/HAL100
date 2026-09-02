@@ -58,7 +58,7 @@ pub use backends::{
 pub use desktop::{
     AuditDetail, AuditEventSummary, AuditLog, DataCleanupPreview, DataCleanupResult,
     DesktopSettings, GenericClientCatalog, GenericClientCredential, GenericClientSummary,
-    OnboardingCompletion, RetentionSettingsDraft,
+    RetentionSettingsDraft,
 };
 pub use diagnostics::{
     DiagnosticComponent, DiagnosticRepairKind, DiagnosticSeverity, EnvironmentDiagnosticFinding,

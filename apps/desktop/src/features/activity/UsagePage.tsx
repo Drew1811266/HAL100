@@ -9,12 +9,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import type {
-  UsageDimensionSummary,
-  UsageRequestSummary,
-  UsageScopeQuery,
-  UsageTotals,
-} from "../../lib/desktop-api";
+import type { UsageRequestSummary, UsageScopeQuery, UsageTotals } from "../../lib/desktop-api";
 import { getUsageFilterOptions, getUsageScope } from "../../lib/desktop-api";
 import { ActivityPageShell } from "./ActivityPageShell";
 import { UsageActivityHeatmap } from "./UsageActivityHeatmap";
@@ -38,18 +33,18 @@ interface UsageFilters {
   status: string;
 }
 
-interface UsageHeatmapSelection {
-  date: string;
-  returnAnchorDate: string;
-  returnRange: UsageTrendRange;
-}
-
 const EMPTY_FILTERS: UsageFilters = {
   clientAppId: "",
   resolvedModel: "",
   backendId: "",
   status: "",
 };
+
+interface HeatmapSelection {
+  date: string;
+  previousAnchorDate: string | null;
+  previousRange: UsageTrendRange;
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -95,28 +90,6 @@ function requestTokenParts(request: UsageRequestSummary) {
     cacheHit: request.cachedTokens == null ? null : cachedTokens,
     cacheMiss: request.inputTokens == null ? null : Math.max(0, inputTokens - cachedTokens),
   };
-}
-
-function UsageClientSummary({ clients }: { clients: UsageDimensionSummary[] }) {
-  return (
-    <section className="usage-client-summary" aria-label="当前范围主要客户端">
-      <span>主要客户端</span>
-      <div>
-        {clients.length === 0 ? (
-          <p className="usage-client-empty">当前范围无客户端数据</p>
-        ) : (
-          clients.slice(0, 3).map((client) => (
-            <p key={client.id}>
-              <strong>{usageClientDisplayName(client.id, client.displayName)}</strong>
-              <span>
-                {formatCompactTokens(client.totalTokens)} Token · {client.requestCount} 次
-              </span>
-            </p>
-          ))
-        )}
-      </div>
-    </section>
-  );
 }
 
 function UsageCompositionCard({ totals }: { totals: UsageTotals }) {
@@ -258,9 +231,9 @@ function UsageFiltersBar({
 export default function UsagePage() {
   const [trendRange, setTrendRange] = useState<UsageTrendRange>("month");
   const [anchorDate, setAnchorDate] = useState<string | null>(null);
-  const [heatmapSelection, setHeatmapSelection] = useState<UsageHeatmapSelection | null>(null);
   const [filters, setFilters] = useState<UsageFilters>(EMPTY_FILTERS);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [heatmapSelection, setHeatmapSelection] = useState<HeatmapSelection | null>(null);
   const filterOptions = useQuery({
     queryKey: ["usage-filter-options"],
     queryFn: getUsageFilterOptions,
@@ -275,14 +248,14 @@ export default function UsagePage() {
   const today = startOfLocalDay(new Date());
   const scopeStartMs = scopeBounds.start.getTime();
   const scopeEndMs = scopeBounds.endExclusive.getTime();
-  const heatmapStartMs = addLocalDays(today, -364).getTime();
-  const heatmapEndMs = addLocalDays(today, 1).getTime();
+  const activityStartMs = addLocalDays(today, -364).getTime();
+  const activityEndMs = addLocalDays(today, 1).getTime();
   const query = useMemo<UsageScopeQuery>(
     () => ({
       startAtMs: scopeStartMs,
       endAtMsExclusive: scopeEndMs,
-      seriesStartAtMs: Math.min(scopeStartMs, heatmapStartMs),
-      seriesEndAtMsExclusive: Math.max(scopeEndMs, heatmapEndMs),
+      seriesStartAtMs: Math.min(scopeStartMs, activityStartMs),
+      seriesEndAtMsExclusive: Math.max(scopeEndMs, activityEndMs),
       clientAppId: filters.clientAppId || null,
       resolvedModel: filters.resolvedModel || null,
       backendId: filters.backendId || null,
@@ -294,8 +267,8 @@ export default function UsagePage() {
       filters.clientAppId,
       filters.resolvedModel,
       filters.status,
-      heatmapEndMs,
-      heatmapStartMs,
+      activityEndMs,
+      activityStartMs,
       scopeEndMs,
       scopeStartMs,
     ],
@@ -331,22 +304,6 @@ export default function UsagePage() {
     setAnchorDate(filteredLatestDate ?? latestDate);
     if (trendRange === "day") setTrendRange("month");
   };
-  const selectHeatmapDate = (date: string) => {
-    if (heatmapSelection?.date === date) {
-      setTrendRange(heatmapSelection.returnRange);
-      setAnchorDate(heatmapSelection.returnAnchorDate);
-      setHeatmapSelection(null);
-      return;
-    }
-
-    setHeatmapSelection({
-      date,
-      returnAnchorDate: heatmapSelection?.returnAnchorDate ?? selectedDate,
-      returnRange: heatmapSelection?.returnRange ?? trendRange,
-    });
-    setAnchorDate(date);
-    setTrendRange("day");
-  };
   const changeRange = (range: UsageTrendRange) => {
     setHeatmapSelection(null);
     setTrendRange(range);
@@ -354,6 +311,21 @@ export default function UsagePage() {
   const moveScope = (direction: -1 | 1) => {
     setHeatmapSelection(null);
     setAnchorDate(shiftUsageAnchor(trendRange, selectedDate, direction));
+  };
+  const selectHeatmapDate = (date: string) => {
+    if (heatmapSelection?.date === date) {
+      setAnchorDate(heatmapSelection.previousAnchorDate);
+      setTrendRange(heatmapSelection.previousRange);
+      setHeatmapSelection(null);
+      return;
+    }
+    setHeatmapSelection({
+      date,
+      previousAnchorDate: heatmapSelection?.previousAnchorDate ?? anchorDate,
+      previousRange: heatmapSelection?.previousRange ?? trendRange,
+    });
+    setAnchorDate(date);
+    setTrendRange("day");
   };
   const refreshAction = (
     <button
@@ -380,13 +352,17 @@ export default function UsagePage() {
     filterOptions.data.earliestUsageAtMs == null ||
     usageScopeBounds(trendRange, previousAnchor).endExclusive.getTime() >
       filterOptions.data.earliestUsageAtMs;
+  const todayUsage =
+    today.getTime() >= scopeStartMs && today.getTime() < scopeEndMs
+      ? data.dailyUsage.find((entry) => entry.date === localDateKey(today))
+      : undefined;
+  const clientTokenTotal = Math.max(
+    1,
+    data.clientUsage.reduce((total, client) => total + client.totalTokens, 0),
+  );
 
   return (
-    <ActivityPageShell
-      action={refreshAction}
-      description="按统一时间范围查看经过 HAL100 的请求、Token 构成与明细。"
-      title="用量"
-    >
+    <ActivityPageShell description="查看模型用量和受控操作，数据只保存在本机。" title="活动">
       {!hasAnyUsage ? (
         <section className="activity-empty-card">
           <div className="usage-empty-state">
@@ -394,7 +370,7 @@ export default function UsagePage() {
             <strong>尚无用量记录</strong>
             <span>启动模型并从已接入的软件或“测试模型”发起请求后，这里会显示统计。</span>
             <div className="empty-state-actions">
-              <Link className="primary-button" to="/test">
+              <Link className="primary-button" to="/workspace/test">
                 测试当前模型
               </Link>
               <Link className="secondary-button" to="/integrations">
@@ -405,75 +381,28 @@ export default function UsagePage() {
         </section>
       ) : (
         <>
-          <section className="usage-scope-toolbar" aria-label="用量时间范围与筛选">
-            <fieldset className="usage-range-switch">
-              <legend className="visually-hidden">用量时间粒度</legend>
-              {rangeOptions.map((option) => (
-                <button
-                  aria-pressed={trendRange === option.value}
-                  className={trendRange === option.value ? "active" : ""}
-                  key={option.value}
-                  onClick={() => changeRange(option.value)}
-                  type="button"
-                >
-                  {option.label}
-                </button>
-              ))}
-            </fieldset>
-            <div className="usage-period-navigation">
-              <button
-                aria-label="上一个时间范围"
-                disabled={!canMoveBackward}
-                onClick={() => moveScope(-1)}
-                type="button"
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <strong>{usageScopeLabel(trendRange, selectedDate)}</strong>
-              <button
-                aria-label="下一个时间范围"
-                disabled={!canMoveUsageAnchorForward(trendRange, selectedDate)}
-                onClick={() => moveScope(1)}
-                type="button"
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
-            <button className="text-button usage-latest-button" onClick={showLatest} type="button">
-              最近有数据
-            </button>
-          </section>
-          <UsageFiltersBar filters={filters} onChange={setFilters} options={filterOptions.data} />
-
-          <section className="usage-primary-overview" aria-label="当前范围用量摘要">
-            <div className="usage-primary-metrics usage-primary-metrics-expanded">
-              <p>
-                <span>Token 总量</span>
-                <strong>{formatTokens(data.totals.totalTokens)}</strong>
-                <small>{usageScopeLabel(trendRange, selectedDate)}</small>
-              </p>
-              <p>
-                <span>请求数</span>
-                <strong>{formatTokens(data.totals.requestCount)}</strong>
-                <small>成功率 {successRate}</small>
-              </p>
-              <p>
-                <span>输入缓存命中率</span>
-                <strong>{cacheHitRate}</strong>
-                <small>{formatTokens(data.totals.cachedTokens)} 命中 Token</small>
-              </p>
-              <p>
-                <span>计量覆盖率</span>
-                <strong>{measurementCoverage}</strong>
-                <small>
-                  {data.measuredRequestCount} / {data.totals.requestCount} 个请求
-                </small>
-              </p>
-            </div>
-            <UsageClientSummary clients={data.clientUsage} />
+          <div className="activity-v2-summary">最近 14 天</div>
+          <section className="activity-v2-metrics" aria-label="最近十四天用量摘要">
+            <article className="activity-v2-metric primary">
+              <span>总 Token</span>
+              <strong>{formatTokens(data.totals.totalTokens)}</strong>
+              <small>
+                {formatTokens(data.totals.requestCount)} 个请求 · 成功率 {successRate}
+              </small>
+            </article>
+            <article className="activity-v2-metric">
+              <span>今天</span>
+              <strong>{formatCompactTokens(todayUsage?.totalTokens ?? 0)}</strong>
+              <small>{todayUsage?.requestCount ?? 0} 个请求</small>
+            </article>
+            <article className="activity-v2-metric">
+              <span>缓存节省</span>
+              <strong>{cacheHitRate}</strong>
+              <small>少处理约 {formatCompactTokens(data.totals.cachedTokens)} Token</small>
+            </article>
           </section>
 
-          <section className="usage-analysis-stack" aria-label="用量分析">
+          <div className="activity-v2-grid">
             <UsageTrendChart
               anchorDate={selectedDate}
               dailyUsage={data.dailyUsage}
@@ -483,115 +412,187 @@ export default function UsagePage() {
               range={trendRange}
               requestCount={data.totals.requestCount}
             />
-            <UsageActivityHeatmap
-              dailyUsage={data.dailyUsage}
-              onSelectDate={selectHeatmapDate}
-              selectedDate={heatmapSelection?.date ?? null}
-              statusFiltered={Boolean(filters.status)}
-            />
-          </section>
+
+            <section className="activity-v2-client-card">
+              <div className="activity-v2-section-heading">
+                <div>
+                  <h2>最近客户端</h2>
+                  <p>按总 Token</p>
+                </div>
+              </div>
+              <div className="activity-v2-client-list">
+                {data.clientUsage.slice(0, 4).map((client) => {
+                  const percentage = Math.round((client.totalTokens / clientTokenTotal) * 100);
+                  return (
+                    <div className="activity-v2-client" key={client.id}>
+                      <strong>{usageClientDisplayName(client.id, client.displayName)}</strong>
+                      <span>{percentage}%</span>
+                      <div>
+                        <i style={{ width: `${percentage}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+          <UsageActivityHeatmap
+            dailyUsage={data.dailyUsage}
+            onSelectDate={selectHeatmapDate}
+            selectedDate={heatmapSelection?.date ?? null}
+            filtered={Object.values(filters).some(Boolean)}
+          />
 
           <details
-            className="usage-requests-card disclosure-card"
+            className="activity-v2-advanced"
+            open={detailsOpen}
             onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
           >
-            <summary className="usage-section-heading">
-              <div>
-                <h2>Token 构成与请求明细</h2>
-                <p>
-                  当前范围 {data.totals.requestCount} 次请求；最多显示最近{" "}
-                  {data.recentRequests.length} 条
-                </p>
-              </div>
-              <span className="disclosure-label">
-                <span className="details-closed-copy">展开</span>
-                <span className="details-open-copy">收起</span>
-                <ChevronRight size={14} />
-              </span>
+            <summary>
+              筛选、时间范围与请求明细 <ChevronRight size={14} />
             </summary>
-            {detailsOpen && (
-              <>
-                <div className="usage-detail-grid">
-                  <UsageCompositionCard totals={data.totals} />
-                  <div className="usage-measurement-help">
-                    <h3>计量口径</h3>
-                    <p>输入总量包含缓存命中；表格已拆成“缓存命中”和“缓存未命中”，避免重复相加。</p>
-                    <p>
-                      Token 来自推理后端 usage；未返回 usage 的请求仍计入请求数，但不计入 Token。
-                    </p>
-                  </div>
+            <div className="activity-v2-advanced-body">
+              <section className="usage-scope-toolbar" aria-label="用量时间范围与筛选">
+                <fieldset className="usage-range-switch">
+                  <legend className="visually-hidden">用量时间粒度</legend>
+                  {rangeOptions.map((option) => (
+                    <button
+                      aria-pressed={trendRange === option.value}
+                      className={trendRange === option.value ? "active" : ""}
+                      key={option.value}
+                      onClick={() => changeRange(option.value)}
+                      type="button"
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </fieldset>
+                <div className="usage-period-navigation">
+                  <button
+                    aria-label="上一个时间范围"
+                    disabled={!canMoveBackward}
+                    onClick={() => moveScope(-1)}
+                    type="button"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  <strong>{usageScopeLabel(trendRange, selectedDate)}</strong>
+                  <button
+                    aria-label="下一个时间范围"
+                    disabled={!canMoveUsageAnchorForward(trendRange, selectedDate)}
+                    onClick={() => moveScope(1)}
+                    type="button"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
                 </div>
-                {data.recentRequests.length === 0 ? (
-                  <div className="usage-table-empty">当前范围没有请求明细</div>
-                ) : (
-                  <div className="usage-table-scroll">
-                    <table className="usage-table">
-                      <thead>
-                        <tr>
-                          <th>时间 / 客户端</th>
-                          <th>模型 / 后端</th>
-                          <th>
-                            输入
-                            <br />
-                            未命中
-                          </th>
-                          <th>
-                            输入
-                            <br />
-                            命中
-                          </th>
-                          <th>输出</th>
-                          <th>总计</th>
-                          <th>状态 / 计量</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.recentRequests.map((request) => {
-                          const parts = requestTokenParts(request);
-                          return (
-                            <tr key={request.requestId}>
-                              <td>
-                                <strong>
-                                  {usageClientDisplayName(
-                                    request.clientAppId,
-                                    request.clientDisplayName,
-                                  )}
-                                </strong>
-                                <span>{formatRequestTime(request.startedAtMs)}</span>
-                              </td>
-                              <td>
-                                <strong>{request.resolvedModel}</strong>
-                                <span>{request.backendId}</span>
-                              </td>
-                              <td>{formatTokens(parts.cacheMiss)}</td>
-                              <td>{formatTokens(parts.cacheHit)}</td>
-                              <td>{formatTokens(request.outputTokens)}</td>
-                              <td>{formatTokens(request.totalTokens)}</td>
-                              <td>
-                                <span className={`usage-status ${request.status}`}>
-                                  {request.status === "succeeded"
-                                    ? "成功"
-                                    : request.status === "cancelled"
-                                      ? "已取消"
-                                      : "失败"}
-                                </span>
-                                <small>
-                                  {request.usageAccuracy === "exact_backend_response"
-                                    ? "响应精确值"
-                                    : request.usageAccuracy === "exact_backend_event"
-                                      ? "事件精确值"
-                                      : "未计量"}
-                                </small>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                <button
+                  className="text-button usage-latest-button"
+                  onClick={showLatest}
+                  type="button"
+                >
+                  最近有数据
+                </button>
+                {refreshAction}
+              </section>
+              <UsageFiltersBar
+                filters={filters}
+                onChange={setFilters}
+                options={filterOptions.data}
+              />
+              <div className="usage-detail-grid">
+                <UsageCompositionCard totals={data.totals} />
+                <div className="usage-measurement-help">
+                  <div className="usage-measurement-heading">
+                    <div>
+                      <h3>计量口径</h3>
+                      <p>输入总量包含缓存命中；明细按命中、未命中和输出拆分。</p>
+                    </div>
+                    <strong>{measurementCoverage}</strong>
                   </div>
-                )}
-              </>
-            )}
+                  <p className="usage-measurement-caption">当前请求中有精确计量值的比例</p>
+                </div>
+              </div>
+              <div className="usage-request-details">
+                <div className="usage-request-details-heading">
+                  <div>
+                    <h3>请求明细</h3>
+                    <p>按当前时间范围与筛选条件显示最近请求</p>
+                  </div>
+                  <span>{data.recentRequests.length} 条</span>
+                </div>
+                {detailsOpen &&
+                  (data.recentRequests.length === 0 ? (
+                    <div className="usage-table-empty">当前范围没有请求明细</div>
+                  ) : (
+                    <div className="usage-table-scroll">
+                      <table className="usage-table">
+                        <thead>
+                          <tr>
+                            <th>时间 / 客户端</th>
+                            <th>模型 / 后端</th>
+                            <th>
+                              输入
+                              <br />
+                              未命中
+                            </th>
+                            <th>
+                              输入
+                              <br />
+                              命中
+                            </th>
+                            <th>输出</th>
+                            <th>总计</th>
+                            <th>状态 / 计量</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {data.recentRequests.map((request) => {
+                            const parts = requestTokenParts(request);
+                            return (
+                              <tr key={request.requestId}>
+                                <td>
+                                  <strong>
+                                    {usageClientDisplayName(
+                                      request.clientAppId,
+                                      request.clientDisplayName,
+                                    )}
+                                  </strong>
+                                  <span>{formatRequestTime(request.startedAtMs)}</span>
+                                </td>
+                                <td>
+                                  <strong>{request.resolvedModel}</strong>
+                                  <span>{request.backendId}</span>
+                                </td>
+                                <td>{formatTokens(parts.cacheMiss)}</td>
+                                <td>{formatTokens(parts.cacheHit)}</td>
+                                <td>{formatTokens(request.outputTokens)}</td>
+                                <td>{formatTokens(request.totalTokens)}</td>
+                                <td>
+                                  <span className={`usage-status ${request.status}`}>
+                                    {request.status === "succeeded"
+                                      ? "成功"
+                                      : request.status === "cancelled"
+                                        ? "已取消"
+                                        : "失败"}
+                                  </span>
+                                  <small>
+                                    {request.usageAccuracy === "exact_backend_response"
+                                      ? "响应精确值"
+                                      : request.usageAccuracy === "exact_backend_event"
+                                        ? "事件精确值"
+                                        : "未计量"}
+                                  </small>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+              </div>
+            </div>
           </details>
         </>
       )}

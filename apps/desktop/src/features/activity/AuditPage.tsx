@@ -3,7 +3,7 @@ import { ChevronRight, ListFilter, RefreshCw, ScrollText, Search } from "lucide-
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Drawer } from "../../components/ui/Drawer";
-import { getAuditLog } from "../../lib/desktop-api";
+import { type AuditEventSummary, getAuditLog } from "../../lib/desktop-api";
 import { ActivityPageShell } from "./ActivityPageShell";
 
 const eventLabels: Record<string, string> = {
@@ -78,6 +78,23 @@ function outcome(eventType: string): "failed" | "succeeded" {
   return eventType.includes("failed") ? "failed" : "succeeded";
 }
 
+const auditTargetLabels: Record<string, string> = {
+  agent_run: "Agent 任务",
+  client: "客户端",
+  engine: "推理引擎",
+  model: "本地模型",
+  runtime: "本地运行",
+  settings: "设置",
+};
+
+function auditObjectLabel(event: AuditEventSummary): string {
+  for (const key of ["displayName", "model", "fileName", "resolvedModel"]) {
+    const value = event.details.find((detail) => detail.key === key)?.value;
+    if (value) return value;
+  }
+  return auditTargetLabels[event.targetType] ?? "系统对象";
+}
+
 export default function AuditPage() {
   const [eventType, setEventType] = useState("all");
   const [search, setSearch] = useState("");
@@ -136,8 +153,8 @@ export default function AuditPage() {
   return (
     <ActivityPageShell
       action={actions}
-      description="查看最近 50 条安装、模型、软件接入、Agent 与数据策略的受控操作。"
-      title="操作记录"
+      description="查看模型用量和受控操作，数据只保存在本机。"
+      title="活动"
     >
       {filtersOpen && (
         <section className="audit-toolbar" aria-label="操作记录筛选">
@@ -192,9 +209,7 @@ export default function AuditPage() {
           <div className="audit-list">
             {events.map((event) => {
               const eventOutcome = outcome(event.eventType);
-              const object =
-                event.details.find((detail) => detail.key === "displayName")?.value ??
-                event.targetId;
+              const object = auditObjectLabel(event);
               return (
                 <button
                   aria-label={`查看${eventLabels[event.eventType] ?? event.eventType}详情`}

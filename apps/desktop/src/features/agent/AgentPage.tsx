@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Bot,
   Check,
   ChevronRight,
   Play,
@@ -8,7 +9,7 @@ import {
   ShieldCheck,
   Square,
 } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { PageHeader } from "../../components/ui/PageHeader";
 import {
@@ -46,6 +47,7 @@ import {
   stopAgentCloudSession,
   stopAgentRuntime,
 } from "../../lib/desktop-api";
+import { getAgentRunProgress } from "./agent-run-progress";
 import { EnvironmentDiagnosticsPanel } from "./EnvironmentDiagnosticsPanel";
 
 function errorMessage(error: unknown): string {
@@ -345,7 +347,8 @@ const agentActionCopy: Record<
 export function AgentPage() {
   const queryClient = useQueryClient();
   const runtime = isTauriRuntime();
-  const [prompt, setPrompt] = useState(defaultAgentPrompt);
+  const [prompt, setPrompt] = useState("");
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [result, setResult] = useState<AgentRunResult | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [taskCategory, setTaskCategory] = useState<AgentTaskCategory>("diagnostics");
@@ -362,6 +365,8 @@ export function AgentPage() {
   const [cloudSessionPreview, setCloudSessionPreview] = useState<AgentCloudSessionPreview | null>(
     null,
   );
+  const [runStartedAtMs, setRunStartedAtMs] = useState<number | null>(null);
+  const [runElapsedSeconds, setRunElapsedSeconds] = useState(0);
   const status = useQuery({
     queryKey: ["agent-status"],
     queryFn: getAgentStatus,
@@ -409,11 +414,17 @@ export function AgentPage() {
   };
   const runMutation = useMutation({
     mutationFn: runAgentPrompt,
+    onMutate: () => {
+      setRunStartedAtMs(Date.now());
+      setRunElapsedSeconds(0);
+    },
     onSuccess: acceptRunResult,
     onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["agent-status"] });
       queryClient.invalidateQueries({ queryKey: ["agent-cloud-session"] });
       queryClient.invalidateQueries({ queryKey: ["audit-log"] });
     },
+    onSettled: () => setRunStartedAtMs(null),
   });
   const clarificationMutation = useMutation({
     mutationFn: continueAgentClarification,
@@ -543,6 +554,19 @@ export function AgentPage() {
     },
   });
 
+  const refetchAgentStatus = status.refetch;
+  useEffect(() => {
+    if (!runMutation.isPending || runStartedAtMs === null) return;
+
+    const refreshRunStatus = () => {
+      setRunElapsedSeconds(Math.max(0, Math.floor((Date.now() - runStartedAtMs) / 1000)));
+      void refetchAgentStatus();
+    };
+    refreshRunStatus();
+    const refreshInterval = window.setInterval(refreshRunStatus, 1_000);
+    return () => window.clearInterval(refreshInterval);
+  }, [refetchAgentStatus, runMutation.isPending, runStartedAtMs]);
+
   if (status.isPending || cloudSession.isPending) {
     return <div className="state-message">正在读取 HAL100 Agent 状态…</div>;
   }
@@ -581,19 +605,23 @@ export function AgentPage() {
     runGraphNodeMutation.isPending ||
     runGraphCompensationMutation.isPending ||
     cancelGraphMutation.isPending;
-  const kernelState =
+  const agentRunPending =
     runMutation.isPending ||
     runGraphNodeMutation.isPending ||
-    runGraphCompensationMutation.isPending
-      ? "running"
-      : data.kernelState;
+    runGraphCompensationMutation.isPending;
+  const kernelState =
+    agentRunPending && data.kernelState === "stopped" ? "starting" : data.kernelState;
   const modelState =
-    (runMutation.isPending ||
-      runGraphNodeMutation.isPending ||
-      runGraphCompensationMutation.isPending) &&
-    providerMode === "local"
-      ? "running"
+    agentRunPending && providerMode === "local" && data.modelRuntimeState === "stopped"
+      ? "starting"
       : data.modelRuntimeState;
+  const runProgress = getAgentRunProgress({
+    activeRunId: data.activeRunId,
+    elapsedSeconds: runElapsedSeconds,
+    kernelState,
+    modelRuntimeState: modelState,
+    providerMode,
+  });
   const canRun =
     runtime &&
     (providerMode === "local"
@@ -698,6 +726,11 @@ export function AgentPage() {
     setCloudRunPreview(null);
   };
 
+  const chooseTask = (task: AgentTaskTemplate) => {
+    updatePrompt(task.prompt);
+    window.requestAnimationFrame(() => promptRef.current?.focus());
+  };
+
   const submitPrompt = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmed = prompt.trim();
@@ -721,43 +754,30 @@ export function AgentPage() {
     <div className="page-content agent-page">
       <PageHeader
         action={
-          <button
-            className="secondary-button refresh-button"
-            disabled={
-              status.isFetching ||
-              cloudSession.isFetching ||
-              backends.isFetching ||
-              runMutation.isPending
-            }
-            onClick={() => {
-              void status.refetch();
-              void cloudSession.refetch();
-              void backends.refetch();
-            }}
-            type="button"
-          >
-            <RefreshCw
-              className={
-                status.isFetching || cloudSession.isFetching || backends.isFetching
-                  ? "spinning"
-                  : ""
-              }
-              size={14}
-            />
-            {status.isFetching || cloudSession.isFetching || backends.isFetching
-              ? "刷新中…"
-              : "刷新状态"}
-          </button>
+          <div className="agent-header-actions">
+            <span className={`agent-ready-badge ${agentReady ? "ready" : "attention"}`}>
+              <i aria-hidden="true" />
+              {agentStatusLabel}
+            </span>
+            <button
+              className="secondary-button"
+              disabled={diagnostics.isFetching || runMutation.isPending || actionMutation.isPending}
+              onClick={() => void diagnostics.refetch()}
+              type="button"
+            >
+              <RefreshCw className={diagnostics.isFetching ? "spinning" : ""} size={13} />
+              {diagnostics.isFetching ? "检查中…" : "检查环境"}
+            </button>
+          </div>
         }
-        description="使用本地 Qwen 完成配置任务；云端仅按次或限于当前内存会话，且不保存聊天历史。"
-        eyebrow="本机受控助手"
+        description="描述目标，Agent 会先分析并给出可检查的结果或操作计划。"
         title="HAL100 Agent"
       />
 
       <details className="agent-boundary inline-disclosure">
         <summary>
           <ShieldCheck size={16} />
-          <strong>受控执行：Pi 负责推理，Rust 负责授权</strong>
+          <strong>所有系统更改都由你确认</strong>
           <span className="disclosure-label">
             <span className="details-closed-copy">了解边界</span>
             <span className="details-open-copy">收起边界</span>
@@ -802,41 +822,9 @@ export function AgentPage() {
         </section>
       )}
 
-      <section className={`agent-status-summary ${agentReady ? "ready" : "attention"}`}>
-        <span className="agent-status-icon">
-          {agentReady ? <ShieldCheck size={19} /> : <AlertTriangle size={19} />}
-        </span>
-        <div>
-          <span
-            className={`agent-status-kicker ${runMutation.isPending ? "warning" : agentReady ? "ready" : "neutral"}`}
-          >
-            {agentStatusLabel}
-          </span>
-          <strong>
-            {agentReady
-              ? "本地 Agent 已准备好"
-              : data.modelPrepared
-                ? "Agent 正在等待运行时"
-                : "需要先准备本地模型"}
-          </strong>
-          <p>
-            {agentReady ? "可直接描述任务；系统变更仍需单独确认。" : "HAL100 会引导你完成缺失项。"}
-          </p>
-        </div>
-        <button
-          className="secondary-button"
-          disabled={diagnostics.isFetching || runMutation.isPending || actionMutation.isPending}
-          onClick={() => void diagnostics.refetch()}
-          type="button"
-        >
-          <RefreshCw className={diagnostics.isFetching ? "spinning" : ""} size={13} />
-          {diagnostics.isFetching ? "诊断中…" : "环境诊断"}
-        </button>
-      </section>
-
       <details className="agent-technical-details inline-disclosure">
         <summary>
-          <span>Agent 技术详情</span>
+          <span>运行与安全详情</span>
           <ChevronRight size={14} />
         </summary>
         <dl>
@@ -894,6 +882,22 @@ export function AgentPage() {
             </>
           )}
         </dl>
+        <div className="agent-runtime-actions">
+          <button
+            className="secondary-button"
+            disabled={
+              !runtime ||
+              modelState !== "running" ||
+              runMutation.isPending ||
+              stopMutation.isPending
+            }
+            onClick={() => stopMutation.mutate()}
+            type="button"
+          >
+            <Square size={11} />
+            {stopMutation.isPending ? "正在释放…" : "释放 Agent 模型"}
+          </button>
+        </div>
       </details>
 
       {(diagnostics.data || diagnostics.isFetching || diagnostics.isError) && (
@@ -918,20 +922,22 @@ export function AgentPage() {
         </section>
       )}
 
-      <section
+      <details
         className={`agent-task-graph${graphRequiresAttention ? " is-active" : ""}`}
-        aria-label="复合配置任务"
+        aria-label="多步骤任务"
+        open={graphRequiresAttention || undefined}
       >
-        <div className="agent-section-heading">
+        <summary className="agent-section-heading">
           <div>
-            <p className="eyebrow">复合配置任务</p>
-            <h2>逐项准备模型环境与外部 Agent</h2>
+            <p className="eyebrow">多步骤任务</p>
+            <h2>分步准备模型与常用软件</h2>
           </div>
           <span className="agent-composer-context">
             <ShieldCheck size={12} />
-            Rust 固定任务图
+            逐项确认
+            <ChevronRight size={12} />
           </span>
-        </div>
+        </summary>
         <p className="agent-task-graph-note">
           每次只运行一个节点；安装、启动和配置仍分别生成一次性计划，并逐项弹出原生确认。
         </p>
@@ -956,8 +962,7 @@ export function AgentPage() {
             </ol>
             {graphAwaitingConfirmation && (
               <p className="inline-notice">
-                当前节点已停在确认前。请检查下方一次性计划；确认执行并通过 Rust
-                复验后，后继节点才会解锁。
+                当前步骤已停在确认前。请检查下方一次性计划；确认执行并通过系统复验后，下一步才会解锁。
               </p>
             )}
             {graphCompensationAwaitingConfirmation && (
@@ -1159,156 +1164,27 @@ export function AgentPage() {
                 type="button"
               >
                 <Play size={12} />
-                {startGraphMutation.isPending ? "正在创建…" : "创建受控任务图"}
+                {startGraphMutation.isPending ? "正在准备…" : "开始分步准备"}
               </button>
             </div>
           </>
         )}
-      </section>
+      </details>
 
       <section className="agent-workspace">
         <form className="agent-composer" onSubmit={submitPrompt}>
           <div className="agent-section-heading">
             <div>
-              <p className="eyebrow">单任务会话</p>
-              <h2>诊断与生成受控计划</h2>
+              <p className="eyebrow">新任务</p>
+              <h2>你想让 Agent 完成什么？</h2>
             </div>
             <span className="agent-composer-context">
               <ShieldCheck size={12} />
               不保留历史
             </span>
           </div>
-          <fieldset className="agent-provider-picker">
-            <legend>任务处理位置</legend>
-            <div className="agent-provider-options">
-              <label className={providerMode === "local" ? "selected" : ""}>
-                <input
-                  checked={providerMode === "local"}
-                  disabled={agentTransitionPending || sessionActive}
-                  name="agent-provider"
-                  onChange={() => {
-                    setProviderMode("local");
-                    setCloudRunPreview(null);
-                    setCloudSessionPreview(null);
-                  }}
-                  type="radio"
-                />
-                <strong>本地</strong>
-              </label>
-              <label className={providerMode !== "local" ? "selected" : ""}>
-                <input
-                  checked={providerMode !== "local"}
-                  disabled={agentTransitionPending || sessionActive}
-                  name="agent-provider"
-                  onChange={() => {
-                    setProviderMode("cloud-single");
-                    setCloudRunPreview(null);
-                    setCloudSessionPreview(null);
-                  }}
-                  type="radio"
-                />
-                <strong>云端</strong>
-              </label>
-            </div>
-            {providerMode !== "local" && (
-              <fieldset className="agent-cloud-scope-picker">
-                <legend>云端使用范围</legend>
-                <label className={providerMode === "cloud-single" ? "selected" : ""}>
-                  <input
-                    checked={providerMode === "cloud-single"}
-                    disabled={agentTransitionPending || sessionActive}
-                    name="agent-cloud-scope"
-                    onChange={() => {
-                      setProviderMode("cloud-single");
-                      setCloudRunPreview(null);
-                      setCloudSessionPreview(null);
-                    }}
-                    type="radio"
-                  />
-                  <strong>仅本次任务</strong>
-                </label>
-                <label className={providerMode === "cloud-session" ? "selected" : ""}>
-                  <input
-                    checked={providerMode === "cloud-session"}
-                    disabled={agentTransitionPending || sessionActive}
-                    name="agent-cloud-scope"
-                    onChange={() => {
-                      setProviderMode("cloud-session");
-                      setCloudRunPreview(null);
-                      setCloudSessionPreview(null);
-                    }}
-                    type="radio"
-                  />
-                  <strong>当前会话</strong>
-                </label>
-              </fieldset>
-            )}
-            <p className="agent-provider-note">
-              <ShieldCheck size={13} />
-              {providerMode === "local"
-                ? "默认在本机处理，任务数据不会离开这台 Mac。"
-                : providerMode === "cloud-single"
-                  ? "仅发送当前任务；发送范围会先预览，并由原生窗口确认。"
-                  : "授权仅存在于当前内存会话，退出或重启后自动恢复本地模式。"}
-            </p>
-          </fieldset>
-          {providerMode !== "local" && !sessionActive && (
-            <section className="agent-cloud-target" aria-label="云端 Agent 目标">
-              {cloudBackends.length > 0 ? (
-                <>
-                  <label htmlFor="agent-cloud-backend">已配置后端</label>
-                  <select
-                    disabled={agentTransitionPending}
-                    id="agent-cloud-backend"
-                    onChange={(event) => {
-                      setCloudBackendId(event.target.value);
-                      setCloudRunPreview(null);
-                      setCloudSessionPreview(null);
-                    }}
-                    value={effectiveCloudBackendId}
-                  >
-                    {cloudBackends.map((backend) => (
-                      <option key={backend.id} value={backend.id}>
-                        {backend.displayName} ·{" "}
-                        {backend.kind === "externalAnthropic" ? "Anthropic" : "OpenAI"}
-                      </option>
-                    ))}
-                  </select>
-                  <label htmlFor="agent-cloud-model">模型 ID</label>
-                  <input
-                    autoComplete="off"
-                    disabled={agentTransitionPending}
-                    id="agent-cloud-model"
-                    maxLength={256}
-                    onChange={(event) => {
-                      setCloudModel(event.target.value);
-                      setCloudRunPreview(null);
-                      setCloudSessionPreview(null);
-                    }}
-                    placeholder={
-                      selectedCloudBackend?.kind === "externalAnthropic"
-                        ? "例如 claude-sonnet-4-6"
-                        : "例如 gpt-4.1-mini"
-                    }
-                    value={cloudModel}
-                  />
-                  <small>
-                    {selectedCloudBackend?.apiRoot} · API Key 只由 Gateway 从 macOS Keychain 读取
-                  </small>
-                </>
-              ) : (
-                <div className="agent-cloud-empty">
-                  <span>暂无可用且已配置凭据的 OpenAI/Anthropic 兼容后端。</span>
-                  <NavLink to="/workspace/services">前往推理服务配置</NavLink>
-                </div>
-              )}
-            </section>
-          )}
           <div className="agent-task-field">
-            <div className="agent-task-label">
-              <label htmlFor="agent-prompt">任务</label>
-              <span>{prompt.length} / 4096</span>
-            </div>
+            <label htmlFor="agent-prompt">用自然语言描述目标</label>
             <textarea
               disabled={
                 (providerMode === "local" && !data.modelPrepared) ||
@@ -1318,13 +1194,213 @@ export function AgentPage() {
               id="agent-prompt"
               maxLength={4096}
               onChange={(event) => updatePrompt(event.target.value)}
+              placeholder="例如：检查这台 Mac 的本地 AI 环境，并告诉我最需要先处理的问题"
+              ref={promptRef}
               value={prompt}
             />
+            <div className="agent-task-field-meta">
+              <span>
+                <ShieldCheck size={12} />
+                {providerMode === "local"
+                  ? "默认在本机处理，内容不会离开这台 Mac"
+                  : "发送到云端前会先展示范围并要求确认"}
+              </span>
+              <span>{prompt.length} / 4096</span>
+            </div>
           </div>
+          <div className="agent-composer-actions">
+            <span className="agent-execution-note">
+              <ShieldCheck size={13} />
+              系统变更仍需原生确认
+            </span>
+            <div>
+              {runMutation.isPending && (
+                <button
+                  className="secondary-button"
+                  disabled={!runtime || cancelMutation.isPending || data.cancellationRequested}
+                  onClick={() => cancelMutation.mutate()}
+                  type="button"
+                >
+                  <Square size={11} />
+                  {cancelMutation.isPending || data.cancellationRequested
+                    ? "正在取消…"
+                    : "取消当前任务"}
+                </button>
+              )}
+              <button
+                className="primary-button"
+                disabled={
+                  !canRun ||
+                  (!prompt.trim() && !(providerMode === "cloud-session" && !sessionActive))
+                }
+                type="submit"
+              >
+                <Play size={13} />
+                {runMutation.isPending
+                  ? "正在执行受控任务…"
+                  : previewRunMutation.isPending || previewSessionMutation.isPending
+                    ? "正在生成预览…"
+                    : providerMode === "cloud-single"
+                      ? "预览单次云端发送"
+                      : providerMode === "cloud-session"
+                        ? sessionActive
+                          ? "运行云端会话任务"
+                          : "预览会话授权"
+                        : "开始分析"}
+              </button>
+            </div>
+          </div>
+          <details className="agent-provider-disclosure">
+            <summary>
+              <div>
+                <strong>处理位置</strong>
+                <span>
+                  {providerMode === "local"
+                    ? "内容留在本机"
+                    : providerMode === "cloud-single"
+                      ? "仅发送当前任务"
+                      : "当前会话使用云端"}
+                </span>
+              </div>
+              <span>
+                {providerMode === "local" ? "本地" : "云端"}
+                <ChevronRight size={13} />
+              </span>
+            </summary>
+            <div className="agent-provider-disclosure-body">
+              <fieldset className="agent-provider-picker">
+                <legend>选择处理位置</legend>
+                <div className="agent-provider-options">
+                  <label className={providerMode === "local" ? "selected" : ""}>
+                    <input
+                      checked={providerMode === "local"}
+                      disabled={agentTransitionPending || sessionActive}
+                      name="agent-provider"
+                      onChange={() => {
+                        setProviderMode("local");
+                        setCloudRunPreview(null);
+                        setCloudSessionPreview(null);
+                      }}
+                      type="radio"
+                    />
+                    <strong>本地</strong>
+                  </label>
+                  <label className={providerMode !== "local" ? "selected" : ""}>
+                    <input
+                      checked={providerMode !== "local"}
+                      disabled={agentTransitionPending || sessionActive}
+                      name="agent-provider"
+                      onChange={() => {
+                        setProviderMode("cloud-single");
+                        setCloudRunPreview(null);
+                        setCloudSessionPreview(null);
+                      }}
+                      type="radio"
+                    />
+                    <strong>云端</strong>
+                  </label>
+                </div>
+                {providerMode !== "local" && (
+                  <fieldset className="agent-cloud-scope-picker">
+                    <legend>云端使用范围</legend>
+                    <label className={providerMode === "cloud-single" ? "selected" : ""}>
+                      <input
+                        checked={providerMode === "cloud-single"}
+                        disabled={agentTransitionPending || sessionActive}
+                        name="agent-cloud-scope"
+                        onChange={() => {
+                          setProviderMode("cloud-single");
+                          setCloudRunPreview(null);
+                          setCloudSessionPreview(null);
+                        }}
+                        type="radio"
+                      />
+                      <strong>仅本次任务</strong>
+                    </label>
+                    <label className={providerMode === "cloud-session" ? "selected" : ""}>
+                      <input
+                        checked={providerMode === "cloud-session"}
+                        disabled={agentTransitionPending || sessionActive}
+                        name="agent-cloud-scope"
+                        onChange={() => {
+                          setProviderMode("cloud-session");
+                          setCloudRunPreview(null);
+                          setCloudSessionPreview(null);
+                        }}
+                        type="radio"
+                      />
+                      <strong>当前会话</strong>
+                    </label>
+                  </fieldset>
+                )}
+                <p className="agent-provider-note">
+                  <ShieldCheck size={13} />
+                  {providerMode === "local"
+                    ? "默认在本机处理，任务数据不会离开这台 Mac。"
+                    : providerMode === "cloud-single"
+                      ? "仅发送当前任务；发送范围会先预览，并由原生窗口确认。"
+                      : "授权仅存在于当前内存会话，退出或重启后自动恢复本地模式。"}
+                </p>
+              </fieldset>
+              {providerMode !== "local" && !sessionActive && (
+                <section className="agent-cloud-target" aria-label="云端 Agent 目标">
+                  {cloudBackends.length > 0 ? (
+                    <>
+                      <label htmlFor="agent-cloud-backend">已连接服务</label>
+                      <select
+                        disabled={agentTransitionPending}
+                        id="agent-cloud-backend"
+                        onChange={(event) => {
+                          setCloudBackendId(event.target.value);
+                          setCloudRunPreview(null);
+                          setCloudSessionPreview(null);
+                        }}
+                        value={effectiveCloudBackendId}
+                      >
+                        {cloudBackends.map((backend) => (
+                          <option key={backend.id} value={backend.id}>
+                            {backend.displayName} ·{" "}
+                            {backend.kind === "externalAnthropic" ? "Anthropic" : "OpenAI"}
+                          </option>
+                        ))}
+                      </select>
+                      <label htmlFor="agent-cloud-model">模型 ID</label>
+                      <input
+                        autoComplete="off"
+                        disabled={agentTransitionPending}
+                        id="agent-cloud-model"
+                        maxLength={256}
+                        onChange={(event) => {
+                          setCloudModel(event.target.value);
+                          setCloudRunPreview(null);
+                          setCloudSessionPreview(null);
+                        }}
+                        placeholder={
+                          selectedCloudBackend?.kind === "externalAnthropic"
+                            ? "例如 claude-sonnet-4-6"
+                            : "例如 gpt-4.1-mini"
+                        }
+                        value={cloudModel}
+                      />
+                      <small>
+                        {selectedCloudBackend?.apiRoot} · API Key 只由 Gateway 从 macOS Keychain
+                        读取
+                      </small>
+                    </>
+                  ) : (
+                    <div className="agent-cloud-empty">
+                      <span>暂无可用且已配置凭据的 OpenAI/Anthropic 兼容后端。</span>
+                      <NavLink to="/workspace/services">前往连接服务</NavLink>
+                    </div>
+                  )}
+                </section>
+              )}
+            </div>
+          </details>
           <section className="agent-templates" aria-label="快捷任务模板">
             <div className="agent-templates-heading">
-              <strong>推荐任务</strong>
-              <span>根据当前状态推荐，选择后仍可编辑</span>
+              <strong>常用任务</strong>
+              <span>选择后会填入上方，确认内容再开始</span>
             </div>
             <div className="agent-prompt-shortcuts agent-context-recommendations">
               {recommendedTasks.map((task) => (
@@ -1332,7 +1408,7 @@ export function AgentPage() {
                   className="agent-prompt-chip"
                   disabled={agentTransitionPending}
                   key={task.id}
-                  onClick={() => updatePrompt(task.prompt)}
+                  onClick={() => chooseTask(task)}
                   type="button"
                 >
                   <span>{task.label}</span>
@@ -1342,7 +1418,7 @@ export function AgentPage() {
             </div>
             <details className="agent-task-library">
               <summary>
-                打开任务库
+                浏览全部任务
                 <span>{agentTaskLibrary.length} 项能力</span>
                 <ChevronRight size={12} />
               </summary>
@@ -1366,7 +1442,7 @@ export function AgentPage() {
                     className="agent-prompt-chip"
                     disabled={agentTransitionPending}
                     key={task.id}
-                    onClick={() => updatePrompt(task.prompt)}
+                    onClick={() => chooseTask(task)}
                     type="button"
                   >
                     <span>{task.label}</span>
@@ -1378,7 +1454,7 @@ export function AgentPage() {
           </section>
           {!runtime && (
             <p className="inline-notice">
-              浏览器预览不会运行 Agent、启动下载或执行任何写操作；请在 Tauri 开发版中运行。
+              浏览器预览不会运行 Agent、启动下载或执行任何写操作；请在桌面开发版中运行。
             </p>
           )}
           {data.lastErrorCode && <p className="inline-error">上次错误代码：{data.lastErrorCode}</p>}
@@ -1485,62 +1561,6 @@ export function AgentPage() {
               </button>
             </section>
           )}
-          <div className="agent-composer-actions">
-            <span className="agent-execution-note">
-              <ShieldCheck size={13} />
-              系统变更仍需原生确认
-            </span>
-            <div>
-              {runMutation.isPending && (
-                <button
-                  className="secondary-button"
-                  disabled={!runtime || cancelMutation.isPending || data.cancellationRequested}
-                  onClick={() => cancelMutation.mutate()}
-                  type="button"
-                >
-                  <Square size={11} />
-                  {cancelMutation.isPending || data.cancellationRequested
-                    ? "正在取消…"
-                    : "取消当前任务"}
-                </button>
-              )}
-              <button
-                className="secondary-button"
-                disabled={
-                  !runtime ||
-                  modelState !== "running" ||
-                  runMutation.isPending ||
-                  stopMutation.isPending
-                }
-                onClick={() => stopMutation.mutate()}
-                type="button"
-              >
-                <Square size={11} />
-                {stopMutation.isPending ? "正在释放…" : "释放模型"}
-              </button>
-              <button
-                className="primary-button"
-                disabled={
-                  !canRun ||
-                  (!prompt.trim() && !(providerMode === "cloud-session" && !sessionActive))
-                }
-                type="submit"
-              >
-                <Play size={13} />
-                {runMutation.isPending
-                  ? "正在执行受控任务…"
-                  : previewRunMutation.isPending || previewSessionMutation.isPending
-                    ? "正在生成预览…"
-                    : providerMode === "cloud-single"
-                      ? "预览单次云端发送"
-                      : providerMode === "cloud-session"
-                        ? sessionActive
-                          ? "运行云端会话任务"
-                          : "预览会话授权"
-                        : "运行本地任务"}
-              </button>
-            </div>
-          </div>
         </form>
 
         <article
@@ -1550,28 +1570,34 @@ export function AgentPage() {
           <div className="agent-section-heading">
             <div>
               <p className="eyebrow">结果</p>
-              <h2>回答与计划</h2>
+              <h2>结果与待确认操作</h2>
             </div>
             {elapsedSeconds && <span>{elapsedSeconds} 秒</span>}
           </div>
+          <ol className="agent-result-flow" aria-label="任务处理流程">
+            <li className={runMutation.isPending || result ? "active" : ""}>
+              <span>1</span>
+              分析目标
+            </li>
+            <li className={result ? "active" : ""}>
+              <span>2</span>
+              展示结果或计划
+            </li>
+            <li className={result?.actionPlans.length ? "active" : ""}>
+              <span>3</span>
+              确认后执行
+            </li>
+          </ol>
           {runMutation.isPending && (
             <div className="agent-running-stage" role="status">
               <RefreshCw className="spinning" size={14} />
-              <span>正在处理当前任务，可随时取消</span>
+              <span>正在处理当前任务 · {runElapsedSeconds} 秒，可随时取消</span>
             </div>
           )}
           {runMutation.isPending ? (
-            <div className="agent-running-detail">
-              <strong>
-                {providerMode !== "local"
-                  ? "正在通过本机 Gateway 请求云端模型"
-                  : "正在启动独立模型运行时"}
-              </strong>
-              <span>
-                {providerMode !== "local"
-                  ? "失败时会直接报告错误，不会静默改用本地模型。"
-                  : "首次运行包含完整模型校验与冷启动，完成后将自动进入空闲倒计时。"}
-              </span>
+            <div className={`agent-running-detail${runProgress.slow ? " is-slow" : ""}`}>
+              <strong>{runProgress.title}</strong>
+              <span>{runProgress.description}</span>
             </div>
           ) : result ? (
             <div className="agent-completed-result">
@@ -1741,8 +1767,11 @@ export function AgentPage() {
             </div>
           ) : (
             <div className="agent-empty-result">
-              <strong>等待一项 HAL100 管理任务</strong>
-              <span>选择推荐任务、打开任务库，或直接输入目标。</span>
+              <span className="agent-empty-icon">
+                <Bot size={20} />
+              </span>
+              <strong>等待你的任务</strong>
+              <span>提交后，分析结果和需要确认的操作会按顺序显示在这里。</span>
             </div>
           )}
         </article>

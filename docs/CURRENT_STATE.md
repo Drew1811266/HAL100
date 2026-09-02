@@ -1,14 +1,18 @@
 # HAL100 当前开发状态
 
-- 状态日期：2026-09-01
-- 当前版本：1.0.5
+- 状态日期：2026-09-02
+- 当前版本：1.0.6
 - 当前阶段：开发初期，连续内部开发与测试
 - 已完成迭代：0—59
 - 当前迭代：60，多引擎确定性推荐、七类支持证据与三平台验收收口进行中；三个历史正式外部格已全部迁入真实账本，其余25个支持格仍待目标平台验收
+- 用户体验阶段：UX-1—UX-5已完成；五入口、目标导向首次使用、四页签模型工作区与响应式验收已落地
 
 本文是 HAL100 易变实现事实的唯一现行入口。产品愿景、安全原则和架构方向分别由产品、
 安全与架构文档维护；ADR、旧迭代章节和基准记录保留其发生时的历史事实，不随当前版本追溯
 改写。
+
+UX-1—UX-5现行界面重构与分阶段门禁见
+[用户目标导向界面重构验收记录](benchmarks/2026-09-02-ux-five-phase-refresh.md)。
 
 迭代50实现记录见[外部推理引擎运行方案受控闭环](ITERATION_50_CHECKPOINT.md)。本轮已完成
 Gateway完整活动路由、外部方案身份、实时复检、一次性切换、回滚、桌面重验和Pi受控计划链路；
@@ -75,8 +79,10 @@ TensorRT-LLM 记录在[TensorRT-LLM检查点](ITERATION_59_CHECKPOINT.md)。
 
 | 项目 | 当前事实 |
 | --- | --- |
-| 一级入口 | 首页、模型与运行、软件接入、Agent、活动、运行方案；设置独立位于侧栏底部 |
-| 界面骨架 | 页面标题先于同域子导航；业务内容最大宽度1120 px，Agent最大宽度1140 px；低于1100 px时Agent工作区转为单列，880 px最小窗口无横向溢出 |
+| 一级入口 | 首页、模型与运行、软件接入、Agent、活动；设置独立位于侧栏底部 |
+| 模型工作区 | 模型库、本地运行、连接服务、快捷切换四个稳定页签；`/profiles`兼容重定向到`/workspace/profiles` |
+| 首次使用 | 首页直接提供已有本机服务、本地模型、云服务三条目标路径；只有真实保存/探测/激活服务或真实准备模型后才完成，不再由下载源和登录启动偏好阻塞 |
+| 界面骨架 | 页面标题先于同域子导航；业务内容最大宽度1120 px，Agent最大宽度1140 px；低于1100 px时Agent工作区转为单列，880 px最小窗口无横向溢出；880×700下任务输入与主执行按钮同屏可见 |
 | 桌面栈 | Tauri 2、React 19、TypeScript 6、Vite 8 |
 | 核心栈 | Rust 1.97.1、Tokio、Axum、rusqlite |
 | 本地 Gateway | `127.0.0.1:10100`；Models、Chat Completions、Responses、Anthropic Messages |
@@ -92,6 +98,11 @@ TensorRT-LLM 记录在[TensorRT-LLM检查点](ITERATION_59_CHECKPOINT.md)。
 | 用量口径 | 只累计后端返回的精确 Usage；缺失时标记 `unavailable`，不估算 |
 | 用户模型生命周期 | 由用户显式启动、切换和停止；当前未启用 15 分钟自动卸载 |
 | 浏览器模式 | 只读预览；不执行真实下载、安装、配置、删除或 Agent 任务 |
+
+UX-1—UX-5最终质量门禁已通过：`pnpm check`覆盖文档一致性、Biome、TypeScript、Desktop 29项与
+Agent Kernel 34项测试、Clippy `-D warnings`和完整Rust Workspace测试；`pnpm build`覆盖Desktop
+生产前端、Agent Kernel与Rust Workspace。真实Chromium按1280×800和880×700覆盖关键任务，
+控制台0 error、0 warning，880 px无横向溢出。
 
 真实引擎验收入口现在统一调用三平台原生 `NativeSystemProbe`，拒绝用合成 CPU/GPU/内存快照
 生成平台运行时证据；OpenVINO 还要求显式选择 `cpu`、`intel_gpu` 或 `intel_npu` 支持格并由探针确认。真实

@@ -20,15 +20,18 @@ HAL100 不是通用聊天客户端，也不是另一个 Coding Agent。它是运
 内置 HAL100 Agent 使用本地小模型与 [Pi Agent Core](https://github.com/earendil-works/pi) 帮助用户诊断、部署、配置和调试 HAL100 环境。Pi Agent Core 只负责任务与工具调用编排；模型请求统一经过 Gateway，Rust Core 始终是唯一授权与执行权威。
 
 > [!WARNING]
-> HAL100 当前版本为 `1.0.5` 开发初期版本，主要用于Apple Silicon Mac内部开发测试。当前开发范围明确不包含签名、公证、安装包、自动更新、正式升级或正式发布流程；这些事项也不作为当前缺陷或默认下一阶段任务。项目不支持Intel Mac；Windows 10/11与Linux已建立源码编译和宿主探针基线，但完整桌面与引擎纵向尚未逐格验收，不能视为正式平台支持。
+> HAL100 当前版本为 `1.0.6` 开发初期版本，主要用于Apple Silicon Mac内部开发测试。当前开发范围明确不包含签名、公证、安装包、自动更新、正式升级或正式发布流程；这些事项也不作为当前缺陷或默认下一阶段任务。项目不支持Intel Mac；Windows 10/11与Linux已建立源码编译和宿主探针基线，但完整桌面与引擎纵向尚未逐格验收，不能视为正式平台支持。
 
 ## 当前开发版
 
-`1.0.5` 已完成迭代0—59，当前推进迭代60多引擎验收收口。运行方案已升级为schema v15/spec v3，绑定精确适配器、后端配置修订、origin指纹、协议能力指纹、类型化模型证据及“平台 × 架构 × 加速器 × 部署”支持格；切换由持久化journal保护，启动时只补偿到旧安全状态。外部引擎检查使用Rust验证目标和Keychain认证，禁代理/重定向并支持多个实例。Windows/Linux宿主探针与目标编译基线已建立；vLLM固定版本/健康/模型检查及Chat、SSE、Usage、工具资格探针已接入，但真实Linux/CUDA验收前仍保持`connected`。MLX-LM官方回环服务已在Apple M1/Metal上完成真实模型资格与运行方案激活闭环，支持单元为`verifiedExternal`。MLC LLM官方OpenAI回环适配器已接入，正式资格使用Rust有界的本地部署内容指纹而不依赖官方空`system_fingerprint`；固定Qwen3.5-2B候选已通过单次目录、工具、普通流式、Usage和Gateway形态，但官方0.20调度器在工具请求后的后续请求中可复现rollback崩溃，0.26 nightly又存在编译/运行包漂移，因此没有稳定性证据并继续保持`connected`。OpenVINO Model Server（OVMS）已接入KServe元数据/健康、OpenAI模型目录与共同协议资格适配器，并拆分为CPU、Intel GPU、Intel NPU三个单设备变体；平台真机和Intel设备插件证据完成前保持`connected`。SGLang官方OpenAI Server适配器已接入版本、健康、模型目录和共同协议资格检查；Linux/CUDA真机证据完成前保持`connected`。LMDeploy官方`api_server`适配器已接入健康、模型目录和共同协议资格检查；由于官方服务没有稳定机器可读版本端点，Linux/Windows CUDA真机身份证据完成前保持`connected`。TensorRT-LLM官方`trtllm-serve`适配器已接入版本、健康、模型目录和共同协议资格检查；Linux NVIDIA真机、GPU/后端/模型形态与运行方案证据完成前保持`connected`。迭代60能力目录现额外展示官方合同、协议资格、平台真机、引擎身份、模型部署身份、方案闭环和稳定性七类证据进度，版本化支持矩阵位于[`contracts/inference-engines/v1-support-matrix.json`](contracts/inference-engines/v1-support-matrix.json)。Agent RPC已升级到v13，包含20类任务和20个固定工具；运行方案启用也进入Rust一次性计划、原生确认和现实复验链路。复合任务图、16K/32K设备档、有界澄清、脱敏检查点和用量统计保持可运行；64K因缺少最低设备实测继续关闭。易变实现事实以[当前开发状态](docs/CURRENT_STATE.md)为准。
+`1.0.6` 已完成迭代0—59，当前推进迭代60多引擎验收收口。运行方案已升级为schema v15/spec v3，绑定精确适配器、后端配置修订、origin指纹、协议能力指纹、类型化模型证据及“平台 × 架构 × 加速器 × 部署”支持格；切换由持久化journal保护，启动时只补偿到旧安全状态。外部引擎检查使用Rust验证目标和Keychain认证，禁代理/重定向并支持多个实例。Windows/Linux宿主探针与目标编译基线已建立；vLLM固定版本/健康/模型检查及Chat、SSE、Usage、工具资格探针已接入，但真实Linux/CUDA验收前仍保持`connected`。MLX-LM官方回环服务已在Apple M1/Metal上完成真实模型资格与运行方案激活闭环，支持单元为`verifiedExternal`。MLC LLM官方OpenAI回环适配器已接入，正式资格使用Rust有界的本地部署内容指纹而不依赖官方空`system_fingerprint`；固定Qwen3.5-2B候选已通过单次目录、工具、普通流式、Usage和Gateway形态，但官方0.20调度器在工具请求后的后续请求中可复现rollback崩溃，0.26 nightly又存在编译/运行包漂移，因此没有稳定性证据并继续保持`connected`。OpenVINO Model Server（OVMS）已接入KServe元数据/健康、OpenAI模型目录与共同协议资格适配器，并拆分为CPU、Intel GPU、Intel NPU三个单设备变体；平台真机和Intel设备插件证据完成前保持`connected`。SGLang官方OpenAI Server适配器已接入版本、健康、模型目录和共同协议资格检查；Linux/CUDA真机证据完成前保持`connected`。LMDeploy官方`api_server`适配器已接入健康、模型目录和共同协议资格检查；由于官方服务没有稳定机器可读版本端点，Linux/Windows CUDA真机身份证据完成前保持`connected`。TensorRT-LLM官方`trtllm-serve`适配器已接入版本、健康、模型目录和共同协议资格检查；Linux NVIDIA真机、GPU/后端/模型形态与运行方案证据完成前保持`connected`。迭代60能力目录现额外展示官方合同、协议资格、平台真机、引擎身份、模型部署身份、方案闭环和稳定性七类证据进度，版本化支持矩阵位于[`contracts/inference-engines/v1-support-matrix.json`](contracts/inference-engines/v1-support-matrix.json)。Agent RPC已升级到v13，包含20类任务和20个固定工具；运行方案启用也进入Rust一次性计划、原生确认和现实复验链路。复合任务图、16K/32K设备档、有界澄清、脱敏检查点和用量统计保持可运行；64K因缺少最低设备实测继续关闭。易变实现事实以[当前开发状态](docs/CURRENT_STATE.md)为准。
 
 迭代51—60按[推理引擎正式支持计划](docs/INFERENCE_ENGINE_SUPPORT_PLAN.md)持续实施；能力目录现在
 由Rust给出基于设备与正式支持状态的可解释排序，预留或仅连通
 引擎不会因为代码接入或进入路线图就提前显示为正式可用。
+
+1.0.6 同步纳入 UX-1—UX-5 用户目标导向界面重构，包括五入口信息架构、按需技术详情、受控
+Agent 任务流程、响应式布局，以及用量页的 Token 折线趋势和年度请求活动方格。
 
 迭代60当前使用v2版本化验收证据账本：[`contracts/inference-engines/v2-acceptance-evidence.json`](contracts/inference-engines/v2-acceptance-evidence.json)，其结构合同位于[`v2-acceptance-evidence.schema.json`](contracts/inference-engines/v2-acceptance-evidence.schema.json)。真实平台验收记录导入并通过Rust晋级门禁前，支持等级保持保守；验收产物会绑定已验证服务实例的实例 ID、origin 指纹、配置修订、结构化协议能力哈希，以及原生宿主探针修订和隐私安全的设备类别SHA-256，防止跨实例、协议或支持格重放。v1账本保留为只读历史；既有Ollama两格与MLX-LM一格在v2中明确标记为`legacyHostSummaryV1`，不会伪造回填设备指纹，新导入和重新资格验证只接受`nativeHostProbeV1`。
 

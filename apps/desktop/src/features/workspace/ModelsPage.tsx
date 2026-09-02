@@ -14,15 +14,18 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { Drawer } from "../../components/ui/Drawer";
+import { Modal } from "../../components/ui/Modal";
 import { PageHeader } from "../../components/ui/PageHeader";
 import {
   applyGgufImport,
   applyModelRemoval,
   cancelModelDownload,
+  completeOnboarding,
   type DownloadSource,
   type GgufImportPlan,
+  getDesktopSettings,
   getHardwareProfile,
   getModelDownloads,
   getModelLibrary,
@@ -40,33 +43,7 @@ import {
   selectAndPlanGgufImport,
   startModelDownload,
 } from "../../lib/desktop-api";
-
-interface SectionTab {
-  label: string;
-  path: string;
-}
-
-const workspaceTabs: SectionTab[] = [
-  { label: "模型", path: "/workspace/models" },
-  { label: "运行", path: "/workspace/runtime" },
-  { label: "推理服务", path: "/workspace/services" },
-];
-
-function SectionTabs({ label, tabs }: { label: string; tabs: SectionTab[] }) {
-  return (
-    <nav aria-label={label} className="section-tabs">
-      {tabs.map((tab) => (
-        <NavLink
-          className={({ isActive }) => (isActive ? "active" : undefined)}
-          key={tab.path}
-          to={tab.path}
-        >
-          {tab.label}
-        </NavLink>
-      ))}
-    </nav>
-  );
-}
+import { WorkspaceTabs } from "./WorkspaceTabs";
 
 const downloadSourceCopy: Record<DownloadSource, string> = {
   huggingFace: "Hugging Face",
@@ -157,7 +134,7 @@ function GgufImportConfirmationDialog({
 }) {
   const runtime = isTauriRuntime();
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={applying} onClose={onCancel}>
       <section
         aria-labelledby="gguf-import-dialog-title"
         aria-modal="true"
@@ -229,7 +206,7 @@ function GgufImportConfirmationDialog({
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -248,7 +225,7 @@ function ModelDownloadConfirmationDialog({
 }) {
   const runtime = isTauriRuntime();
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={starting} onClose={onCancel}>
       <section
         aria-labelledby="model-download-dialog-title"
         aria-modal="true"
@@ -353,7 +330,7 @@ function ModelDownloadConfirmationDialog({
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -374,7 +351,7 @@ function ModelRemovalConfirmationDialog({
   const managedTrash = plan.removalKind === "moveManagedFileToTrash";
   const missingManaged = plan.removalKind === "removeMissingManagedIndex";
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={applying} onClose={onCancel}>
       <section
         aria-labelledby="model-removal-dialog-title"
         aria-modal="true"
@@ -444,7 +421,7 @@ function ModelRemovalConfirmationDialog({
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -472,6 +449,7 @@ function useWindowActive(): boolean {
 
 export function ModelsPage() {
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const windowActive = useWindowActive();
   const hardware = useQuery({
     queryKey: ["hardware-profile"],
@@ -485,13 +463,33 @@ export function ModelsPage() {
     staleTime: Number.POSITIVE_INFINITY,
     refetchOnWindowFocus: false,
   });
-  const [addModelOpen, setAddModelOpen] = useState(false);
+  const desktopSettings = useQuery({
+    queryKey: ["desktop-settings"],
+    queryFn: getDesktopSettings,
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: false,
+  });
+  const [addModelOpen, setAddModelOpen] = useState(() => searchParams.get("setup") === "1");
   const [importPlan, setImportPlan] = useState<GgufImportPlan | null>(null);
   const [importResult, setImportResult] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchSource, setSearchSource] = useState<DownloadSource | null>(null);
   const [downloadPlan, setDownloadPlan] = useState<ModelDownloadPlan | null>(null);
   const [removalPlan, setRemovalPlan] = useState<ModelRemovalPlan | null>(null);
+  const closeAddModel = () => {
+    setAddModelOpen(false);
+    if (!searchParams.has("setup")) return;
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete("setup");
+    setSearchParams(nextSearchParams, { replace: true });
+  };
+  const onboardingMutation = useMutation({
+    mutationFn: completeOnboarding,
+    onSuccess: (settings) => {
+      queryClient.setQueryData(["desktop-settings"], settings);
+      void queryClient.invalidateQueries({ queryKey: ["app-overview"] });
+    },
+  });
   const selectImportMutation = useMutation({
     mutationFn: selectAndPlanGgufImport,
     onSuccess: (plan) => {
@@ -505,9 +503,12 @@ export function ModelsPage() {
     mutationFn: (planId: string) => applyGgufImport(planId),
     onSuccess: async (result) => {
       setImportPlan(null);
-      setAddModelOpen(false);
+      closeAddModel();
       setImportResult(`已索引外部模型：${result.model.displayName}`);
       await queryClient.invalidateQueries({ queryKey: ["model-library"] });
+      if (desktopSettings.data && !desktopSettings.data.onboardingCompleted) {
+        onboardingMutation.mutate();
+      }
     },
   });
   const remoteSearchMutation = useMutation({
@@ -577,8 +578,15 @@ export function ModelsPage() {
   useEffect(() => {
     if (downloads.data?.some((download) => download.state === "ready")) {
       void queryClient.invalidateQueries({ queryKey: ["model-library"] });
+      if (
+        desktopSettings.data &&
+        !desktopSettings.data.onboardingCompleted &&
+        !onboardingMutation.isPending
+      ) {
+        onboardingMutation.mutate();
+      }
     }
-  }, [downloads.data, queryClient]);
+  }, [desktopSettings.data, downloads.data, onboardingMutation, queryClient]);
 
   if (hardware.isPending || library.isPending) {
     return <div className="state-message">正在按需读取硬件与模型目录…</div>;
@@ -607,11 +615,16 @@ export function ModelsPage() {
           </button>
         }
         className="model-page-header"
-        description="本机可供 HAL100 使用的模型；下载、导入和设备建议在添加流程中查看。"
-        eyebrow="本地模型"
-        title="模型库"
+        description="集中管理可用模型、当前运行状态和推理服务。"
+        title="模型与运行"
       />
-      <SectionTabs label="模型与运行" tabs={workspaceTabs} />
+      <WorkspaceTabs />
+
+      {onboardingMutation.isError && (
+        <p className="inline-error model-page-error">
+          模型已添加，但首次使用状态未能更新。请返回首页重试。
+        </p>
+      )}
 
       {planRemovalMutation.isError && (
         <p className="inline-error model-page-error">{errorMessage(planRemovalMutation.error)}</p>
@@ -621,7 +634,7 @@ export function ModelsPage() {
         <Drawer
           description="从远程目录下载，或索引电脑中已有的 GGUF 文件。所有写操作仍会先显示确认计划。"
           eyebrow="模型任务"
-          onClose={() => setAddModelOpen(false)}
+          onClose={closeAddModel}
           title="添加模型"
         >
           <section className="drawer-section model-import-section">

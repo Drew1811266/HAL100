@@ -98,8 +98,8 @@ export default function App() {
           <Route path="/workspace/runtime" element={<BackendsPage view="runtime" />} />
           <Route path="/workspace/services" element={<BackendsPage view="services" />} />
           <Route path="/workspace/test" element={<ModelTestPage />} />
-          <Route path="/profiles" element={<RuntimeProfilesPage />} />
-          <Route path="/workspace/profiles" element={<Navigate replace to="/profiles" />} />
+          <Route path="/workspace/profiles" element={<RuntimeProfilesPage />} />
+          <Route path="/profiles" element={<Navigate replace to="/workspace/profiles" />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="/agent" element={<AgentPage />} />
           <Route path="/activity" element={<Navigate replace to="/activity/usage" />} />

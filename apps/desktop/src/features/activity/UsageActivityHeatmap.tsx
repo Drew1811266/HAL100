@@ -64,12 +64,12 @@ export function UsageActivityHeatmap({
   dailyUsage,
   onSelectDate,
   selectedDate,
-  statusFiltered,
+  filtered,
 }: {
   dailyUsage: UsageDailySummary[];
   onSelectDate: (date: string) => void;
   selectedDate: string | null;
-  statusFiltered: boolean;
+  filtered: boolean;
 }) {
   const { cells, rangeStart, today } = buildHeatmap(dailyUsage);
   const visibleCells = cells.filter((cell) => !cell.outside);
@@ -126,7 +126,7 @@ export function UsageActivityHeatmap({
     : "这个年度窗口内没有符合当前筛选条件的请求。";
 
   return (
-    <article className="usage-chart-card usage-activity-card">
+    <article className="usage-chart-card usage-activity-card activity-v2-heatmap-card">
       <div className="usage-chart-heading">
         <div className="usage-chart-heading-copy">
           <h2>每日请求活动</h2>
@@ -205,7 +205,7 @@ export function UsageActivityHeatmap({
         </div>
       </section>
       <p className="usage-chart-caption" id="usage-activity-description">
-        颜色只表示{statusFiltered ? "筛选后的" : "全部状态的"}请求次数，不表示 Token 消耗。
+        颜色只表示{filtered ? "当前筛选条件下的" : "全部"}请求次数，不表示 Token 消耗。
         {description} 点击任意日期可联动整页查看当天数据，再次点击已选日期可返回此前范围。
       </p>
     </article>

@@ -15,12 +15,6 @@ pub struct DesktopSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OnboardingCompletion {
-    pub launch_at_login: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RetentionSettingsDraft {
     pub usage_retention_days: Option<u16>,
     pub audit_retention_days: Option<u16>,

@@ -943,10 +943,6 @@ export interface DesktopSettings {
   closeBehavior: string;
 }
 
-export interface OnboardingCompletion {
-  launchAtLogin: boolean;
-}
-
 export interface RetentionSettingsDraft {
   usageRetentionDays: number | null;
   auditRetentionDays: number | null;
@@ -1415,8 +1411,8 @@ export interface AgentActionResult {
 
 const developmentOverview: AppOverview = {
   appName: "HAL100",
-  version: "1.0.5",
-  phase: "1.0.5 · 开发初期",
+  version: "1.0.6",
+  phase: "1.0.6 · 开发初期",
   gatewayState: "运行中",
   databaseState: "已就绪",
   platform: {
@@ -2013,20 +2009,16 @@ export async function setOnboardingStep(step: number): Promise<void> {
   return invoke<void>("set_onboarding_step", { step });
 }
 
-export async function completeOnboarding(
-  completion: OnboardingCompletion,
-): Promise<DesktopSettings> {
+export async function completeOnboarding(): Promise<DesktopSettings> {
   if (!isTauriRuntime()) {
     window.localStorage.removeItem("hal100-preview-onboarding");
     return {
       ...browserDesktopSettings,
       onboardingCompleted: true,
       onboardingStep: 5,
-      launchAtLoginAsked: true,
-      launchAtLoginEnabled: completion.launchAtLogin,
     };
   }
-  return invoke<DesktopSettings>("complete_onboarding", { completion });
+  return invoke<DesktopSettings>("complete_onboarding");
 }
 
 export async function setLaunchAtLogin(enabled: boolean): Promise<DesktopSettings> {
@@ -2651,18 +2643,68 @@ export async function getUsageHourly(date: string): Promise<UsageHourlySummary[]
 
 export async function getUsageScope(query: UsageScopeQuery): Promise<UsageScopeSummary> {
   if (!isTauriRuntime()) {
-    const dailyUsage = browserUsagePreviewDailyUsage.filter((entry) => {
-      const timestamp = new Date(`${entry.date}T12:00:00`).getTime();
-      return timestamp >= query.seriesStartAtMs && timestamp < query.seriesEndAtMsExclusive;
-    });
-    const scopedDailyUsage = dailyUsage.filter((entry) => {
-      const timestamp = new Date(`${entry.date}T12:00:00`).getTime();
-      return timestamp >= query.startAtMs && timestamp < query.endAtMsExclusive;
-    });
     const dimensionMatches =
       (!query.resolvedModel || query.resolvedModel === "Qwen3.5-2B-GGUF") &&
       (!query.backendId || query.backendId === "llama-cpp-managed") &&
       (!query.status || query.status === "succeeded");
+    const previewRequestTotals = browserUsagePreviewRequests.reduce<UsageTotals>(
+      (sum, request) => ({
+        requestCount: sum.requestCount + 1,
+        inputTokens: sum.inputTokens + (request.inputTokens ?? 0),
+        cachedTokens: sum.cachedTokens + (request.cachedTokens ?? 0),
+        outputTokens: sum.outputTokens + (request.outputTokens ?? 0),
+        totalTokens: sum.totalTokens + (request.totalTokens ?? 0),
+      }),
+      { requestCount: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, totalTokens: 0 },
+    );
+    const selectedClientRequests = query.clientAppId
+      ? browserUsagePreviewRequests.filter((request) => request.clientAppId === query.clientAppId)
+      : browserUsagePreviewRequests;
+    const selectedClientTotals = selectedClientRequests.reduce<UsageTotals>(
+      (sum, request) => ({
+        requestCount: sum.requestCount + 1,
+        inputTokens: sum.inputTokens + (request.inputTokens ?? 0),
+        cachedTokens: sum.cachedTokens + (request.cachedTokens ?? 0),
+        outputTokens: sum.outputTokens + (request.outputTokens ?? 0),
+        totalTokens: sum.totalTokens + (request.totalTokens ?? 0),
+      }),
+      { requestCount: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, totalTokens: 0 },
+    );
+    const scaleForSelectedClient = (value: number, metric: keyof UsageTotals) => {
+      if (!query.clientAppId) return value;
+      const all = previewRequestTotals[metric];
+      return all > 0 ? Math.round((value * selectedClientTotals[metric]) / all) : 0;
+    };
+    const scaleUsageEntry = <T extends UsageDailySummary | UsageHourlySummary>(entry: T): T => {
+      const inputTokens = scaleForSelectedClient(entry.inputTokens, "inputTokens");
+      const cachedTokens = Math.min(
+        inputTokens,
+        scaleForSelectedClient(entry.cachedTokens, "cachedTokens"),
+      );
+      const outputTokens = scaleForSelectedClient(entry.outputTokens, "outputTokens");
+      const totalTokens = inputTokens + outputTokens;
+      const scaledRequestCount = scaleForSelectedClient(entry.requestCount, "requestCount");
+      const requestCount =
+        query.clientAppId && totalTokens > 0 ? Math.max(1, scaledRequestCount) : scaledRequestCount;
+      return {
+        ...entry,
+        requestCount,
+        inputTokens,
+        cachedTokens,
+        outputTokens,
+        totalTokens,
+      };
+    };
+    const dailyUsage = browserUsagePreviewDailyUsage
+      .filter((entry) => {
+        const timestamp = new Date(`${entry.date}T12:00:00`).getTime();
+        return timestamp >= query.seriesStartAtMs && timestamp < query.seriesEndAtMsExclusive;
+      })
+      .map(scaleUsageEntry);
+    const scopedDailyUsage = dailyUsage.filter((entry) => {
+      const timestamp = new Date(`${entry.date}T12:00:00`).getTime();
+      return timestamp >= query.startAtMs && timestamp < query.endAtMsExclusive;
+    });
     const totals = dimensionMatches
       ? scopedDailyUsage.reduce<UsageTotals>(
           (sum, entry) => ({
@@ -2687,27 +2729,45 @@ export async function getUsageScope(query: UsageScopeQuery): Promise<UsageScopeS
           .slice(0, query.limit)
       : [];
     const clientTotals = new Map<string, UsageDimensionSummary>();
-    for (const request of recentRequests) {
-      const current = clientTotals.get(request.clientAppId);
-      clientTotals.set(request.clientAppId, {
-        id: request.clientAppId,
-        displayName: request.clientDisplayName,
-        requestCount: (current?.requestCount ?? 0) + 1,
-        totalTokens: (current?.totalTokens ?? 0) + (request.totalTokens ?? 0),
-      });
-    }
-    if (dimensionMatches && totals.requestCount > 0 && clientTotals.size === 0) {
-      clientTotals.set("hal100-agent", {
-        id: "hal100-agent",
-        displayName: "HAL100 Agent",
-        requestCount: totals.requestCount,
-        totalTokens: totals.totalTokens,
-      });
+    if (dimensionMatches && totals.requestCount > 0) {
+      if (query.clientAppId) {
+        clientTotals.set(query.clientAppId, {
+          id: query.clientAppId,
+          displayName: selectedClientRequests[0]?.clientDisplayName ?? query.clientAppId,
+          requestCount: totals.requestCount,
+          totalTokens: totals.totalTokens,
+        });
+      } else {
+        const clientIds = [
+          ...new Set(browserUsagePreviewRequests.map((request) => request.clientAppId)),
+        ];
+        for (const clientId of clientIds) {
+          const requests = browserUsagePreviewRequests.filter(
+            (request) => request.clientAppId === clientId,
+          );
+          const requestCount = Math.round(
+            (totals.requestCount * requests.length) / previewRequestTotals.requestCount,
+          );
+          const clientTokens = requests.reduce(
+            (sum, request) => sum + (request.totalTokens ?? 0),
+            0,
+          );
+          const totalTokens = Math.round(
+            (totals.totalTokens * clientTokens) / previewRequestTotals.totalTokens,
+          );
+          clientTotals.set(clientId, {
+            id: clientId,
+            displayName: requests[0]?.clientDisplayName ?? clientId,
+            requestCount,
+            totalTokens,
+          });
+        }
+      }
     }
     const dayKey = new Date(query.startAtMs).toLocaleDateString("en-CA");
     const hourlyUsage =
       query.endAtMsExclusive - query.startAtMs <= 25 * 60 * 60 * 1_000
-        ? await getUsageHourly(dayKey)
+        ? (await getUsageHourly(dayKey)).map(scaleUsageEntry)
         : [];
     return {
       totals,

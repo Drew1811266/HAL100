@@ -1234,12 +1234,6 @@ impl Database {
         let transaction = connection.transaction()?;
         upsert_setting(&transaction, "desktop.onboarding_completed", "true", now_ms)?;
         upsert_setting(&transaction, "desktop.onboarding_step", "5", now_ms)?;
-        upsert_setting(
-            &transaction,
-            "desktop.launch_at_login_asked",
-            "true",
-            now_ms,
-        )?;
         transaction.execute(
             "INSERT INTO audit_events (
                 id, event_type, target_type, target_id, summary_json, created_at_ms
@@ -5003,7 +4997,7 @@ mod tests {
             .expect("complete onboarding");
         assert_eq!(
             database.onboarding_state().expect("onboarding"),
-            (true, 5, true)
+            (true, 5, false)
         );
 
         let retention = database

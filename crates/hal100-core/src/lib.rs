@@ -116,7 +116,7 @@ where
         AppOverview {
             app_name: "HAL100".to_owned(),
             version: version.to_owned(),
-            phase: "1.0.5 · 开发初期".to_owned(),
+            phase: "1.0.6 · 开发初期".to_owned(),
             gateway_state: service_state_from_code(self.gateway_state.load(Ordering::Acquire)),
             database_state: DatabaseState::Ready,
             platform: self.system_probe.platform_summary(),

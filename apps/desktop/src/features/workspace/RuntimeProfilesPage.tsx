@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { NavLink } from "react-router-dom";
+import { Modal } from "../../components/ui/Modal";
 import { PageHeader } from "../../components/ui/PageHeader";
 import {
   applyRuntimeProfileActivation,
@@ -44,6 +45,7 @@ import {
   saveExternalRuntimeProfile,
   updateRuntimeProfile,
 } from "../../lib/desktop-api";
+import { WorkspaceTabs } from "./WorkspaceTabs";
 
 const acceleratorCopy: Record<InferenceAccelerator, string> = {
   cpu: "CPU",
@@ -60,7 +62,7 @@ const readinessCopy: Record<
   RuntimeProfileReadiness,
   { label: string; tone: string; detail: string }
 > = {
-  active: { label: "正在运行", tone: "ready", detail: "当前运行状态与此方案一致" },
+  active: { label: "正在运行", tone: "ready", detail: "当前运行状态与此环境一致" },
   ready: { label: "可以运行", tone: "ready", detail: "模型、引擎和验证快照均可用" },
   needsVerification: {
     label: "需要复验",
@@ -75,44 +77,44 @@ const readinessCopy: Record<
 };
 
 const issueCopy: Record<RuntimeProfileIssue, string> = {
-  engineNotInstalled: "方案所需推理引擎当前不可用",
-  backendUnavailable: "方案绑定的外部后端当前不可用",
+  engineNotInstalled: "环境所需推理引擎当前不可用",
+  backendUnavailable: "环境绑定的外部服务当前不可用",
   backendIdentityChanged: "外部后端地址或身份已经变化",
-  engineIncompatible: "当前设备与方案所需引擎不兼容",
+  engineIncompatible: "当前设备与环境所需引擎不兼容",
   engineVersionChanged: "引擎版本已变化",
   modelUnavailable: "模型缺失或未通过校验",
   modelIntegrityChanged: "模型完整性快照已变化",
   capacityPolicyChanged: "设备容量策略已更新",
   supportCellMissing: "方案缺少精确的平台、架构、加速器与部署身份",
-  supportCellChanged: "方案绑定的支持格已不再匹配当前设备或正式清单",
+  supportCellChanged: "环境绑定的支持格已不再匹配当前设备或正式清单",
 };
 
 const failureCopy: Record<RuntimeProfileFailureCode, string> = {
-  invalidRequest: "方案信息无效，请检查填写内容",
+  invalidRequest: "环境信息无效，请检查填写内容",
   persistenceUnavailable: "暂时无法读取或保存方案，请重试",
   managedEngineUnavailable: "托管推理引擎当前不可用，请先检查运行状态",
-  backendUnavailable: "方案绑定的后端当前不可用",
+  backendUnavailable: "环境绑定的服务当前不可用",
   engineClientUnavailable: "无法创建推理引擎探测连接，请重试",
   engineEndpointInvalid: "推理引擎地址无效，请检查后端配置",
   engineUnreachable: "推理引擎当前不可达，请检查服务是否正在运行",
   engineResponseInvalid: "推理引擎响应不符合受控协议，请检查服务版本与配置",
   engineAdapterRegistryInvalid: "推理引擎适配器注册异常，请更新或修复 HAL100",
-  engineAdapterUnavailable: "此方案所需的推理引擎适配器当前不可用",
+  engineAdapterUnavailable: "此环境所需的推理引擎适配器当前不可用",
   qualificationUnavailable: "此引擎尚未提供受控协议资格验证",
   qualificationFailed: "推理引擎未通过受控协议资格验证",
   acceptanceEvidenceUnavailable: "此支持格缺少匹配的验收证据",
   actionPlanUnavailable: "运行计划已失效，请重新生成",
   noVerifiedRuntime: "当前没有正在运行且可验证的本地模型",
   duplicateProfile: "当前模型与引擎组合已经保存",
-  profileNotFound: "运行方案不存在或已被删除",
-  profileNeedsRepair: "方案引用的模型或引擎当前不可用",
-  profileChanged: "方案保存的引擎或模型身份已经变化，请重新验证",
-  liveVerificationRequired: "外部运行方案必须先完成实时复验",
+  profileNotFound: "快捷环境不存在或已被删除",
+  profileNeedsRepair: "环境引用的模型或引擎当前不可用",
+  profileChanged: "环境保存的引擎或模型身份已经变化，请重新验证",
+  liveVerificationRequired: "外部快捷环境必须先完成实时复验",
   supportCellSelectionRequired: "当前匹配多个支持格，请明确选择设备与部署方式",
   invalidSupportCell: "方案支持格与当前设备或正式清单不匹配",
   runtimeDeviceUnproven: "实时资格检查无法证明引擎正在使用所选加速器",
-  externalProfileRequired: "只有外部运行方案可以执行此操作",
-  activationFailed: "运行方案切换失败；HAL100 已按安全策略处理原运行状态",
+  externalProfileRequired: "只有外部快捷环境可以执行此操作",
+  activationFailed: "环境切换失败；HAL100 已按安全策略处理原运行状态",
   activationRecoveryRequired: "存在未完成的方案切换，请先恢复到已知状态",
   interactionIncomplete: "确认操作未完成，请重试",
 };
@@ -269,7 +271,7 @@ function ProfileEditorDialog({
   }
 
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={saving} onClose={onCancel}>
       <section
         aria-labelledby="runtime-profile-editor-title"
         aria-modal="true"
@@ -279,9 +281,9 @@ function ProfileEditorDialog({
         <div className="dialog-heading">
           <div>
             <p className="eyebrow">
-              {profile ? "编辑方案" : externalCandidate ? "保存外部组合" : "保存当前组合"}
+              {profile ? "编辑环境" : externalCandidate ? "保存外部组合" : "保存当前组合"}
             </p>
-            <h2 id="runtime-profile-editor-title">{profile ? "修改方案信息" : "保存为运行方案"}</h2>
+            <h2 id="runtime-profile-editor-title">{profile ? "修改环境信息" : "保存为快捷环境"}</h2>
           </div>
           <button
             aria-label="关闭"
@@ -302,7 +304,7 @@ function ProfileEditorDialog({
         </p>
         <form className="runtime-profile-form" onSubmit={submit}>
           <label>
-            <span>方案名称</span>
+            <span>环境名称</span>
             <input
               maxLength={80}
               onChange={(event) => setName(event.target.value)}
@@ -326,7 +328,7 @@ function ProfileEditorDialog({
                   </option>
                 ))}
               </select>
-              <small>明确选择后，方案会绑定此支持格；Rust 仍会在保存和激活前再次验证。</small>
+              <small>明确选择后，环境会绑定此支持格；保存和切换前仍会再次验证。</small>
             </label>
           )}
           <label>
@@ -345,12 +347,12 @@ function ProfileEditorDialog({
               取消
             </button>
             <button className="primary-button" disabled={saving || !name.trim()} type="submit">
-              {saving ? "正在保存…" : profile ? "保存修改" : "保存方案"}
+              {saving ? "正在保存…" : profile ? "保存修改" : "保存环境"}
             </button>
           </div>
         </form>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -368,7 +370,7 @@ function ActivationDialog({
   onApply: () => void;
 }) {
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={applying} onClose={onCancel}>
       <section
         aria-labelledby="runtime-profile-activation-title"
         aria-modal="true"
@@ -378,7 +380,7 @@ function ActivationDialog({
         <div className="dialog-heading">
           <div>
             <p className="eyebrow">一次性切换计划</p>
-            <h2 id="runtime-profile-activation-title">运行“{plan.profileName}”</h2>
+            <h2 id="runtime-profile-activation-title">切换到“{plan.profileName}”</h2>
           </div>
           <button
             aria-label="关闭"
@@ -428,7 +430,7 @@ function ActivationDialog({
         )}
         <div className="safety-summary">
           <ShieldCheck size={17} />
-          <p>计划只可使用一次；Rust 会重新检查方案与现实状态，切换失败时尝试恢复原模型。</p>
+          <p>计划只可使用一次；系统会重新检查环境与现实状态，切换失败时尝试恢复原模型。</p>
         </div>
         {!isTauriRuntime() && (
           <p className="inline-notice">浏览器预览模式只展示计划，不会启动模型。</p>
@@ -445,11 +447,11 @@ function ActivationDialog({
             type="button"
           >
             <Play size={14} />
-            {applying ? "正在切换…" : plan.requiresConfirmation ? "确认并切换" : "运行方案"}
+            {applying ? "正在切换…" : plan.requiresConfirmation ? "确认并切换" : "切换环境"}
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -467,7 +469,7 @@ function DeleteDialog({
   onDelete: () => void;
 }) {
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={deleting} onClose={onCancel}>
       <section
         aria-labelledby="runtime-profile-delete-title"
         aria-modal="true"
@@ -476,12 +478,12 @@ function DeleteDialog({
       >
         <div className="dialog-heading">
           <div>
-            <p className="eyebrow">删除方案</p>
+            <p className="eyebrow">删除快捷环境</p>
             <h2 id="runtime-profile-delete-title">删除“{profile.name}”</h2>
           </div>
         </div>
         <p className="dialog-intro">
-          只会删除这条运行方案，不会停止当前模型，也不会删除模型文件或推理引擎。
+          只会删除这条快捷环境，不会停止当前模型，也不会删除模型文件或推理引擎。
         </p>
         {error && <p className="inline-error">{error}</p>}
         <div className="dialog-actions">
@@ -489,11 +491,11 @@ function DeleteDialog({
             取消
           </button>
           <button className="danger-button" disabled={deleting} onClick={onDelete} type="button">
-            {deleting ? "正在删除…" : "删除方案"}
+            {deleting ? "正在删除…" : "删除环境"}
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -603,7 +605,7 @@ export function RuntimeProfilesPage() {
   });
 
   if (catalog.isPending) {
-    return <div className="state-message">正在读取本机运行方案…</div>;
+    return <div className="state-message">正在读取已保存环境…</div>;
   }
   if (catalog.isError) {
     return <div className="state-message error">{errorMessage(catalog.error)}</div>;
@@ -638,129 +640,155 @@ export function RuntimeProfilesPage() {
             type="button"
           >
             <BookmarkPlus size={14} />
-            保存当前方案
+            保存当前环境
           </button>
         }
         className="model-page-header"
-        description="保存已经验证的模型与推理引擎组合，以后可以安全预检并快速切换。"
-        eyebrow="个人运行环境"
-        title="运行方案"
+        description="集中管理可用模型、当前运行状态和推理服务。"
+        title="模型与运行"
       />
+      <WorkspaceTabs />
       <section className="runtime-profile-principle">
         <ShieldCheck size={19} />
         <div>
           <strong>只保存可验证的运行身份</strong>
-          <p>方案保存在本机，不包含模型路径、启动命令或凭据；设备策略变化后必须重新运行并复验。</p>
+          <p>
+            快捷环境保存在本机，不包含模型路径、启动命令或凭据；设备策略变化后必须重新运行并复验。
+          </p>
         </div>
         <span className={`status-pill ${managedEngine?.compatibility.compatible ? "ready" : ""}`}>
           {compatibilityLabel}
         </span>
       </section>
 
-      {capabilities.data && (
-        <section aria-label="推理引擎能力与建议" className="runtime-profile-engine-catalog">
-          <header>
+      {(capabilities.data || externalCandidates.length > 0) && (
+        <details className="runtime-profile-advanced disclosure-card">
+          <summary>
             <div>
-              <strong>推理引擎能力与建议</strong>
-              <p>
-                建议由 Rust
-                根据当前设备、正式支持状态和已观察实例确定；连接状态不会直接变成可运行方案。
-              </p>
+              <strong>可保存的外部环境与兼容信息</strong>
+              <span>
+                {externalCandidates.length > 0
+                  ? `${externalCandidates.length} 个外部环境可保存`
+                  : "查看设备与推理引擎兼容详情"}
+              </span>
             </div>
-            <span className="status-pill">
-              {capabilities.data.host.platform} · {capabilities.data.host.architecture}
+            <span className="disclosure-label">
+              <span className="details-closed-copy">展开</span>
+              <span className="details-open-copy">收起</span>
+              <ChevronRight size={14} />
             </span>
-          </header>
-          <div className="runtime-profile-engine-list">
-            {sortEngineCapabilities(capabilities.data.engines).map((capability, index) => {
-              const recommendation = capability.recommendation;
-              const supportStatus = capability.compatibility.supportStatus;
-              const supportEvidence = capability.supportEvidence;
-              return (
-                <article className="runtime-profile-engine-row" key={capability.descriptor.kind}>
-                  <span className="runtime-profile-engine-rank">{index + 1}</span>
-                  <div>
-                    <strong>{capability.descriptor.displayName}</strong>
-                    <p>
-                      {supportStatus ? supportStatusCopy[supportStatus] : "未匹配支持单元"}
-                      {recommendation
-                        ? ` · ${recommendation.reasons.map((reason) => recommendationReasonCopy[reason]).join(" · ")}`
-                        : ""}
-                    </p>
-                    {supportEvidence && (
-                      <small>
-                        证据 {supportEvidence.verified.length}/
-                        {supportEvidence.verified.length + supportEvidence.missing.length}
-                        {supportEvidence.missing.length > 0 &&
-                          ` · 待补：${supportEvidence.missing
-                            .map((evidence) => supportEvidenceCopy[evidence])
-                            .join("、")}`}
-                      </small>
-                    )}
-                  </div>
-                  <span className={`status-pill ${recommendation?.eligible ? "ready" : ""}`}>
-                    {recommendation ? `${recommendation.score} 分` : "待检测"}
-                  </span>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      )}
+          </summary>
 
-      {externalCandidates.length > 0 && (
-        <section aria-label="外部运行身份候选" className="runtime-profile-candidates">
-          <header>
-            <div>
-              <strong>已识别外部运行身份</strong>
-              <p>
-                以下候选来自已保存的外部后端与实时模型证据。保存时 Rust
-                会重新复验，运行时还会再次检查漂移。
-              </p>
-            </div>
-            <span className="status-pill ready">{externalCandidates.length} 个可验证候选</span>
-          </header>
-          <div className="runtime-profile-candidate-list">
-            {externalCandidates.slice(0, 6).map((candidate) => (
-              <article
-                className="runtime-profile-candidate"
-                key={`${candidate.backendId}:${candidate.modelId}:${candidate.modelDigest}`}
-              >
+          {capabilities.data && (
+            <section aria-label="推理引擎能力与建议" className="runtime-profile-engine-catalog">
+              <header>
                 <div>
-                  <strong>{candidate.modelId}</strong>
-                  <span>{candidate.backendDisplayName}</span>
+                  <strong>推理引擎能力与建议</strong>
+                  <p>
+                    建议由 Rust
+                    根据当前设备、正式支持状态和已观察实例确定；连接状态不会直接变成可切换环境。
+                  </p>
                 </div>
-                <div className="runtime-profile-candidate-meta">
-                  <span>
-                    {engineLabel(candidate.engine)} {formatEngineVersion(candidate.engineVersion)}
-                    {candidate.parameterSize ? ` · ${candidate.parameterSize}` : ""}
-                    {candidate.quantization ? ` · ${candidate.quantization}` : ""}
-                  </span>
-                  <code title={`${candidate.evidence.algorithm}: ${candidate.evidence.value}`}>
-                    {evidenceLabel(candidate)}
-                  </code>
-                  <button
-                    className="secondary-button"
-                    onClick={() => {
-                      setOperationError(null);
-                      setEditorProfile(undefined);
-                      setExternalCandidate(candidate);
-                    }}
-                    type="button"
-                  >
-                    <BookmarkPlus size={13} />
-                    保存为方案
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-          {externalCandidates.length > 6 && (
-            <p className="runtime-profile-candidate-overflow">
-              另有 {externalCandidates.length - 6} 个候选，将在外部方案编辑器中按需展开。
-            </p>
+                <span className="status-pill">
+                  {capabilities.data.host.platform} · {capabilities.data.host.architecture}
+                </span>
+              </header>
+              <div className="runtime-profile-engine-list">
+                {sortEngineCapabilities(capabilities.data.engines).map((capability, index) => {
+                  const recommendation = capability.recommendation;
+                  const supportStatus = capability.compatibility.supportStatus;
+                  const supportEvidence = capability.supportEvidence;
+                  return (
+                    <article
+                      className="runtime-profile-engine-row"
+                      key={capability.descriptor.kind}
+                    >
+                      <span className="runtime-profile-engine-rank">{index + 1}</span>
+                      <div>
+                        <strong>{capability.descriptor.displayName}</strong>
+                        <p>
+                          {supportStatus ? supportStatusCopy[supportStatus] : "未匹配支持单元"}
+                          {recommendation
+                            ? ` · ${recommendation.reasons.map((reason) => recommendationReasonCopy[reason]).join(" · ")}`
+                            : ""}
+                        </p>
+                        {supportEvidence && (
+                          <small>
+                            证据 {supportEvidence.verified.length}/
+                            {supportEvidence.verified.length + supportEvidence.missing.length}
+                            {supportEvidence.missing.length > 0 &&
+                              ` · 待补：${supportEvidence.missing
+                                .map((evidence) => supportEvidenceCopy[evidence])
+                                .join("、")}`}
+                          </small>
+                        )}
+                      </div>
+                      <span className={`status-pill ${recommendation?.eligible ? "ready" : ""}`}>
+                        {recommendation ? `${recommendation.score} 分` : "待检测"}
+                      </span>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
           )}
-        </section>
+
+          {externalCandidates.length > 0 && (
+            <section aria-label="外部运行身份候选" className="runtime-profile-candidates">
+              <header>
+                <div>
+                  <strong>已识别外部运行身份</strong>
+                  <p>
+                    以下候选来自已保存的外部后端与实时模型证据。保存时 Rust
+                    会重新复验，运行时还会再次检查漂移。
+                  </p>
+                </div>
+                <span className="status-pill ready">{externalCandidates.length} 个可验证候选</span>
+              </header>
+              <div className="runtime-profile-candidate-list">
+                {externalCandidates.slice(0, 6).map((candidate) => (
+                  <article
+                    className="runtime-profile-candidate"
+                    key={`${candidate.backendId}:${candidate.modelId}:${candidate.modelDigest}`}
+                  >
+                    <div>
+                      <strong>{candidate.modelId}</strong>
+                      <span>{candidate.backendDisplayName}</span>
+                    </div>
+                    <div className="runtime-profile-candidate-meta">
+                      <span>
+                        {engineLabel(candidate.engine)}{" "}
+                        {formatEngineVersion(candidate.engineVersion)}
+                        {candidate.parameterSize ? ` · ${candidate.parameterSize}` : ""}
+                        {candidate.quantization ? ` · ${candidate.quantization}` : ""}
+                      </span>
+                      <code title={`${candidate.evidence.algorithm}: ${candidate.evidence.value}`}>
+                        {evidenceLabel(candidate)}
+                      </code>
+                      <button
+                        className="secondary-button"
+                        onClick={() => {
+                          setOperationError(null);
+                          setEditorProfile(undefined);
+                          setExternalCandidate(candidate);
+                        }}
+                        type="button"
+                      >
+                        <BookmarkPlus size={13} />
+                        保存为快捷环境
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {externalCandidates.length > 6 && (
+                <p className="runtime-profile-candidate-overflow">
+                  另有 {externalCandidates.length - 6} 个候选，可在外部环境编辑器中按需展开。
+                </p>
+              )}
+            </section>
+          )}
+        </details>
       )}
 
       {operationError && !editorOpen && !activationPlan && !deleteProfile && (
@@ -770,15 +798,15 @@ export function RuntimeProfilesPage() {
       {data.profiles.length === 0 ? (
         <section className="runtime-profile-empty">
           <BookmarkPlus size={24} />
-          <strong>还没有保存运行方案</strong>
-          <p>可以先启动托管本地模型，或从上方实时识别的外部运行身份保存一套方案。</p>
+          <strong>还没有保存快捷环境</strong>
+          <p>可以先启动托管本地模型，或从兼容信息中保存一个已验证的外部环境。</p>
           <NavLink className="primary-button" to="/workspace/runtime">
             前往运行
             <ChevronRight size={14} />
           </NavLink>
         </section>
       ) : (
-        <section aria-label="已保存的运行方案" className="runtime-profile-grid">
+        <section aria-label="已保存的快捷环境" className="runtime-profile-grid">
           {data.profiles.map((profile) => {
             const status = readinessCopy[profile.readiness];
             const running = profile.readiness === "active";
@@ -842,7 +870,7 @@ export function RuntimeProfilesPage() {
                       </span>
                       <small>
                         固定工作负载 {profile.reviewedPerformance.workloadRevision}
-                        ，仅作方案间参考，不代表实时保证
+                        ，仅作环境间参考，不代表实时保证
                       </small>
                     </div>
                   </div>
@@ -887,7 +915,7 @@ export function RuntimeProfilesPage() {
                         setOperationError(null);
                         setDeleteProfile(profile);
                       }}
-                      title="删除方案定义"
+                      title="删除快捷环境"
                       type="button"
                     >
                       <Trash2 size={14} />
@@ -910,7 +938,7 @@ export function RuntimeProfilesPage() {
                         type="button"
                       >
                         <Play size={14} />
-                        {running ? "正在运行" : blocked ? "需要修复" : "运行方案"}
+                        {running ? "正在运行" : blocked ? "需要修复" : "切换到此环境"}
                       </button>
                     )}
                   </div>

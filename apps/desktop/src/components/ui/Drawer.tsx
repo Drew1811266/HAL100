@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
-import { type ReactNode, useEffect, useId, useRef } from "react";
-import { createPortal } from "react-dom";
+import { type ReactNode, useId, useRef } from "react";
+import { OverlayPortal } from "./OverlayPortal";
 
 export function Drawer({
   children,
@@ -17,55 +17,9 @@ export function Drawer({
 }) {
   const titleId = useId();
   const closeButton = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLElement>(null);
 
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow;
-    const applicationRoot = document.getElementById("root");
-    const rootWasInert = applicationRoot?.hasAttribute("inert") ?? false;
-    const previouslyFocused =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const keepFocusInside = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab" || !panel.current) return;
-      const focusable = [
-        ...panel.current.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), details > summary, [tabindex]:not([tabindex="-1"])',
-        ),
-      ].filter((element) => !element.hasAttribute("hidden") && element.getClientRects().length > 0);
-      if (focusable.length === 0) {
-        event.preventDefault();
-        panel.current.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.body.style.overflow = "hidden";
-    applicationRoot?.setAttribute("inert", "");
-    window.addEventListener("keydown", keepFocusInside);
-    closeButton.current?.focus();
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      if (!rootWasInert) applicationRoot?.removeAttribute("inert");
-      window.removeEventListener("keydown", keepFocusInside);
-      previouslyFocused?.focus();
-    };
-  }, [onClose]);
-
-  return createPortal(
-    <div className="drawer-backdrop">
+  return (
+    <OverlayPortal className="drawer-backdrop" initialFocusRef={closeButton} onClose={onClose}>
       <button
         aria-hidden="true"
         className="drawer-scrim"
@@ -77,7 +31,6 @@ export function Drawer({
         aria-labelledby={titleId}
         aria-modal="true"
         className="drawer-panel"
-        ref={panel}
         role="dialog"
         tabIndex={-1}
       >
@@ -99,7 +52,6 @@ export function Drawer({
         </header>
         <div className="drawer-content">{children}</div>
       </section>
-    </div>,
-    document.body,
+    </OverlayPortal>
   );
 }

@@ -46,13 +46,13 @@ use hal100_protocol::{
     HardwareProfile, InferenceCapabilityCatalog, InferenceEngineCapability,
     InferenceEngineOwnership, InferenceEngineSupportStatus, LlamaCppStatus, LocalBackendDiscovery,
     ModelDownloadPlan, ModelDownloadSnapshot, ModelLibrary, ModelRemovalKind, ModelRemovalPlan,
-    ModelRemovalResult, ModelTestResult, OnboardingCompletion, OpenCodeApplyResult,
-    OpenCodeConfigPlan, OpenCodeDetection, OpenCodeProjectDiagnosis, RemoteModelRepository,
-    RemoteModelSearchResults, RetentionSettingsDraft, RuntimeProfileActivationPlan,
-    RuntimeProfileActivationResult, RuntimeProfileCatalog, RuntimeProfileDraft,
-    RuntimeProfileFailure, RuntimeProfileFailureCode, RuntimeProfileFailureStage,
-    RuntimeProfileRecoveryAction, RuntimeProfileSupportCell, ServiceState, UsageDashboard,
-    UsageFilterOptions, UsageHourlySummary, UsageScopeQuery, UsageScopeSummary,
+    ModelRemovalResult, ModelTestResult, OpenCodeApplyResult, OpenCodeConfigPlan,
+    OpenCodeDetection, OpenCodeProjectDiagnosis, RemoteModelRepository, RemoteModelSearchResults,
+    RetentionSettingsDraft, RuntimeProfileActivationPlan, RuntimeProfileActivationResult,
+    RuntimeProfileCatalog, RuntimeProfileDraft, RuntimeProfileFailure, RuntimeProfileFailureCode,
+    RuntimeProfileFailureStage, RuntimeProfileRecoveryAction, RuntimeProfileSupportCell,
+    ServiceState, UsageDashboard, UsageFilterOptions, UsageHourlySummary, UsageScopeQuery,
+    UsageScopeSummary,
 };
 use tauri::{
     Manager, State,
@@ -806,23 +806,13 @@ async fn set_onboarding_step(step: u8, state: State<'_, DatabaseState>) -> Resul
 #[tauri::command]
 async fn complete_onboarding(
     app: tauri::AppHandle,
-    completion: OnboardingCompletion,
     state: State<'_, DatabaseState>,
 ) -> Result<DesktopSettings, String> {
-    let previous = app
-        .autolaunch()
-        .is_enabled()
-        .map_err(|error| format!("读取随系统登录启动状态失败：{error}"))?;
-    set_autostart_enabled(&app, completion.launch_at_login)?;
     let database = state.database.clone();
-    let saved =
-        tauri::async_runtime::spawn_blocking(move || database.complete_onboarding(unix_time_ms()))
-            .await
-            .map_err(|error| format!("完成首次启动任务异常结束：{error}"))?;
-    if let Err(error) = saved {
-        let _ = set_autostart_enabled(&app, previous);
-        return Err(error.to_string());
-    }
+    tauri::async_runtime::spawn_blocking(move || database.complete_onboarding(unix_time_ms()))
+        .await
+        .map_err(|error| format!("完成首次启动任务异常结束：{error}"))?
+        .map_err(|error| error.to_string())?;
     get_desktop_settings(app, state).await
 }
 

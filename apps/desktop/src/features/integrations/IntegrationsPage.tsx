@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Drawer } from "../../components/ui/Drawer";
+import { Modal } from "../../components/ui/Modal";
 import { PageHeader } from "../../components/ui/PageHeader";
 import {
   applyHermesAgentConfiguration,
@@ -176,7 +177,7 @@ function ManagedAgentConfigurationDialog({
 }) {
   const runtime = isTauriRuntime();
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={applying} onClose={onCancel}>
       <section
         aria-labelledby="managed-agent-dialog-title"
         aria-modal="true"
@@ -243,7 +244,7 @@ function ManagedAgentConfigurationDialog({
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -264,7 +265,7 @@ function ManagedAgentDisconnectDialog({
 }) {
   const runtime = isTauriRuntime();
   return (
-    <div className="dialog-backdrop" role="presentation">
+    <Modal closeDisabled={applying} onClose={onCancel}>
       <section
         aria-labelledby="managed-agent-disconnect-title"
         aria-modal="true"
@@ -324,7 +325,7 @@ function ManagedAgentDisconnectDialog({
           </button>
         </div>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -466,7 +467,12 @@ function GenericClientAccess() {
       )}
 
       {issuedCredential && (
-        <div className="dialog-backdrop" role="presentation">
+        <Modal
+          onClose={() => {
+            setIssuedCredential(null);
+            setCopied(false);
+          }}
+        >
           <section
             aria-labelledby="issued-key-title"
             aria-modal="true"
@@ -498,7 +504,7 @@ function GenericClientAccess() {
               </button>
             </div>
           </section>
-        </div>
+        </Modal>
       )}
     </section>
   );
@@ -526,9 +532,7 @@ function PiCodingAgentIntegrationCard() {
     onSuccess: async (result) => {
       setPlan(null);
       setResultMessage(
-        result.backupPath
-          ? `Pi 配置完成，备份已保存到 ${result.backupPath}`
-          : "Pi 配置完成，独立凭据已生效。",
+        result.backupPath ? "Pi 配置完成，已创建可恢复备份。" : "Pi 配置完成，独立凭据已生效。",
       );
       await queryClient.invalidateQueries({ queryKey: ["pi-coding-agent-detection"] });
     },
@@ -545,9 +549,7 @@ function PiCodingAgentIntegrationCard() {
     onSuccess: async (result) => {
       setDisconnectPlan(null);
       setResultMessage(
-        result.backupPath
-          ? `Pi 接入已断开，配置备份保存在 ${result.backupPath}`
-          : "Pi 接入已断开，专属凭据已吊销。",
+        result.backupPath ? "Pi 接入已断开，已保留可恢复备份。" : "Pi 接入已断开，专属凭据已吊销。",
       );
       await queryClient.invalidateQueries({ queryKey: ["pi-coding-agent-detection"] });
     },
@@ -744,7 +746,7 @@ function OpenClawIntegrationCard() {
       setPlan(null);
       setResultMessage(
         result.backupPath
-          ? `OpenClaw 配置完成，备份已保存到 ${result.backupPath}`
+          ? "OpenClaw 配置完成，已创建可恢复备份。"
           : "OpenClaw 配置完成，独立凭据已生效。",
       );
       await queryClient.invalidateQueries({ queryKey: ["openclaw-detection"] });
@@ -763,7 +765,7 @@ function OpenClawIntegrationCard() {
       setDisconnectPlan(null);
       setResultMessage(
         result.backupPath
-          ? `OpenClaw 接入已断开，配置备份保存在 ${result.backupPath}`
+          ? "OpenClaw 接入已断开，已保留可恢复备份。"
           : "OpenClaw 接入已断开，专属凭据已吊销。",
       );
       await queryClient.invalidateQueries({ queryKey: ["openclaw-detection"] });
@@ -979,7 +981,7 @@ function HermesAgentIntegrationCard() {
       setPlan(null);
       setResultMessage(
         result.backupPath
-          ? `Hermes 配置完成，非敏感 YAML 备份已保存到 ${result.backupPath}`
+          ? "Hermes 配置完成，已创建非敏感 YAML 可恢复备份。"
           : "Hermes 配置完成，独立凭据已生效。",
       );
       await queryClient.invalidateQueries({ queryKey: ["hermes-agent-detection"] });
@@ -998,7 +1000,7 @@ function HermesAgentIntegrationCard() {
       setDisconnectPlan(null);
       setResultMessage(
         result.backupPath
-          ? `Hermes 接入已断开，非敏感 YAML 备份保存在 ${result.backupPath}`
+          ? "Hermes 接入已断开，已保留非敏感 YAML 可恢复备份。"
           : "Hermes 接入已断开，专属凭据已吊销。",
       );
       await queryClient.invalidateQueries({ queryKey: ["hermes-agent-detection"] });
@@ -1204,9 +1206,7 @@ export function IntegrationsPage() {
     onSuccess: async (result) => {
       setPlan(null);
       setResultMessage(
-        result.backupPath
-          ? `配置完成，备份已保存到 ${result.backupPath}`
-          : "配置完成，OpenCode 专属凭据已生效。",
+        result.backupPath ? "配置完成，已创建可恢复备份。" : "配置完成，OpenCode 专属凭据已生效。",
       );
       await queryClient.invalidateQueries({ queryKey: ["opencode-detection"] });
     },
@@ -1224,7 +1224,7 @@ export function IntegrationsPage() {
       setDisconnectPlan(null);
       setResultMessage(
         result.backupPath
-          ? `接入已断开，配置备份保存在 ${result.backupPath}`
+          ? "接入已断开，已保留可恢复备份。"
           : "接入已断开，OpenCode 专属凭据已吊销。",
       );
       await queryClient.invalidateQueries({ queryKey: ["opencode-detection"] });
@@ -1238,7 +1238,9 @@ export function IntegrationsPage() {
     return <div className="state-message error">{errorMessage(detection.error)}</div>;
   }
   const data = detection.data;
-  const stateCopy = integrationStateCopy[data.integrationState];
+  const stateCopy = data.installed
+    ? integrationStateCopy[data.integrationState]
+    : { label: "未检测到", tone: "neutral" as const };
   const cannotPlan =
     data.integrationState === "conflict" || data.integrationState === "modifiedOutsideHal100";
 
@@ -1247,13 +1249,6 @@ export function IntegrationsPage() {
       <PageHeader
         action={
           <div className="page-header-actions">
-            <button
-              className="secondary-button"
-              onClick={() => setBoundaryOpen(true)}
-              type="button"
-            >
-              了解运行边界
-            </button>
             <button
               className="secondary-button refresh-button"
               disabled={detection.isFetching}
@@ -1267,24 +1262,28 @@ export function IntegrationsPage() {
               type="button"
             >
               <RefreshCw className={detection.isFetching ? "spinning" : ""} size={14} />
-              {detection.isFetching ? "检测中…" : "重新检测全部"}
+              {detection.isFetching ? "检测中…" : "重新检测"}
             </button>
           </div>
         }
-        description="统一管理外部 Agent 与其他兼容客户端，每个软件保持独立身份和配置。"
-        eyebrow="客户端接入"
+        description="每个软件使用独立连接；HAL100 不会读取它们的会话或覆盖其他配置。"
         title="软件接入"
       />
 
+      <section className="integration-page-help">
+        <span>逐项显示真实检测状态、影响范围和推荐下一步</span>
+        <button className="text-button" onClick={() => setBoundaryOpen(true)} type="button">
+          了解接入边界
+        </button>
+      </section>
+
       <div className="integration-summary-list">
         <IntegrationSummaryRow
-          actionLabel={
-            cannotPlan
-              ? "解决问题"
-              : data.integrationState === "configured"
-                ? "查看详情"
-                : "配置接入"
-          }
+          actionLabel={integrationRecommendedAction({
+            connected: data.integrationState === "configured",
+            installed: data.installed,
+            needsAttention: cannotPlan,
+          })}
           description={
             data.installed
               ? "已检测到 OpenCode CLI，可创建专属 Gateway 身份"
